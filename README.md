@@ -8,8 +8,6 @@
 
 Sandboxed Docker environments for git repos — safe playgrounds for AI coding agents.
 
-![demo](./docs/demo.gif)
-
 ## Why realm?
 
 AI coding agents (Claude Code, Cursor, Copilot) are powerful — but letting them loose on your actual working tree is risky. Realm gives them a **safe, isolated sandbox** where they can go wild without consequences.
