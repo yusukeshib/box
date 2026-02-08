@@ -52,8 +52,6 @@ pub fn build_run_args(
         "run".into(),
         "--rm".into(),
         "-it".into(),
-        "--entrypoint".into(),
-        "".into(),
         "--hostname".into(),
         format!("realm-{}", name),
         "--tmpfs".into(),
@@ -83,18 +81,7 @@ pub fn build_run_args(
 
     args.push(image.into());
 
-    let shell_cmd = if cmd.is_empty() {
-        "git checkout . 2>/dev/null; exec sh".to_string()
-    } else {
-        "git checkout . 2>/dev/null; exec \"$@\"".to_string()
-    };
-
-    args.push("sh".into());
-    args.push("-c".into());
-    args.push(shell_cmd);
-
     if !cmd.is_empty() {
-        args.push("--".into());
         args.extend(cmd.iter().cloned());
     }
 
@@ -155,23 +142,17 @@ mod tests {
         assert_eq!(args[0], "run");
         assert_eq!(args[1], "--rm");
         assert_eq!(args[2], "-it");
-        assert_eq!(args[3], "--entrypoint");
-        assert_eq!(args[4], "");
-        assert_eq!(args[5], "--hostname");
-        assert_eq!(args[6], "realm-test-session");
-        assert_eq!(args[7], "--tmpfs");
-        assert_eq!(args[8], "/workspace:exec,mode=1777");
-        assert_eq!(args[9], "-v");
-        assert_eq!(args[10], "/home/user/project/.git:/workspace/.git");
-        assert_eq!(args[11], "-w");
-        assert_eq!(args[12], "/workspace");
+        assert_eq!(args[3], "--hostname");
+        assert_eq!(args[4], "realm-test-session");
+        assert_eq!(args[5], "--tmpfs");
+        assert_eq!(args[6], "/workspace:exec,mode=1777");
+        assert_eq!(args[7], "-v");
+        assert_eq!(args[8], "/home/user/project/.git:/workspace/.git");
+        assert_eq!(args[9], "-w");
+        assert_eq!(args[10], "/workspace");
         // image
-        assert_eq!(args[13], "alpine/git");
-        // shell
-        assert_eq!(args[14], "sh");
-        assert_eq!(args[15], "-c");
-        assert_eq!(args[16], "git checkout . 2>/dev/null; exec sh");
-        assert_eq!(args.len(), 17);
+        assert_eq!(args[11], "alpine/git");
+        assert_eq!(args.len(), 12);
     }
 
     #[test]
@@ -189,11 +170,10 @@ mod tests {
         )
         .unwrap();
 
-        // Should use exec "$@" form
-        assert!(args.contains(&"git checkout . 2>/dev/null; exec \"$@\"".to_string()));
-        // Should have -- and the command
-        let dash_pos = args.iter().position(|a| a == "--").unwrap();
-        assert_eq!(args[dash_pos + 1], "bash");
+        // Command follows image directly
+        let image_pos = args.iter().position(|a| a == "ubuntu:latest").unwrap();
+        assert_eq!(args[image_pos + 1], "bash");
+        assert_eq!(args.len(), image_pos + 2);
     }
 
     #[test]
@@ -211,10 +191,11 @@ mod tests {
         )
         .unwrap();
 
-        let dash_pos = args.iter().position(|a| a == "--").unwrap();
-        assert_eq!(args[dash_pos + 1], "python");
-        assert_eq!(args[dash_pos + 2], "-m");
-        assert_eq!(args[dash_pos + 3], "pytest");
+        let image_pos = args.iter().position(|a| a == "python:3.11").unwrap();
+        assert_eq!(args[image_pos + 1], "python");
+        assert_eq!(args[image_pos + 2], "-m");
+        assert_eq!(args[image_pos + 3], "pytest");
+        assert_eq!(args.len(), image_pos + 4);
     }
 
     #[test]
