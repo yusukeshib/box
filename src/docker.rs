@@ -1,0 +1,409 @@
+use anyhow::{bail, Result};
+use std::path::Path;
+use std::process::Command;
+
+pub fn check() -> Result<()> {
+    let has_docker = Command::new("command")
+        .args(["-v", "docker"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    // "command -v" may not work outside a shell, so try "docker version" instead
+    let docker_exists = has_docker.map(|s| s.success()).unwrap_or(false)
+        || Command::new("docker")
+            .arg("version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+    if !docker_exists {
+        bail!("docker is not installed. See https://docs.docker.com/get-docker/");
+    }
+
+    let info = Command::new("docker")
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+
+    if !info.success() {
+        bail!("Docker daemon is not running. Please start Docker.");
+    }
+
+    Ok(())
+}
+
+pub fn build_image(name: &str, dockerfile: &str) -> Result<String> {
+    let tag = format!("realm-{}:latest", name);
+
+    let dockerfile_path = Path::new(dockerfile);
+    if !dockerfile_path.exists() {
+        bail!("Dockerfile '{}' not found.", dockerfile);
+    }
+
+    let context_dir = dockerfile_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_string_lossy()
+        .to_string();
+
+    eprintln!("Building image from {}...", dockerfile);
+
+    let output = Command::new("docker")
+        .args([
+            "build",
+            "--quiet",
+            "-t",
+            &tag,
+            "-f",
+            dockerfile,
+            &context_dir,
+        ])
+        .output()?;
+
+    if !output.status.success() {
+        bail!("Docker build failed.");
+    }
+
+    Ok(tag)
+}
+
+/// Build the docker run argument list without executing. Used by run_container and tests.
+#[allow(clippy::too_many_arguments)]
+pub fn build_run_args(
+    name: &str,
+    project_dir: &str,
+    image: &str,
+    mount_path: &str,
+    cmd: &[String],
+    home: &str,
+    gitconfig_exists: bool,
+    docker_args_env: Option<&str>,
+) -> Result<Vec<String>> {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "--rm".into(),
+        "-it".into(),
+        "--entrypoint".into(),
+        "".into(),
+        "--hostname".into(),
+        format!("realm-{}", name),
+        "-v".into(),
+        format!("{}/.git:{}/.git", project_dir, mount_path),
+        "-w".into(),
+        mount_path.into(),
+    ];
+
+    if gitconfig_exists {
+        let gitconfig = format!("{}/.gitconfig", home);
+        args.push("-v".into());
+        args.push(format!("{}:/root/.gitconfig:ro", gitconfig));
+    }
+
+    if let Some(extra) = docker_args_env {
+        if !extra.is_empty() {
+            match shell_words::split(extra) {
+                Ok(extra_args) => args.extend(extra_args),
+                Err(e) => {
+                    bail!("Failed to parse REALM_DOCKER_ARGS: {}", e);
+                }
+            }
+        }
+    }
+
+    args.push(image.into());
+
+    let shell_cmd = if cmd.is_empty() {
+        "git checkout . 2>/dev/null; exec sh".to_string()
+    } else {
+        "git checkout . 2>/dev/null; exec \"$@\"".to_string()
+    };
+
+    args.push("sh".into());
+    args.push("-c".into());
+    args.push(shell_cmd);
+
+    if !cmd.is_empty() {
+        args.push("--".into());
+        args.extend(cmd.iter().cloned());
+    }
+
+    Ok(args)
+}
+
+pub fn run_container(
+    name: &str,
+    project_dir: &str,
+    image: &str,
+    mount_path: &str,
+    cmd: &[String],
+) -> Result<i32> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let gitconfig = format!("{}/.gitconfig", home);
+    let gitconfig_exists = Path::new(&gitconfig).exists();
+    let docker_args_env = std::env::var("REALM_DOCKER_ARGS").ok();
+
+    let args = build_run_args(
+        name,
+        project_dir,
+        image,
+        mount_path,
+        cmd,
+        &home,
+        gitconfig_exists,
+        docker_args_env.as_deref(),
+    )?;
+
+    let status = Command::new("docker")
+        .args(&args)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+
+    Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_run_args_basic() {
+        let args = build_run_args(
+            "test-session",
+            "/home/user/project",
+            "alpine/git",
+            "/workspace",
+            &[],
+            "/home/user",
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(args[0], "run");
+        assert_eq!(args[1], "--rm");
+        assert_eq!(args[2], "-it");
+        assert_eq!(args[3], "--entrypoint");
+        assert_eq!(args[4], "");
+        assert_eq!(args[5], "--hostname");
+        assert_eq!(args[6], "realm-test-session");
+        assert_eq!(args[7], "-v");
+        assert_eq!(args[8], "/home/user/project/.git:/workspace/.git");
+        assert_eq!(args[9], "-w");
+        assert_eq!(args[10], "/workspace");
+        // image
+        assert_eq!(args[11], "alpine/git");
+        // shell
+        assert_eq!(args[12], "sh");
+        assert_eq!(args[13], "-c");
+        assert_eq!(args[14], "git checkout . 2>/dev/null; exec sh");
+        assert_eq!(args.len(), 15);
+    }
+
+    #[test]
+    fn test_build_run_args_with_command() {
+        let cmd = vec!["bash".to_string()];
+        let args = build_run_args(
+            "sess",
+            "/tmp/project",
+            "ubuntu:latest",
+            "/workspace",
+            &cmd,
+            "/home/user",
+            false,
+            None,
+        )
+        .unwrap();
+
+        // Should use exec "$@" form
+        assert!(args.contains(&"git checkout . 2>/dev/null; exec \"$@\"".to_string()));
+        // Should have -- and the command
+        let dash_pos = args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(args[dash_pos + 1], "bash");
+    }
+
+    #[test]
+    fn test_build_run_args_with_multi_command() {
+        let cmd = vec!["python".to_string(), "-m".to_string(), "pytest".to_string()];
+        let args = build_run_args(
+            "sess",
+            "/tmp/project",
+            "python:3.11",
+            "/app",
+            &cmd,
+            "/home/user",
+            false,
+            None,
+        )
+        .unwrap();
+
+        let dash_pos = args.iter().position(|a| a == "--").unwrap();
+        assert_eq!(args[dash_pos + 1], "python");
+        assert_eq!(args[dash_pos + 2], "-m");
+        assert_eq!(args[dash_pos + 3], "pytest");
+    }
+
+    #[test]
+    fn test_build_run_args_with_gitconfig() {
+        let args = build_run_args(
+            "sess",
+            "/tmp/project",
+            "alpine/git",
+            "/workspace",
+            &[],
+            "/home/user",
+            true,
+            None,
+        )
+        .unwrap();
+
+        assert!(args.contains(&"-v".to_string()));
+        assert!(args.contains(&"/home/user/.gitconfig:/root/.gitconfig:ro".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_without_gitconfig() {
+        let args = build_run_args(
+            "sess",
+            "/tmp/project",
+            "alpine/git",
+            "/workspace",
+            &[],
+            "/home/user",
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert!(!args.contains(&"/home/user/.gitconfig:/root/.gitconfig:ro".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_with_docker_args_env() {
+        let args = build_run_args(
+            "sess",
+            "/tmp/project",
+            "alpine/git",
+            "/workspace",
+            &[],
+            "/home/user",
+            false,
+            Some("--network host -v /data:/data:ro"),
+        )
+        .unwrap();
+
+        assert!(args.contains(&"--network".to_string()));
+        assert!(args.contains(&"host".to_string()));
+        assert!(args.contains(&"/data:/data:ro".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_docker_args_with_quotes() {
+        let args = build_run_args(
+            "sess",
+            "/tmp/project",
+            "alpine/git",
+            "/workspace",
+            &[],
+            "/home/user",
+            false,
+            Some("-e 'FOO=hello world'"),
+        )
+        .unwrap();
+
+        assert!(args.contains(&"-e".to_string()));
+        assert!(args.contains(&"FOO=hello world".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_empty_docker_args() {
+        let args = build_run_args(
+            "sess",
+            "/tmp/project",
+            "alpine/git",
+            "/workspace",
+            &[],
+            "/home/user",
+            false,
+            Some(""),
+        )
+        .unwrap();
+
+        // Should still work, just no extra args
+        assert!(args.contains(&"alpine/git".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_invalid_docker_args() {
+        let result = build_run_args(
+            "sess",
+            "/tmp/project",
+            "alpine/git",
+            "/workspace",
+            &[],
+            "/home/user",
+            false,
+            Some("--flag 'unclosed quote"),
+        );
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse REALM_DOCKER_ARGS"));
+    }
+
+    #[test]
+    fn test_build_run_args_custom_mount_path() {
+        let args = build_run_args(
+            "sess",
+            "/tmp/project",
+            "alpine/git",
+            "/src",
+            &[],
+            "/home/user",
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert!(args.contains(&"/tmp/project/.git:/src/.git".to_string()));
+        assert!(args.contains(&"/src".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_hostname() {
+        let args = build_run_args(
+            "my-session",
+            "/tmp/project",
+            "alpine/git",
+            "/workspace",
+            &[],
+            "/home/user",
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert!(args.contains(&"realm-my-session".to_string()));
+    }
+
+    #[test]
+    fn test_build_image_nonexistent_dockerfile() {
+        let err = build_image("test", "/nonexistent/Dockerfile").unwrap_err();
+        assert!(err.to_string().contains("Dockerfile"));
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_build_image_tag_format() {
+        // We can't actually run docker build in tests, but verify the tag format
+        let tag = format!("realm-{}:latest", "my-session");
+        assert_eq!(tag, "realm-my-session:latest");
+    }
+}

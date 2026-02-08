@@ -7,62 +7,66 @@ Sandboxed Docker environments for git repos.
 Realm mounts your repo's `.git` directory into a Docker container and checks out a dedicated branch. Your host working directory is never modified.
 
 - **`.git`-only mount** — The container gets full git functionality (commit, branch, diff) without touching your working tree
-- **Branch isolation** — Each session works on a `realm/{name}` branch. Commits persist in the host's `.git`
+- **Session isolation** — Each session works independently inside the container
 - **Host stays clean** — After container exit, realm runs `git reset` to fix the host index
 
-## Quick Install
+## Install
+
+### From source (requires Rust toolchain)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yusukeshib/realm/main/install.sh | bash
+cargo install --git https://github.com/yusukeshib/realm
 ```
 
-Ensure `~/.local/bin` is in your PATH:
+### From crates.io
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"
+cargo install realm-cli
 ```
 
 ## Usage
 
 ```bash
-realm new <name> [options] [project_dir] [-- cmd...]   Create a new session
-realm resume <name> [-- cmd...]                         Resume existing session
-realm list                                               List all sessions
-realm remove <name>                                      Delete session
-realm upgrade                                            Upgrade to latest version
+realm switch                                        List all sessions
+realm switch <name> [-- cmd...]                     Resume a session
+realm switch -c <name> [options] [-- cmd...]        Create a new session
+realm remove <name>                                 Delete session
 ```
 
 ### Create a session
 
 ```bash
 # Default: alpine/git image, sh shell, current directory
-realm new my-feature
+realm switch -c my-feature
 
 # Specify a project directory
-realm new my-feature ~/projects/my-app
+realm switch -c my-feature -d ~/projects/my-app
 
 # Custom image with bash
-realm new my-feature --image ubuntu:latest -- bash
+realm switch -c my-feature --image ubuntu:latest -- bash
 
 # Build from a Dockerfile
-realm new my-feature --dockerfile ./Dockerfile -- bash
+realm switch -c my-feature --dockerfile ./Dockerfile -- bash
 
 # Custom mount path inside container
-realm new my-feature --mount /src
+realm switch -c my-feature --mount /src
+
+# -c flag works in any position
+realm switch my-feature -c --image ubuntu:latest -- bash
 ```
 
 ### Resume a session
 
 ```bash
-realm resume my-feature
+realm switch my-feature
 ```
 
-The container checks out the `realm/my-feature` branch, which has all previous commits from earlier sessions.
+The container resumes with the same configuration from the original session.
 
 ### List sessions
 
 ```bash
-realm list
+realm switch
 ```
 
 ```
@@ -78,12 +82,14 @@ test                 /Users/you/projects/other      ubuntu:latest        2026-02
 realm remove my-feature
 ```
 
-This deletes the session metadata and the `realm/my-feature` branch.
+This deletes the session metadata.
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
+| `-c` | Create a new session |
+| `-d, --dir <path>` | Project directory (default: current directory) |
 | `--image <image>` | Docker image to use (default: `alpine/git`) |
 | `--dockerfile <path>` | Build image from a Dockerfile (mutually exclusive with `--image`) |
 | `--mount <path>` | Mount path inside the container (default: `/workspace`) |
@@ -113,7 +119,7 @@ Examples:
 export REALM_DOCKERFILE=~/my-realm/Dockerfile
 
 # Pass extra Docker flags
-REALM_DOCKER_ARGS="--network host -v /data:/data:ro" realm new my-session
+REALM_DOCKER_ARGS="--network host -v /data:/data:ro" realm switch -c my-session
 ```
 
 ## Security Model
@@ -121,7 +127,7 @@ REALM_DOCKER_ARGS="--network host -v /data:/data:ro" realm new my-session
 | Aspect | Protection |
 |--------|------------|
 | Host working tree | Never modified — only `.git` is mounted |
-| Git data | Isolated on `realm/{name}` branch |
+| Git data | Container works on mounted `.git` only |
 | Container | Destroyed after each exit (`--rm`) |
 | Host index | Restored via `git reset` after container exit |
 

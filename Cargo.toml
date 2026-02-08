@@ -1,0 +1,17 @@
+[package]
+name = "realm-cli"
+version = "0.0.1"
+edition = "2021"
+
+[[bin]]
+name = "realm"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+chrono = { version = "0.4", features = ["clock"], default-features = false }
+shell-words = "1"
+
+[dev-dependencies]
+tempfile = "3"
