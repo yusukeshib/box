@@ -143,6 +143,11 @@ fn cmd_create(
     };
     session::save(&sess)?;
 
+    if let Some(ref df) = sess.dockerfile {
+        let hash = session::hash_file_contents(df);
+        session::save_dockerfile_hash(name, &hash)?;
+    }
+
     let exit_code = docker::run_container(name, &project_dir, &final_image, &mount, &cmd)?;
     git::reset_index(&project_dir);
     std::process::exit(exit_code);
@@ -162,7 +167,16 @@ fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
     let mut image = sess.image.clone();
     if let Some(ref df) = sess.dockerfile {
         if Path::new(df).exists() {
-            image = docker::build_image(name, df)?;
+            let tag = format!("realm-{}:latest", name);
+            let current_hash = session::hash_file_contents(df);
+            let saved_hash = session::load_dockerfile_hash(name);
+
+            if !docker::image_exists(&tag) || saved_hash.as_deref() != Some(&current_hash) {
+                image = docker::build_image(name, df)?;
+                session::save_dockerfile_hash(name, &current_hash)?;
+            } else {
+                image = tag;
+            }
         }
     }
 

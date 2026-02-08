@@ -156,6 +156,28 @@ pub fn remove_dir(name: &str) -> Result<()> {
     fs::remove_dir_all(&dir).context(format!("Failed to remove session directory for '{}'", name))
 }
 
+pub fn hash_file_contents(path: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let content = fs::read(path).unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+pub fn save_dockerfile_hash(name: &str, hash: &str) -> Result<()> {
+    let dir = sessions_dir().join(name);
+    fs::write(dir.join("dockerfile_hash"), hash)?;
+    Ok(())
+}
+
+pub fn load_dockerfile_hash(name: &str) -> Option<String> {
+    let dir = sessions_dir().join(name);
+    fs::read_to_string(dir.join("dockerfile_hash"))
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
 pub fn touch_resumed_at(name: &str) -> Result<()> {
     let dir = sessions_dir().join(name);
     fs::write(

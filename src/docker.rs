@@ -36,6 +36,16 @@ pub fn check() -> Result<()> {
     Ok(())
 }
 
+pub fn image_exists(tag: &str) -> bool {
+    Command::new("docker")
+        .args(["image", "inspect", tag])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 pub fn build_image(name: &str, dockerfile: &str) -> Result<String> {
     let tag = format!("realm-{}:latest", name);
 
@@ -86,6 +96,8 @@ pub fn build_run_args(
         "".into(),
         "--hostname".into(),
         format!("realm-{}", name),
+        "--tmpfs".into(),
+        format!("{}:exec,mode=1777", mount_path),
         "-v".into(),
         format!("{}/.git:{}/.git", project_dir, mount_path),
         "-w".into(),
@@ -187,17 +199,19 @@ mod tests {
         assert_eq!(args[4], "");
         assert_eq!(args[5], "--hostname");
         assert_eq!(args[6], "realm-test-session");
-        assert_eq!(args[7], "-v");
-        assert_eq!(args[8], "/home/user/project/.git:/workspace/.git");
-        assert_eq!(args[9], "-w");
-        assert_eq!(args[10], "/workspace");
+        assert_eq!(args[7], "--tmpfs");
+        assert_eq!(args[8], "/workspace:exec,mode=1777");
+        assert_eq!(args[9], "-v");
+        assert_eq!(args[10], "/home/user/project/.git:/workspace/.git");
+        assert_eq!(args[11], "-w");
+        assert_eq!(args[12], "/workspace");
         // image
-        assert_eq!(args[11], "alpine/git");
+        assert_eq!(args[13], "alpine/git");
         // shell
-        assert_eq!(args[12], "sh");
-        assert_eq!(args[13], "-c");
-        assert_eq!(args[14], "git checkout . 2>/dev/null; exec sh");
-        assert_eq!(args.len(), 15);
+        assert_eq!(args[14], "sh");
+        assert_eq!(args[15], "-c");
+        assert_eq!(args[16], "git checkout . 2>/dev/null; exec sh");
+        assert_eq!(args.len(), 17);
     }
 
     #[test]
