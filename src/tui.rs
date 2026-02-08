@@ -32,8 +32,8 @@ pub fn select_session(sessions: &[SessionSummary]) -> Result<Option<usize>> {
 
     loop {
         terminal.draw(|f| {
-            let header = Row::new(["NAME", "PROJECT", "IMAGE", "CREATED"])
-                .style(Style::default().dim());
+            let header =
+                Row::new(["NAME", "PROJECT", "IMAGE", "CREATED"]).style(Style::default().dim());
 
             let rows: Vec<Row> = sessions
                 .iter()
