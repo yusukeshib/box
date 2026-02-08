@@ -19,32 +19,20 @@ if ! docker info &>/dev/null; then
     exit 1
 fi
 
-# Download realm.sh (contains embedded Dockerfile and entrypoint.sh)
 mkdir -p "$INSTALL_DIR"
-echo "Downloading realm.sh..."
-curl -fsSL "$BASE_URL/realm.sh" -o "$INSTALL_DIR/realm.sh"
-chmod +x "$INSTALL_DIR/realm.sh"
+echo "Downloading realm..."
+curl -fsSL "$BASE_URL/realm" -o "$INSTALL_DIR/realm"
+chmod +x "$INSTALL_DIR/realm"
 
-# Note: The Docker image will be built automatically on first run
-# This allows realm.sh to manage the build and fingerprinting itself
-
-# Install to ~/.local/bin
 mkdir -p "$BIN_DIR"
-ln -sf "$INSTALL_DIR/realm.sh" "$BIN_DIR/realm"
+ln -sf "$INSTALL_DIR/realm" "$BIN_DIR/realm"
 echo "Installed to $BIN_DIR/realm"
 
 echo ""
-echo "✓ Realm installed successfully!"
+echo "Done! Make sure ~/.local/bin is in your PATH:"
+echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  IMPORTANT: Set up authentication"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "On macOS, add your API key to your shell config:"
-echo "  echo 'export ANTHROPIC_API_KEY=\"sk-ant-...\"' >> ~/.zshrc"
-echo "  source ~/.zshrc"
-echo ""
-echo "Get your API key: https://console.anthropic.com"
-echo ""
-echo "Then try: realm new my-session ~/projects/my-app"
+echo "Try it out:"
+echo "  cd ~/your-git-repo && realm new my-session"
+echo "  realm new my-session --image ubuntu:latest -- bash"
 echo ""
