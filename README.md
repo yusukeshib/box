@@ -31,9 +31,9 @@ Sandboxed Docker environments for git repos — safe playgrounds for AI coding a
 > export REALM_DEFAULT_IMAGE=mydev:authorized
 
 # Then, you can use realm for claude conveniently
-> realm new-quality-improvement -c
+> realm new-quality-improvement
 
-# you can immediately run claude 
+# you can immediately run claude
 % claude
 
 
@@ -53,7 +53,7 @@ AI coding agents (Claude Code, Cursor, Copilot) are powerful — but letting the
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/yusukeshib/realm/main/install.sh | bash
-realm my-feature -c --image ubuntu:latest -- bash
+realm my-feature --image ubuntu:latest -- bash
 # You're now in an isolated container with full git access
 ```
 
@@ -62,7 +62,7 @@ realm my-feature -c --image ubuntu:latest -- bash
 Realm is the ideal companion for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Run Claude Code inside a realm session and let it make risky changes, experiment with branches, and run tests — all fully isolated from your host.
 
 ```bash
-realm ai-experiment -c --image node:20 -- claude
+realm ai-experiment --image node:20 -- claude
 ```
 
 Everything the agent does stays inside the container. When you're done, delete the session and it's gone.
@@ -101,38 +101,35 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 
 ```bash
 realm                                               List all sessions (TUI)
-realm <name> [-- cmd...]                            Resume a session
-realm <name> -c [options] [-- cmd...]               Create a new session
+realm <name> [options] [-- cmd...]                  Create or resume a session
 realm <name> -d                                     Delete a session
 realm upgrade                                       Upgrade to latest version
 ```
 
-### Create a session
+### Create or resume a session
 
 ```bash
 # Default: alpine/git image, sh shell, current directory
-realm my-feature -c
+realm my-feature
 
-# Specify a project directory
-realm my-feature -c --dir ~/projects/my-app
+# Specify a project directory (only used when creating)
+realm my-feature --dir ~/projects/my-app
 
-# Custom image with bash
-realm my-feature -c --image ubuntu:latest -- bash
+# Custom image with bash (only used when creating)
+realm my-feature --image ubuntu:latest -- bash
 
-# Custom mount path inside container
-realm my-feature -c --mount /src
+# Custom mount path inside container (only used when creating)
+realm my-feature --mount /src
 
-# -c flag works in any position
-realm -c my-feature --image ubuntu:latest -- bash
-```
+# Environment variables (only used when creating)
+realm my-feature -e KEY=VALUE -e ANOTHER_KEY
 
-### Resume a session
-
-```bash
+# If session exists, it resumes with original configuration
+# If session doesn't exist, it creates a new one
 realm my-feature
 ```
 
-The container resumes with the same configuration from the original session.
+Sessions are automatically created if they don't exist. If a session already exists, create-time options like `--image`, `--mount`, `--dir`, and `-e` are ignored when resuming.
 
 ### List sessions
 
@@ -157,11 +154,11 @@ realm my-feature -d
 
 | Option | Description |
 |--------|-------------|
-| `-c` | Create a new session |
 | `-d` | Delete the session |
-| `--image <image>` | Docker image to use (default: `alpine/git`) |
-| `--mount <path>` | Mount path inside the container (default: `/workspace`) |
-| `--dir <path>` | Project directory (default: current directory) |
+| `--image <image>` | Docker image to use (default: `alpine/git`) - only used when creating |
+| `--mount <path>` | Mount path inside the container (default: `/workspace`) - only used when creating |
+| `--dir <path>` | Project directory (default: current directory) - only used when creating |
+| `-e, --env <KEY[=VALUE]>` | Environment variable to pass to container - only used when creating |
 
 ## Environment Variables
 

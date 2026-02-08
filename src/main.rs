@@ -13,15 +13,11 @@ use std::path::Path;
 #[command(
     name = "realm",
     about = "Sandboxed Docker environments for git repos",
-    after_help = "Commands:\n  realm upgrade    Upgrade realm to the latest version"
+    after_help = "Examples:\n  realm my-feature --image ubuntu:latest -- bash\n  realm my-feature\n  realm my-feature -d\n  realm upgrade\n\nSessions are automatically created if they don't exist."
 )]
 struct Cli {
     /// Session name
     name: Option<String>,
-
-    /// Create a new session
-    #[arg(short = 'c')]
-    create: bool,
 
     /// Delete the session
     #[arg(short = 'd')]
@@ -55,15 +51,9 @@ fn main() {
         None => cmd_list(),
         Some("upgrade") => cmd_upgrade(),
         Some(_) if cli.delete => cmd_delete(cli.name.as_deref().unwrap()),
-        Some(_) if cli.create => cmd_create(
-            cli.name.as_deref().unwrap(),
-            cli.image,
-            cli.mount_path,
-            cli.dir,
-            cli.cmd,
-            cli.env,
-        ),
-        Some(name) => cmd_resume(name, cli.cmd),
+        Some(name) => {
+            cmd_create_or_resume(name, cli.image, cli.mount_path, cli.dir, cli.cmd, cli.env)
+        }
     };
 
     if let Err(e) = result {
@@ -110,14 +100,6 @@ fn cmd_create(
         bail!("'{}' is not a git repository.", project_dir);
     }
 
-    if session::session_exists(name) {
-        bail!(
-            "Session '{}' already exists. Remove it first: realm {} -d",
-            name,
-            name
-        );
-    }
-
     docker::check()?;
 
     let cfg = config::resolve(config::RealmConfigInput {
@@ -149,6 +131,25 @@ fn cmd_create(
         &cfg.env,
     )?;
     std::process::exit(exit_code);
+}
+
+fn cmd_create_or_resume(
+    name: &str,
+    image: Option<String>,
+    mount_path: Option<String>,
+    dir: Option<String>,
+    cmd: Vec<String>,
+    env: Vec<String>,
+) -> Result<()> {
+    // Check if session exists
+    if session::session_exists(name) {
+        // Session exists - resume it
+        // Ignore create-only options (image, mount_path, dir, env) if session exists
+        return cmd_resume(name, cmd);
+    }
+
+    // Session doesn't exist - create it
+    cmd_create(name, image, mount_path, dir, cmd, env)
 }
 
 fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
@@ -324,7 +325,6 @@ mod tests {
     fn test_no_args_lists() {
         let cli = parse(&[]);
         assert!(cli.name.is_none());
-        assert!(!cli.create);
         assert!(!cli.delete);
     }
 
@@ -332,22 +332,7 @@ mod tests {
     fn test_name_only_resumes() {
         let cli = parse(&["my-session"]);
         assert_eq!(cli.name.as_deref(), Some("my-session"));
-        assert!(!cli.create);
         assert!(!cli.delete);
-    }
-
-    #[test]
-    fn test_create_flag_before_name() {
-        let cli = parse(&["-c", "my-session"]);
-        assert_eq!(cli.name.as_deref(), Some("my-session"));
-        assert!(cli.create);
-    }
-
-    #[test]
-    fn test_create_flag_after_name() {
-        let cli = parse(&["my-session", "-c"]);
-        assert_eq!(cli.name.as_deref(), Some("my-session"));
-        assert!(cli.create);
     }
 
     #[test]
@@ -366,23 +351,22 @@ mod tests {
 
     #[test]
     fn test_create_with_image() {
-        let cli = parse(&["my-session", "-c", "--image", "ubuntu:latest"]);
-        assert!(cli.create);
+        let cli = parse(&["my-session", "--image", "ubuntu:latest"]);
         assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert_eq!(cli.image.as_deref(), Some("ubuntu:latest"));
     }
 
     #[test]
     fn test_create_with_mount() {
-        let cli = parse(&["-c", "my-session", "--mount", "/src"]);
-        assert!(cli.create);
+        let cli = parse(&["my-session", "--mount", "/src"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert_eq!(cli.mount_path.as_deref(), Some("/src"));
     }
 
     #[test]
     fn test_create_with_dir() {
-        let cli = parse(&["-c", "my-session", "--dir", "/tmp/project"]);
-        assert!(cli.create);
+        let cli = parse(&["my-session", "--dir", "/tmp/project"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert_eq!(cli.dir.as_deref(), Some("/tmp/project"));
     }
 
@@ -395,15 +379,14 @@ mod tests {
 
     #[test]
     fn test_create_with_command() {
-        let cli = parse(&["-c", "my-session", "--", "bash"]);
-        assert!(cli.create);
+        let cli = parse(&["my-session", "--", "bash"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert_eq!(cli.cmd, vec!["bash"]);
     }
 
     #[test]
     fn test_create_all_options() {
         let cli = parse(&[
-            "-c",
             "full-session",
             "--image",
             "python:3.11",
@@ -415,7 +398,6 @@ mod tests {
             "python",
             "main.py",
         ]);
-        assert!(cli.create);
         assert_eq!(cli.name.as_deref(), Some("full-session"));
         assert_eq!(cli.image.as_deref(), Some("python:3.11"));
         assert_eq!(cli.mount_path.as_deref(), Some("/app"));
@@ -431,36 +413,30 @@ mod tests {
     }
 
     #[test]
-    fn test_create_flag_at_end_with_options() {
-        let cli = parse(&["test-session", "--image", "ubuntu:latest", "-c"]);
-        assert!(cli.create);
-        assert_eq!(cli.name.as_deref(), Some("test-session"));
-        assert_eq!(cli.image.as_deref(), Some("ubuntu:latest"));
-    }
-
-    #[test]
     fn test_env_single() {
-        let cli = parse(&["my-session", "-c", "-e", "FOO=bar"]);
-        assert!(cli.create);
+        let cli = parse(&["my-session", "-e", "FOO=bar"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert_eq!(cli.env, vec!["FOO=bar"]);
     }
 
     #[test]
     fn test_env_multiple() {
-        let cli = parse(&["my-session", "-c", "-e", "FOO", "-e", "BAR=baz"]);
-        assert!(cli.create);
+        let cli = parse(&["my-session", "-e", "FOO", "-e", "BAR=baz"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert_eq!(cli.env, vec!["FOO", "BAR=baz"]);
     }
 
     #[test]
     fn test_env_long_flag() {
-        let cli = parse(&["my-session", "-c", "--env", "KEY=val"]);
+        let cli = parse(&["my-session", "--env", "KEY=val"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert_eq!(cli.env, vec!["KEY=val"]);
     }
 
     #[test]
     fn test_env_empty_by_default() {
-        let cli = parse(&["my-session", "-c"]);
+        let cli = parse(&["my-session"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert!(cli.env.is_empty());
     }
 }
