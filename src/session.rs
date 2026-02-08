@@ -3,8 +3,7 @@ use chrono::Utc;
 use std::fs;
 use std::path::PathBuf;
 
-pub const DEFAULT_IMAGE: &str = "alpine/git";
-pub const DEFAULT_MOUNT: &str = "/workspace";
+use crate::config;
 
 #[derive(Debug)]
 pub struct Session {
@@ -84,11 +83,11 @@ pub fn load(name: &str) -> Result<Session> {
 
     let image = fs::read_to_string(dir.join("image"))
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| DEFAULT_IMAGE.to_string());
+        .unwrap_or_else(|_| config::DEFAULT_IMAGE.to_string());
 
     let mount_path = fs::read_to_string(dir.join("mount_path"))
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| DEFAULT_MOUNT.to_string());
+        .unwrap_or_else(|_| config::derive_mount_path(&project_dir));
 
     let dockerfile = fs::read_to_string(dir.join("dockerfile"))
         .ok()
@@ -349,8 +348,8 @@ mod tests {
             // Don't write image or mount_path
 
             let loaded = load("minimal").unwrap();
-            assert_eq!(loaded.image, DEFAULT_IMAGE);
-            assert_eq!(loaded.mount_path, DEFAULT_MOUNT);
+            assert_eq!(loaded.image, config::DEFAULT_IMAGE);
+            assert_eq!(loaded.mount_path, config::derive_mount_path("/tmp/project"));
         });
     }
 

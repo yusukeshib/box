@@ -1,3 +1,4 @@
+mod config;
 mod docker;
 mod git;
 mod session;
@@ -34,7 +35,7 @@ struct Cli {
     #[arg(long, env = "REALM_DOCKERFILE", conflicts_with = "image")]
     dockerfile: Option<String>,
 
-    /// Mount path inside container (default: /workspace)
+    /// Mount path inside container (default: /<dir-name>)
     #[arg(long = "mount")]
     mount_path: Option<String>,
 
@@ -119,7 +120,7 @@ fn cmd_create(
 
     docker::check()?;
 
-    let mut final_image = image.unwrap_or_else(|| session::DEFAULT_IMAGE.to_string());
+    let mut resolved_image = image;
     let mut final_dockerfile: Option<String> = None;
 
     if let Some(df) = dockerfile {
@@ -127,19 +128,27 @@ fn cmd_create(
             .map_err(|_| anyhow::anyhow!("Dockerfile '{}' not found.", df))?
             .to_string_lossy()
             .to_string();
-        final_image = docker::build_image(name, &canonical)?;
+        let built_image = docker::build_image(name, &canonical)?;
+        resolved_image = Some(built_image);
         final_dockerfile = Some(canonical);
     }
 
-    let mount = mount_path.unwrap_or_else(|| session::DEFAULT_MOUNT.to_string());
+    let cfg = config::resolve(config::RealmConfigInput {
+        name: name.to_string(),
+        image: resolved_image,
+        dockerfile: final_dockerfile,
+        mount_path,
+        project_dir,
+        command: cmd,
+    });
 
     let sess = session::Session {
-        name: name.to_string(),
-        project_dir: project_dir.clone(),
-        image: final_image.clone(),
-        mount_path: mount.clone(),
-        dockerfile: final_dockerfile,
-        command: cmd.clone(),
+        name: cfg.name.clone(),
+        project_dir: cfg.project_dir.clone(),
+        image: cfg.image.clone(),
+        mount_path: cfg.mount_path.clone(),
+        dockerfile: cfg.dockerfile.clone(),
+        command: cfg.command.clone(),
     };
     session::save(&sess)?;
 
@@ -148,8 +157,14 @@ fn cmd_create(
         session::save_dockerfile_hash(name, &hash)?;
     }
 
-    let exit_code = docker::run_container(name, &project_dir, &final_image, &mount, &cmd)?;
-    git::reset_index(&project_dir);
+    let exit_code = docker::run_container(
+        name,
+        &cfg.project_dir,
+        &cfg.image,
+        &cfg.mount_path,
+        &cfg.command,
+    )?;
+    git::reset_index(&cfg.project_dir);
     std::process::exit(exit_code);
 }
 
