@@ -40,7 +40,7 @@ pub fn derive_mount_path(project_dir: &str) -> String {
         return "/workspace".to_string();
     }
     match trimmed.rsplit('/').next() {
-        Some(name) if !name.is_empty() => format!("/{}", name),
+        Some(name) if !name.is_empty() => format!("/workspace/{}", name),
         _ => "/workspace".to_string(),
     }
 }
@@ -51,12 +51,15 @@ mod tests {
 
     #[test]
     fn test_derive_mount_path_normal() {
-        assert_eq!(derive_mount_path("/home/user/realm"), "/realm");
+        assert_eq!(derive_mount_path("/home/user/realm"), "/workspace/realm");
     }
 
     #[test]
     fn test_derive_mount_path_nested() {
-        assert_eq!(derive_mount_path("/home/user/projects/myapp"), "/myapp");
+        assert_eq!(
+            derive_mount_path("/home/user/projects/myapp"),
+            "/workspace/myapp"
+        );
     }
 
     #[test]
@@ -66,12 +69,12 @@ mod tests {
 
     #[test]
     fn test_derive_mount_path_trailing_slash() {
-        assert_eq!(derive_mount_path("/home/user/realm/"), "/realm");
+        assert_eq!(derive_mount_path("/home/user/realm/"), "/workspace/realm");
     }
 
     #[test]
     fn test_derive_mount_path_single_component() {
-        assert_eq!(derive_mount_path("/myproject"), "/myproject");
+        assert_eq!(derive_mount_path("/myproject"), "/workspace/myproject");
     }
 
     #[test]
@@ -91,7 +94,7 @@ mod tests {
                 name: "test".to_string(),
                 project_dir: "/home/user/myproject".to_string(),
                 image: DEFAULT_IMAGE.to_string(),
-                mount_path: "/myproject".to_string(),
+                mount_path: "/workspace/myproject".to_string(),
 
                 command: vec![],
             }
