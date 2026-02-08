@@ -86,6 +86,7 @@ run_container() {
     DOCKER_ARGS=(
         --rm -it
         --entrypoint ""
+        --hostname "realm-${name}"
         -v "${project_dir}/.git:${mount_path}/.git"
         -w "$mount_path"
     )
