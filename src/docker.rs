@@ -2,33 +2,21 @@ use anyhow::{bail, Result};
 use std::path::Path;
 use std::process::Command;
 
-const ENTRYPOINT_SCRIPT: &str = "#!/bin/sh\nif [ ! -f /tmp/.realm-initialized ]; then\n    git reset --hard HEAD 2>/dev/null\n    touch /tmp/.realm-initialized\nfi\nexec \"$@\"\n";
-
-/// Ensure ~/.realm/entrypoint.sh exists with the correct content.
-pub fn ensure_entrypoint() -> Result<String> {
-    let home = std::env::var("HOME").unwrap_or_default();
-    let dir = format!("{}/.realm", home);
-    let path = format!("{}/entrypoint.sh", dir);
-
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(&path, ENTRYPOINT_SCRIPT)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&path)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms)?;
-    }
-
-    Ok(path)
-}
-
 /// Create a workspace directory on the host for the session.
+/// On first run, clones the project repo via `git clone --local`.
 /// Returns the host path. The directory is world-writable so any container user can write.
-pub fn ensure_workspace(home: &str, name: &str) -> Result<String> {
+pub fn ensure_workspace(home: &str, name: &str, project_dir: &str) -> Result<String> {
     let dir = format!("{}/.realm/workspaces/{}", home, name);
-    std::fs::create_dir_all(&dir)?;
+    let git_dir = format!("{}/.git", dir);
+
+    if !Path::new(&git_dir).exists() {
+        let status = Command::new("git")
+            .args(["clone", "--local", project_dir, &dir])
+            .status()?;
+        if !status.success() {
+            bail!("git clone --local failed");
+        }
+    }
 
     #[cfg(unix)]
     {
@@ -86,7 +74,6 @@ pub fn check() -> Result<()> {
 #[allow(clippy::too_many_arguments)]
 pub fn build_run_args(
     name: &str,
-    project_dir: &str,
     image: &str,
     mount_path: &str,
     cmd: &[String],
@@ -105,8 +92,6 @@ pub fn build_run_args(
         format!("realm-{}", name),
         "-v".into(),
         format!("{}:{}", workspace_dir, mount_path),
-        "-v".into(),
-        format!("{}/.git:{}/.git", project_dir, mount_path),
         "-w".into(),
         mount_path.into(),
     ];
@@ -155,12 +140,10 @@ pub fn run_container(
     let gitconfig_exists = Path::new(&gitconfig).exists();
     let docker_args_env = std::env::var("REALM_DOCKER_ARGS").ok();
 
-    let entrypoint_path = ensure_entrypoint()?;
-    ensure_workspace(&home, name)?;
+    ensure_workspace(&home, name, project_dir)?;
 
-    let mut args = build_run_args(
+    let args = build_run_args(
         name,
-        project_dir,
         image,
         mount_path,
         cmd,
@@ -169,21 +152,6 @@ pub fn run_container(
         gitconfig_exists,
         docker_args_env.as_deref(),
     )?;
-
-    // Insert entrypoint-related flags just before the image name.
-    // The image is always followed by optional command args at the end.
-    let image_pos = args.iter().position(|a| a == image).unwrap();
-    let entrypoint_flags = vec![
-        "-e".into(),
-        "GIT_INDEX_FILE=/tmp/realm-index".into(),
-        "-v".into(),
-        format!("{}:/entrypoint.sh:ro", entrypoint_path),
-        "--entrypoint".into(),
-        "/entrypoint.sh".into(),
-    ];
-    for (i, flag) in entrypoint_flags.into_iter().enumerate() {
-        args.insert(image_pos + i, flag);
-    }
 
     let status = Command::new("docker")
         .args(&args)
@@ -232,7 +200,6 @@ mod tests {
     fn test_build_run_args_basic() {
         let args = build_run_args(
             "test-session",
-            "/home/user/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -254,13 +221,11 @@ mod tests {
             args[7],
             "/home/user/.realm/workspaces/test-session:/workspace"
         );
-        assert_eq!(args[8], "-v");
-        assert_eq!(args[9], "/home/user/project/.git:/workspace/.git");
-        assert_eq!(args[10], "-w");
-        assert_eq!(args[11], "/workspace");
+        assert_eq!(args[8], "-w");
+        assert_eq!(args[9], "/workspace");
         // image
-        assert_eq!(args[12], "alpine/git");
-        assert_eq!(args.len(), 13);
+        assert_eq!(args[10], "alpine/git");
+        assert_eq!(args.len(), 11);
     }
 
     #[test]
@@ -268,7 +233,6 @@ mod tests {
         let cmd = vec!["bash".to_string()];
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "ubuntu:latest",
             "/workspace",
             &cmd,
@@ -290,7 +254,6 @@ mod tests {
         let cmd = vec!["python".to_string(), "-m".to_string(), "pytest".to_string()];
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "python:3.11",
             "/app",
             &cmd,
@@ -312,7 +275,6 @@ mod tests {
     fn test_build_run_args_with_gitconfig() {
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -331,7 +293,6 @@ mod tests {
     fn test_build_run_args_without_gitconfig() {
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -349,7 +310,6 @@ mod tests {
     fn test_build_run_args_with_docker_args_env() {
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -369,7 +329,6 @@ mod tests {
     fn test_build_run_args_docker_args_with_quotes() {
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -388,7 +347,6 @@ mod tests {
     fn test_build_run_args_empty_docker_args() {
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -407,7 +365,6 @@ mod tests {
     fn test_build_run_args_invalid_docker_args() {
         let result = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -428,7 +385,6 @@ mod tests {
     fn test_build_run_args_custom_mount_path() {
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/src",
             &[],
@@ -439,7 +395,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(args.contains(&"/tmp/project/.git:/src/.git".to_string()));
+        assert!(args.contains(&"/home/user/.realm/workspaces/sess:/src".to_string()));
         assert!(args.contains(&"/src".to_string()));
     }
 
@@ -447,7 +403,6 @@ mod tests {
     fn test_build_run_args_hostname() {
         let args = build_run_args(
             "my-session",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -465,7 +420,6 @@ mod tests {
     fn test_build_run_args_no_rm_flag() {
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -483,7 +437,6 @@ mod tests {
     fn test_build_run_args_has_name() {
         let args = build_run_args(
             "my-session",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -503,7 +456,6 @@ mod tests {
         let env = vec!["FOO=bar".to_string(), "BAZ".to_string()];
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
@@ -531,7 +483,6 @@ mod tests {
     fn test_build_run_args_empty_env() {
         let args = build_run_args(
             "sess",
-            "/tmp/project",
             "alpine/git",
             "/workspace",
             &[],
