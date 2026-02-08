@@ -1,6 +1,8 @@
 {
+  description = "realm-cli: A command-line interface for Realm, a database for mobile applications.";
+
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
@@ -8,13 +10,36 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+
+        realm = pkgs.rustPlatform.buildRustPackage {
+          pname = "realm";
+          version = "0.0.3";
+
+          src = ./.;
+
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+          };
+
+          doCheck = false; # Integration tests require Nix runtime
+
+          meta = with pkgs.lib; {
+            description = "Homebrew-style wrapper for Nix using flake.nix";
+            homepage = "https://github.com/yusukeshib/realm";
+            license = licenses.mit;
+            maintainers = [];
+            mainProgram = "realm";
+          };
+        };
       in
       {
-        packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "realm-cli";
-          version = "0.0.1";
-          src = ./.;
-          cargoLock.lockFile = ./Cargo.lock;
+        packages = {
+          default = realm;
+          realm = realm;
+        };
+
+        apps.default = flake-utils.lib.mkApp {
+          drv = realm;
         };
 
         devShells.default = pkgs.mkShell {
@@ -25,5 +50,6 @@
             clippy
           ];
         };
-      });
+      }
+    );
 }
