@@ -16,6 +16,22 @@ pub fn ensure_workspace(home: &str, name: &str, project_dir: &str) -> Result<Str
         if !status.success() {
             bail!("git clone --local failed");
         }
+
+        // git clone --local sets origin to the host path, which won't exist
+        // inside the container. Re-point origin to the real remote URL.
+        if let Ok(output) = Command::new("git")
+            .args(["-C", project_dir, "remote", "get-url", "origin"])
+            .output()
+        {
+            if output.status.success() {
+                let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !url.is_empty() {
+                    let _ = Command::new("git")
+                        .args(["-C", &dir, "remote", "set-url", "origin", &url])
+                        .status();
+                }
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -73,6 +89,13 @@ pub fn check() -> Result<()> {
 const SSH_CONTAINER_PATH: &str = "/run/host-services/ssh-auth.sock";
 
 /// Return (host_path, container_path) for SSH agent forwarding.
+///
+/// On macOS, both Docker Desktop and OrbStack expose a magic VM-internal socket
+/// at `/run/host-services/ssh-auth.sock` that forwards to the host SSH agent.
+/// Mounting the raw host socket (e.g. 1Password's) does NOT work because Unix
+/// sockets cannot cross the VM boundary.
+///
+/// On Linux, the host socket from `SSH_AUTH_SOCK` is used directly.
 fn ssh_agent_paths() -> Result<(String, String)> {
     if cfg!(target_os = "macos") {
         Ok((
@@ -85,6 +108,32 @@ fn ssh_agent_paths() -> Result<(String, String)> {
         })?;
         Ok((host, SSH_CONTAINER_PATH.to_string()))
     }
+}
+
+/// Fix SSH agent socket permissions for non-root container users.
+///
+/// OrbStack sets restrictive permissions (0660) on the forwarded SSH agent socket,
+/// which prevents non-root container users from accessing it. This runs a one-shot
+/// container as root to make the socket world-accessible. Silently ignored if it fails.
+fn fix_ssh_socket_permissions(image: &str) {
+    let mount = format!("{p}:{p}", p = SSH_CONTAINER_PATH);
+    let _ = Command::new("docker")
+        .args([
+            "run",
+            "--rm",
+            "--user",
+            "root",
+            "--entrypoint",
+            "chmod",
+            "-v",
+            &mount,
+            image,
+            "666",
+            SSH_CONTAINER_PATH,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 /// Build the docker run argument list without executing. Used by run_container and tests.
@@ -168,6 +217,10 @@ pub fn run_container(
     let docker_args_env = std::env::var("REALM_DOCKER_ARGS").ok();
 
     ensure_workspace(&home, name, project_dir)?;
+
+    if ssh && cfg!(target_os = "macos") {
+        fix_ssh_socket_permissions(image);
+    }
 
     let args = build_run_args(
         name,
@@ -538,5 +591,41 @@ mod tests {
 
         // No -e flags should be present
         assert!(!args.iter().any(|a| a == "-e"));
+    }
+
+    #[test]
+    fn test_build_run_args_with_ssh() {
+        let args = build_run_args(
+            "sess",
+            "alpine/git",
+            "/workspace",
+            &[],
+            &[],
+            "/home/user",
+            false,
+            None,
+            true,
+        )
+        .unwrap();
+
+        // Should have volume mount for the SSH socket
+        let vol_mount = format!("{}:{}", SSH_CONTAINER_PATH, SSH_CONTAINER_PATH);
+        let vol_pos = args
+            .iter()
+            .position(|a| a.contains("ssh-auth.sock"))
+            .expect("SSH socket volume mount not found");
+        assert_eq!(args[vol_pos - 1], "-v");
+        assert_eq!(args[vol_pos], vol_mount);
+
+        // Should have SSH_AUTH_SOCK env var
+        let env_pos = args
+            .iter()
+            .position(|a| a.starts_with("SSH_AUTH_SOCK="))
+            .expect("SSH_AUTH_SOCK env var not found");
+        assert_eq!(args[env_pos - 1], "-e");
+        assert_eq!(
+            args[env_pos],
+            format!("SSH_AUTH_SOCK={}", SSH_CONTAINER_PATH)
+        );
     }
 }
