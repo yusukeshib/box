@@ -36,46 +36,6 @@ pub fn check() -> Result<()> {
     Ok(())
 }
 
-pub fn image_exists(tag: &str) -> bool {
-    Command::new("docker")
-        .args(["image", "inspect", tag])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-pub fn build_image(name: &str, dockerfile: &str) -> Result<String> {
-    let tag = format!("realm-{}:latest", name);
-
-    let dockerfile_path = Path::new(dockerfile);
-    if !dockerfile_path.exists() {
-        bail!("Dockerfile '{}' not found.", dockerfile);
-    }
-
-    let context_dir = dockerfile_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_string_lossy()
-        .to_string();
-
-    eprintln!("Building image from {}...", dockerfile);
-
-    let status = Command::new("docker")
-        .args(["build", "-t", &tag, "-f", dockerfile, &context_dir])
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()?;
-
-    if !status.success() {
-        bail!("Docker build failed.");
-    }
-
-    Ok(tag)
-}
-
 /// Build the docker run argument list without executing. Used by run_container and tests.
 #[allow(clippy::too_many_arguments)]
 pub fn build_run_args(
@@ -402,17 +362,4 @@ mod tests {
         assert!(args.contains(&"realm-my-session".to_string()));
     }
 
-    #[test]
-    fn test_build_image_nonexistent_dockerfile() {
-        let err = build_image("test", "/nonexistent/Dockerfile").unwrap_err();
-        assert!(err.to_string().contains("Dockerfile"));
-        assert!(err.to_string().contains("not found"));
-    }
-
-    #[test]
-    fn test_build_image_tag_format() {
-        // We can't actually run docker build in tests, but verify the tag format
-        let tag = format!("realm-{}:latest", "my-session");
-        assert_eq!(tag, "realm-my-session:latest");
-    }
 }

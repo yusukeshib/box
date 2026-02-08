@@ -11,7 +11,6 @@ pub struct Session {
     pub project_dir: String,
     pub image: String,
     pub mount_path: String,
-    pub dockerfile: Option<String>,
     pub command: Vec<String>,
 }
 
@@ -58,9 +57,6 @@ pub fn save(session: &Session) -> Result<()> {
         dir.join("created_at"),
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
     )?;
-    if let Some(ref dockerfile) = session.dockerfile {
-        fs::write(dir.join("dockerfile"), dockerfile)?;
-    }
     if !session.command.is_empty() {
         let content: Vec<&str> = session.command.iter().map(|s| s.as_str()).collect();
         fs::write(dir.join("command"), content.join("\n") + "\n")?;
@@ -89,10 +85,6 @@ pub fn load(name: &str) -> Result<Session> {
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| config::derive_mount_path(&project_dir));
 
-    let dockerfile = fs::read_to_string(dir.join("dockerfile"))
-        .ok()
-        .map(|s| s.trim().to_string());
-
     let command = fs::read_to_string(dir.join("command"))
         .map(|s| {
             s.lines()
@@ -107,7 +99,6 @@ pub fn load(name: &str) -> Result<Session> {
         project_dir,
         image,
         mount_path,
-        dockerfile,
         command,
     })
 }
@@ -153,28 +144,6 @@ pub fn list() -> Result<Vec<SessionSummary>> {
 pub fn remove_dir(name: &str) -> Result<()> {
     let dir = sessions_dir().join(name);
     fs::remove_dir_all(&dir).context(format!("Failed to remove session directory for '{}'", name))
-}
-
-pub fn hash_file_contents(path: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let content = fs::read(path).unwrap_or_default();
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
-}
-
-pub fn save_dockerfile_hash(name: &str, hash: &str) -> Result<()> {
-    let dir = sessions_dir().join(name);
-    fs::write(dir.join("dockerfile_hash"), hash)?;
-    Ok(())
-}
-
-pub fn load_dockerfile_hash(name: &str) -> Option<String> {
-    let dir = sessions_dir().join(name);
-    fs::read_to_string(dir.join("dockerfile_hash"))
-        .ok()
-        .map(|s| s.trim().to_string())
 }
 
 pub fn touch_resumed_at(name: &str) -> Result<()> {
@@ -253,7 +222,7 @@ mod tests {
                 project_dir: "/tmp/myproject".to_string(),
                 image: "ubuntu:latest".to_string(),
                 mount_path: "/workspace".to_string(),
-                dockerfile: None,
+
                 command: vec![],
             };
             save(&sess).unwrap();
@@ -263,20 +232,18 @@ mod tests {
             assert_eq!(loaded.project_dir, "/tmp/myproject");
             assert_eq!(loaded.image, "ubuntu:latest");
             assert_eq!(loaded.mount_path, "/workspace");
-            assert!(loaded.dockerfile.is_none());
             assert!(loaded.command.is_empty());
         });
     }
 
     #[test]
-    fn test_save_and_load_with_dockerfile_and_command() {
+    fn test_save_and_load_with_command() {
         with_temp_home(|_| {
             let sess = Session {
                 name: "full-session".to_string(),
                 project_dir: "/tmp/project".to_string(),
                 image: "realm-full:latest".to_string(),
                 mount_path: "/src".to_string(),
-                dockerfile: Some("/tmp/Dockerfile".to_string()),
                 command: vec![
                     "bash".to_string(),
                     "-c".to_string(),
@@ -286,7 +253,6 @@ mod tests {
             save(&sess).unwrap();
 
             let loaded = load("full-session").unwrap();
-            assert_eq!(loaded.dockerfile.as_deref(), Some("/tmp/Dockerfile"));
             assert_eq!(loaded.command, vec!["bash", "-c", "echo hello"]);
         });
     }
@@ -299,7 +265,7 @@ mod tests {
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine/git".to_string(),
                 mount_path: "/workspace".to_string(),
-                dockerfile: None,
+
                 command: vec![],
             };
             save(&sess).unwrap();
@@ -309,7 +275,6 @@ mod tests {
             assert!(dir.join("image").exists());
             assert!(dir.join("mount_path").exists());
             assert!(dir.join("created_at").exists());
-            assert!(!dir.join("dockerfile").exists());
             assert!(!dir.join("command").exists());
 
             let created = fs::read_to_string(dir.join("created_at")).unwrap();
@@ -363,7 +328,7 @@ mod tests {
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine/git".to_string(),
                 mount_path: "/workspace".to_string(),
-                dockerfile: None,
+
                 command: vec![],
             };
             save(&sess).unwrap();
@@ -388,7 +353,7 @@ mod tests {
                     project_dir: format!("/tmp/{}", name),
                     image: "alpine/git".to_string(),
                     mount_path: "/workspace".to_string(),
-                    dockerfile: None,
+    
                     command: vec![],
                 };
                 save(&sess).unwrap();
@@ -411,7 +376,7 @@ mod tests {
                 project_dir: "/home/user/project".to_string(),
                 image: "ubuntu:22.04".to_string(),
                 mount_path: "/workspace".to_string(),
-                dockerfile: None,
+
                 command: vec![],
             };
             save(&sess).unwrap();
@@ -432,7 +397,7 @@ mod tests {
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine/git".to_string(),
                 mount_path: "/workspace".to_string(),
-                dockerfile: None,
+
                 command: vec![],
             };
             save(&sess).unwrap();
@@ -459,7 +424,7 @@ mod tests {
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine/git".to_string(),
                 mount_path: "/workspace".to_string(),
-                dockerfile: None,
+
                 command: vec![],
             };
             save(&sess).unwrap();
@@ -496,7 +461,7 @@ mod tests {
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine/git".to_string(),
                 mount_path: "/workspace".to_string(),
-                dockerfile: None,
+
                 command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
             };
             save(&sess).unwrap();

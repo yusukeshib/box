@@ -16,7 +16,7 @@ AI coding agents (Claude Code, Cursor, Copilot) are powerful — but letting the
 - **AI agents can experiment freely** — commit, branch, rewrite, break things — your working tree is untouched
 - **Zero cleanup** — the container is destroyed on exit
 - **Named sessions** — resume where you left off, run multiple experiments in parallel
-- **Bring your own toolchain** — works with any Docker image or Dockerfile
+- **Bring your own toolchain** — works with any Docker image
 
 ## Quick Start
 
@@ -32,12 +32,6 @@ Realm is the ideal companion for [Claude Code](https://docs.anthropic.com/en/doc
 
 ```bash
 realm ai-experiment -c --image node:20 -- claude
-```
-
-If your project needs specific tools, point realm at a Dockerfile:
-
-```bash
-realm ai-experiment -c --dockerfile ./Dockerfile -- claude
 ```
 
 Everything the agent does stays inside the container. When you're done, delete the session and it's gone.
@@ -94,9 +88,6 @@ realm my-feature -c --dir ~/projects/my-app
 # Custom image with bash
 realm my-feature -c --image ubuntu:latest -- bash
 
-# Build from a Dockerfile
-realm my-feature -c --dockerfile ./Dockerfile -- bash
-
 # Custom mount path inside container
 realm my-feature -c --mount /src
 
@@ -138,7 +129,6 @@ realm my-feature -d
 | `-c` | Create a new session |
 | `-d` | Delete the session |
 | `--image <image>` | Docker image to use (default: `alpine/git`) |
-| `--dockerfile <path>` | Build image from a Dockerfile (mutually exclusive with `--image`) |
 | `--mount <path>` | Mount path inside the container (default: `/workspace`) |
 | `--dir <path>` | Project directory (default: current directory) |
 
@@ -146,13 +136,9 @@ realm my-feature -d
 
 | Variable | Description |
 |----------|-------------|
-| `REALM_DOCKERFILE` | Default Dockerfile path (same as `--dockerfile`) |
 | `REALM_DOCKER_ARGS` | Extra Docker flags (e.g., `--network host`, additional `-v` mounts) |
 
 ```bash
-# Always use your custom Dockerfile
-export REALM_DOCKERFILE=~/my-realm/Dockerfile
-
 # Pass extra Docker flags
 REALM_DOCKER_ARGS="--network host -v /data:/data:ro" realm my-session -c
 ```

@@ -6,14 +6,12 @@ pub struct RealmConfig {
     pub project_dir: String,
     pub image: String,
     pub mount_path: String,
-    pub dockerfile: Option<String>,
     pub command: Vec<String>,
 }
 
 pub struct RealmConfigInput {
     pub name: String,
     pub image: Option<String>,
-    pub dockerfile: Option<String>,
     pub mount_path: Option<String>,
     pub project_dir: String,
     pub command: Vec<String>,
@@ -30,7 +28,6 @@ pub fn resolve(input: RealmConfigInput) -> RealmConfig {
         project_dir: input.project_dir,
         image,
         mount_path,
-        dockerfile: input.dockerfile,
         command: input.command,
     }
 }
@@ -80,7 +77,7 @@ mod tests {
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
             image: None,
-            dockerfile: None,
+
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: vec![],
@@ -93,7 +90,7 @@ mod tests {
                 project_dir: "/home/user/myproject".to_string(),
                 image: DEFAULT_IMAGE.to_string(),
                 mount_path: "/myproject".to_string(),
-                dockerfile: None,
+    
                 command: vec![],
             }
         );
@@ -104,7 +101,7 @@ mod tests {
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
             image: None,
-            dockerfile: None,
+
             mount_path: Some("/custom".to_string()),
             project_dir: "/home/user/myproject".to_string(),
             command: vec![],
@@ -118,7 +115,7 @@ mod tests {
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
             image: Some("ubuntu:latest".to_string()),
-            dockerfile: None,
+
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: vec![],
@@ -132,7 +129,6 @@ mod tests {
         let config = resolve(RealmConfigInput {
             name: "full".to_string(),
             image: Some("python:3.11".to_string()),
-            dockerfile: Some("/tmp/Dockerfile".to_string()),
             mount_path: Some("/app".to_string()),
             project_dir: "/home/user/project".to_string(),
             command: vec!["python".to_string(), "main.py".to_string()],
@@ -145,7 +141,6 @@ mod tests {
                 project_dir: "/home/user/project".to_string(),
                 image: "python:3.11".to_string(),
                 mount_path: "/app".to_string(),
-                dockerfile: Some("/tmp/Dockerfile".to_string()),
                 command: vec!["python".to_string(), "main.py".to_string()],
             }
         );

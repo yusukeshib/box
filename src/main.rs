@@ -28,12 +28,8 @@ struct Cli {
     delete: bool,
 
     /// Docker image to use (default: alpine/git)
-    #[arg(long, conflicts_with = "dockerfile")]
+    #[arg(long)]
     image: Option<String>,
-
-    /// Build image from Dockerfile (or set REALM_DOCKERFILE)
-    #[arg(long, env = "REALM_DOCKERFILE", conflicts_with = "image")]
-    dockerfile: Option<String>,
 
     /// Mount path inside container (default: /<dir-name>)
     #[arg(long = "mount")]
@@ -58,7 +54,6 @@ fn main() {
         Some(_) if cli.create => cmd_create(
             cli.name.as_deref().unwrap(),
             cli.image,
-            cli.dockerfile,
             cli.mount_path,
             cli.dir,
             cli.cmd,
@@ -88,7 +83,6 @@ fn cmd_list() -> Result<()> {
 fn cmd_create(
     name: &str,
     image: Option<String>,
-    dockerfile: Option<String>,
     mount_path: Option<String>,
     dir: Option<String>,
     cmd: Vec<String>,
@@ -120,23 +114,9 @@ fn cmd_create(
 
     docker::check()?;
 
-    let mut resolved_image = image;
-    let mut final_dockerfile: Option<String> = None;
-
-    if let Some(df) = dockerfile {
-        let canonical = fs::canonicalize(&df)
-            .map_err(|_| anyhow::anyhow!("Dockerfile '{}' not found.", df))?
-            .to_string_lossy()
-            .to_string();
-        let built_image = docker::build_image(name, &canonical)?;
-        resolved_image = Some(built_image);
-        final_dockerfile = Some(canonical);
-    }
-
     let cfg = config::resolve(config::RealmConfigInput {
         name: name.to_string(),
-        image: resolved_image,
-        dockerfile: final_dockerfile,
+        image,
         mount_path,
         project_dir,
         command: cmd,
@@ -147,15 +127,9 @@ fn cmd_create(
         project_dir: cfg.project_dir.clone(),
         image: cfg.image.clone(),
         mount_path: cfg.mount_path.clone(),
-        dockerfile: cfg.dockerfile.clone(),
         command: cfg.command.clone(),
     };
     session::save(&sess)?;
-
-    if let Some(ref df) = sess.dockerfile {
-        let hash = session::hash_file_contents(df);
-        session::save_dockerfile_hash(name, &hash)?;
-    }
 
     let exit_code = docker::run_container(
         name,
@@ -179,22 +153,6 @@ fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
 
     docker::check()?;
 
-    let mut image = sess.image.clone();
-    if let Some(ref df) = sess.dockerfile {
-        if Path::new(df).exists() {
-            let tag = format!("realm-{}:latest", name);
-            let current_hash = session::hash_file_contents(df);
-            let saved_hash = session::load_dockerfile_hash(name);
-
-            if !docker::image_exists(&tag) || saved_hash.as_deref() != Some(&current_hash) {
-                image = docker::build_image(name, df)?;
-                session::save_dockerfile_hash(name, &current_hash)?;
-            } else {
-                image = tag;
-            }
-        }
-    }
-
     println!("Resuming session '{}'...", name);
     session::touch_resumed_at(name)?;
 
@@ -207,7 +165,7 @@ fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
     let exit_code = docker::run_container(
         name,
         &sess.project_dir,
-        &image,
+        &sess.image,
         &sess.mount_path,
         &final_cmd,
     )?;
@@ -340,25 +298,11 @@ fn cmd_delete(name: &str) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
-    use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    /// Helper to parse CLI args with REALM_DOCKERFILE cleared.
     fn parse(args: &[&str]) -> Cli {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let old_val = std::env::var("REALM_DOCKERFILE").ok();
-        std::env::remove_var("REALM_DOCKERFILE");
-
         let mut full_args = vec!["realm"];
         full_args.extend_from_slice(args);
-        let cli = Cli::try_parse_from(full_args).unwrap();
-
-        if let Some(v) = old_val {
-            std::env::set_var("REALM_DOCKERFILE", v);
-        }
-
-        cli
+        Cli::try_parse_from(full_args).unwrap()
     }
 
     #[test]
@@ -462,28 +406,6 @@ mod tests {
         assert_eq!(cli.mount_path.as_deref(), Some("/app"));
         assert_eq!(cli.dir.as_deref(), Some("/tmp/project"));
         assert_eq!(cli.cmd, vec!["python", "main.py"]);
-    }
-
-    #[test]
-    fn test_image_dockerfile_conflict() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let old_val = std::env::var("REALM_DOCKERFILE").ok();
-        std::env::remove_var("REALM_DOCKERFILE");
-
-        let result = Cli::try_parse_from([
-            "realm",
-            "-c",
-            "test",
-            "--image",
-            "foo",
-            "--dockerfile",
-            "bar",
-        ]);
-        assert!(result.is_err());
-
-        if let Some(v) = old_val {
-            std::env::set_var("REALM_DOCKERFILE", v);
-        }
     }
 
     #[test]
