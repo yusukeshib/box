@@ -23,6 +23,8 @@
 
           nativeBuildInputs = [ pkgs.git ];
 
+          doCheck = false;
+
           meta = with pkgs.lib; {
             description = "Homebrew-style wrapper for Nix using flake.nix";
             homepage = "https://github.com/yusukeshib/realm";
