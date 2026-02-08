@@ -52,19 +52,21 @@ pub fn build_image(name: &str, dockerfile: &str) -> Result<String> {
 
     eprintln!("Building image from {}...", dockerfile);
 
-    let output = Command::new("docker")
+    let status = Command::new("docker")
         .args([
             "build",
-            "--quiet",
             "-t",
             &tag,
             "-f",
             dockerfile,
             &context_dir,
         ])
-        .output()?;
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
 
-    if !output.status.success() {
+    if !status.success() {
         bail!("Docker build failed.");
     }
 
