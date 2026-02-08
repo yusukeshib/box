@@ -2,6 +2,52 @@ use anyhow::{bail, Result};
 use std::path::Path;
 use std::process::Command;
 
+const ENTRYPOINT_SCRIPT: &str = "#!/bin/sh\nif [ ! -f /tmp/.realm-initialized ]; then\n    git reset --hard HEAD 2>/dev/null\n    touch /tmp/.realm-initialized\nfi\nexec \"$@\"\n";
+
+/// Ensure ~/.realm/entrypoint.sh exists with the correct content.
+pub fn ensure_entrypoint() -> Result<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = format!("{}/.realm", home);
+    let path = format!("{}/entrypoint.sh", dir);
+
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(&path, ENTRYPOINT_SCRIPT)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms)?;
+    }
+
+    Ok(path)
+}
+
+/// Create a workspace directory on the host for the session.
+/// Returns the host path. The directory is world-writable so any container user can write.
+pub fn ensure_workspace(home: &str, name: &str) -> Result<String> {
+    let dir = format!("{}/.realm/workspaces/{}", home, name);
+    std::fs::create_dir_all(&dir)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dir)?.permissions();
+        perms.set_mode(0o777);
+        std::fs::set_permissions(&dir, perms)?;
+    }
+
+    Ok(dir)
+}
+
+/// Remove the workspace directory for a session.
+pub fn remove_workspace(name: &str) {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let dir = format!("{}/.realm/workspaces/{}", home, name);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 pub fn check() -> Result<()> {
     let has_docker = Command::new("command")
         .args(["-v", "docker"])
@@ -49,6 +95,7 @@ pub fn build_run_args(
     gitconfig_exists: bool,
     docker_args_env: Option<&str>,
 ) -> Result<Vec<String>> {
+    let workspace_dir = format!("{}/.realm/workspaces/{}", home, name);
     let mut args: Vec<String> = vec![
         "run".into(),
         "-it".into(),
@@ -56,8 +103,8 @@ pub fn build_run_args(
         format!("realm-{}", name),
         "--hostname".into(),
         format!("realm-{}", name),
-        "--tmpfs".into(),
-        format!("{}:exec,mode=1777", mount_path),
+        "-v".into(),
+        format!("{}:{}", workspace_dir, mount_path),
         "-v".into(),
         format!("{}/.git:{}/.git", project_dir, mount_path),
         "-w".into(),
@@ -108,7 +155,10 @@ pub fn run_container(
     let gitconfig_exists = Path::new(&gitconfig).exists();
     let docker_args_env = std::env::var("REALM_DOCKER_ARGS").ok();
 
-    let args = build_run_args(
+    let entrypoint_path = ensure_entrypoint()?;
+    ensure_workspace(&home, name)?;
+
+    let mut args = build_run_args(
         name,
         project_dir,
         image,
@@ -119,6 +169,21 @@ pub fn run_container(
         gitconfig_exists,
         docker_args_env.as_deref(),
     )?;
+
+    // Insert entrypoint-related flags just before the image name.
+    // The image is always followed by optional command args at the end.
+    let image_pos = args.iter().position(|a| a == image).unwrap();
+    let entrypoint_flags = vec![
+        "-e".into(),
+        "GIT_INDEX_FILE=/tmp/realm-index".into(),
+        "-v".into(),
+        format!("{}:/entrypoint.sh:ro", entrypoint_path),
+        "--entrypoint".into(),
+        "/entrypoint.sh".into(),
+    ];
+    for (i, flag) in entrypoint_flags.into_iter().enumerate() {
+        args.insert(image_pos + i, flag);
+    }
 
     let status = Command::new("docker")
         .args(&args)
@@ -184,8 +249,11 @@ mod tests {
         assert_eq!(args[3], "realm-test-session");
         assert_eq!(args[4], "--hostname");
         assert_eq!(args[5], "realm-test-session");
-        assert_eq!(args[6], "--tmpfs");
-        assert_eq!(args[7], "/workspace:exec,mode=1777");
+        assert_eq!(args[6], "-v");
+        assert_eq!(
+            args[7],
+            "/home/user/.realm/workspaces/test-session:/workspace"
+        );
         assert_eq!(args[8], "-v");
         assert_eq!(args[9], "/home/user/project/.git:/workspace/.git");
         assert_eq!(args[10], "-w");
@@ -446,12 +514,17 @@ mod tests {
         )
         .unwrap();
 
-        let image_pos = args.iter().position(|a| a == "alpine/git").unwrap();
         // env flags should appear before the image
-        assert_eq!(args[image_pos - 4], "-e");
-        assert_eq!(args[image_pos - 3], "FOO=bar");
-        assert_eq!(args[image_pos - 2], "-e");
-        assert_eq!(args[image_pos - 1], "BAZ");
+        let e_positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-e")
+            .map(|(i, _)| i)
+            .collect();
+        assert!(e_positions.len() >= 2);
+        let last_two = &e_positions[e_positions.len() - 2..];
+        assert_eq!(args[last_two[0] + 1], "FOO=bar");
+        assert_eq!(args[last_two[1] + 1], "BAZ");
     }
 
     #[test]

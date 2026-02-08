@@ -45,8 +45,8 @@ AI coding agents (Claude Code, Cursor, Copilot) are powerful — but letting the
 
 - **Your code stays safe** — only `.git` is mounted, host files are never modified
 - **AI agents can experiment freely** — commit, branch, rewrite, break things — your working tree is untouched
-- **Zero cleanup** — the container is destroyed on exit
-- **Named sessions** — resume where you left off, run multiple experiments in parallel
+- **Persistent sessions** — exit and resume where you left off, files are preserved
+- **Named sessions** — run multiple experiments in parallel
 - **Bring your own toolchain** — works with any Docker image
 
 ## Quick Start
@@ -177,18 +177,20 @@ REALM_DOCKER_ARGS="--network host -v /data:/data:ro" realm my-session -c
 
 ## How It Works
 
-Realm mounts your repo's `.git` directory into a Docker container. Your host working directory is never modified.
+Realm mounts your repo's `.git` directory into a Docker container with a separate workspace. Your host working directory is never modified.
 
 - **`.git`-only mount** — The container gets full git functionality (commit, branch, diff) without touching your working tree
-- **Session isolation** — Each session works independently inside the container
-- **Host stays clean** — After container exit, realm runs `git reset` to fix the host index
+- **Isolated git index** — Each container uses its own `GIT_INDEX_FILE`, so host staging is never leaked
+- **Persistent workspace** — Files survive `exit` and `realm <name>` resume; cleaned up on `realm <name> -d`
+- **Automatic init** — On first run, `git reset --hard HEAD` populates the working tree from the mounted `.git`
+- **Any image, any user** — Works with root and non-root container images
 
 | Aspect | Protection |
 |--------|------------|
 | Host working tree | Never modified — only `.git` is mounted |
-| Git data | Container works on mounted `.git` only |
-| Container | Destroyed after each exit (`--rm`) |
-| Host index | Restored via `git reset` after container exit |
+| Git index | Container uses its own index (`GIT_INDEX_FILE=/tmp/realm-index`) |
+| Workspace | Bind-mounted from `~/.realm/workspaces/<name>/`, persists across stop/start |
+| Session cleanup | `realm <name> -d` removes container, workspace, and session data |
 
 ## License
 

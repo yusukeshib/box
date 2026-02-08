@@ -148,7 +148,6 @@ fn cmd_create(
         &cfg.command,
         &cfg.env,
     )?;
-    git::reset_index(&cfg.project_dir);
     std::process::exit(exit_code);
 }
 
@@ -184,7 +183,6 @@ fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
             &sess.env,
         )?
     };
-    git::reset_index(&sess.project_dir);
     std::process::exit(exit_code);
 }
 
@@ -305,6 +303,7 @@ fn cmd_delete(name: &str) -> Result<()> {
     }
 
     docker::remove_container(name);
+    docker::remove_workspace(name);
     session::remove_dir(name)?;
     println!("Session '{}' removed.", name);
     Ok(())
