@@ -53,14 +53,7 @@ pub fn build_image(name: &str, dockerfile: &str) -> Result<String> {
     eprintln!("Building image from {}...", dockerfile);
 
     let status = Command::new("docker")
-        .args([
-            "build",
-            "-t",
-            &tag,
-            "-f",
-            dockerfile,
-            &context_dir,
-        ])
+        .args(["build", "-t", &tag, "-f", dockerfile, &context_dir])
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
