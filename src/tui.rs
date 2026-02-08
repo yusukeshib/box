@@ -56,7 +56,8 @@ pub fn select_session(sessions: &[SessionSummary]) -> Result<Option<usize>> {
 
             let table = Table::new(rows, widths)
                 .header(header)
-                .row_highlight_style(Style::default().reversed());
+                .highlight_symbol("> ")
+                .row_highlight_style(Style::default().bold());
 
             f.render_stateful_widget(table, f.area(), &mut state);
         })?;
