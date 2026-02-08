@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::config;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Session {
     pub name: String,
     pub project_dir: String,
@@ -16,6 +16,20 @@ pub struct Session {
     pub ssh: bool,
 }
 
+impl From<config::RealmConfig> for Session {
+    fn from(cfg: config::RealmConfig) -> Self {
+        Session {
+            name: cfg.name,
+            project_dir: cfg.project_dir,
+            image: cfg.image,
+            mount_path: cfg.mount_path,
+            command: cfg.command,
+            env: cfg.env,
+            ssh: cfg.ssh,
+        }
+    }
+}
+
 pub struct SessionSummary {
     pub name: String,
     pub project_dir: String,
@@ -24,13 +38,22 @@ pub struct SessionSummary {
 }
 
 pub fn sessions_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".realm").join("sessions")
+    PathBuf::from(config::home_dir())
+        .join(".realm")
+        .join("sessions")
 }
+
+const RESERVED_NAMES: &[&str] = &["upgrade"];
 
 pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() {
         bail!("Session name is required.");
+    }
+    if RESERVED_NAMES.contains(&name) {
+        bail!(
+            "'{}' is a reserved name and cannot be used as a session name.",
+            name
+        );
     }
     if !name
         .chars()
@@ -61,14 +84,20 @@ pub fn save(session: &Session) -> Result<()> {
     )?;
     if !session.command.is_empty() {
         let content: Vec<&str> = session.command.iter().map(|s| s.as_str()).collect();
-        fs::write(dir.join("command"), content.join("\n") + "\n")?;
+        fs::write(dir.join("command"), content.join("\0"))?;
+    } else {
+        let _ = fs::remove_file(dir.join("command"));
     }
     if !session.env.is_empty() {
         let content: Vec<&str> = session.env.iter().map(|s| s.as_str()).collect();
-        fs::write(dir.join("env"), content.join("\n") + "\n")?;
+        fs::write(dir.join("env"), content.join("\0"))?;
+    } else {
+        let _ = fs::remove_file(dir.join("env"));
     }
     if session.ssh {
         fs::write(dir.join("ssh"), "true")?;
+    } else {
+        let _ = fs::remove_file(dir.join("ssh"));
     }
 
     Ok(())
@@ -96,7 +125,7 @@ pub fn load(name: &str) -> Result<Session> {
 
     let command = fs::read_to_string(dir.join("command"))
         .map(|s| {
-            s.lines()
+            s.split('\0')
                 .filter(|l| !l.is_empty())
                 .map(|l| l.to_string())
                 .collect()
@@ -105,7 +134,7 @@ pub fn load(name: &str) -> Result<Session> {
 
     let env = fs::read_to_string(dir.join("env"))
         .map(|s| {
-            s.lines()
+            s.split('\0')
                 .filter(|l| !l.is_empty())
                 .map(|l| l.to_string())
                 .collect()
@@ -210,6 +239,12 @@ mod tests {
     fn test_validate_name_empty() {
         let err = validate_name("").unwrap_err();
         assert_eq!(err.to_string(), "Session name is required.");
+    }
+
+    #[test]
+    fn test_validate_name_reserved() {
+        let err = validate_name("upgrade").unwrap_err();
+        assert!(err.to_string().contains("reserved name"));
     }
 
     #[test]
@@ -500,7 +535,7 @@ mod tests {
 
             let dir = sessions_dir().join("cmd-format");
             let raw = fs::read_to_string(dir.join("command")).unwrap();
-            assert_eq!(raw, "bash\n-c\necho hi\n");
+            assert_eq!(raw, "bash\0-c\0echo hi");
         });
     }
 
@@ -523,7 +558,7 @@ mod tests {
 
             let dir = sessions_dir().join("env-test");
             let raw = fs::read_to_string(dir.join("env")).unwrap();
-            assert_eq!(raw, "FOO=bar\nBAZ\n");
+            assert_eq!(raw, "FOO=bar\0BAZ");
         });
     }
 

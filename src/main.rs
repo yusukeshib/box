@@ -7,6 +7,7 @@ mod tui;
 use anyhow::{bail, Result};
 use clap::Parser;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 #[derive(Parser)]
@@ -66,22 +67,25 @@ fn main() {
         ),
     };
 
-    if let Err(e) = result {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
+    match result {
+        Ok(code) => std::process::exit(code),
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
     }
 }
 
-fn cmd_list() -> Result<()> {
+fn cmd_list() -> Result<i32> {
     let sessions = session::list()?;
     if sessions.is_empty() {
         println!("No sessions found.");
-        return Ok(());
+        return Ok(0);
     }
 
     match tui::select_session(&sessions)? {
         Some(i) => cmd_resume(&sessions[i].name, vec![]),
-        None => Ok(()),
+        None => Ok(0),
     }
 }
 
@@ -93,7 +97,7 @@ fn cmd_create(
     cmd: Vec<String>,
     env: Vec<String>,
     ssh: bool,
-) -> Result<()> {
+) -> Result<i32> {
     session::validate_name(name)?;
 
     let project_dir = match dir {
@@ -123,28 +127,19 @@ fn cmd_create(
         ssh,
     });
 
-    let sess = session::Session {
-        name: cfg.name.clone(),
-        project_dir: cfg.project_dir.clone(),
-        image: cfg.image.clone(),
-        mount_path: cfg.mount_path.clone(),
-        command: cfg.command.clone(),
-        env: cfg.env.clone(),
-        ssh: cfg.ssh,
-    };
+    let sess = session::Session::from(cfg);
     session::save(&sess)?;
 
     docker::remove_container(name);
-    let exit_code = docker::run_container(
+    docker::run_container(
         name,
-        &cfg.project_dir,
-        &cfg.image,
-        &cfg.mount_path,
-        &cfg.command,
-        &cfg.env,
-        cfg.ssh,
-    )?;
-    std::process::exit(exit_code);
+        &sess.project_dir,
+        &sess.image,
+        &sess.mount_path,
+        &sess.command,
+        &sess.env,
+        sess.ssh,
+    )
 }
 
 fn cmd_create_or_resume(
@@ -155,7 +150,7 @@ fn cmd_create_or_resume(
     cmd: Vec<String>,
     env: Vec<String>,
     ssh: bool,
-) -> Result<()> {
+) -> Result<i32> {
     // Check if session exists
     if session::session_exists(name) {
         // Session exists - resume it
@@ -167,7 +162,7 @@ fn cmd_create_or_resume(
     cmd_create(name, image, mount_path, dir, cmd, env, ssh)
 }
 
-fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
+fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<i32> {
     session::validate_name(name)?;
 
     let sess = session::load(name)?;
@@ -181,8 +176,8 @@ fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
     println!("Resuming session '{}'...", name);
     session::touch_resumed_at(name)?;
 
-    let exit_code = if cmd.is_empty() && docker::container_exists(name) {
-        docker::start_container(name)?
+    if cmd.is_empty() && docker::container_exists(name) {
+        docker::start_container(name)
     } else {
         let final_cmd = if cmd.is_empty() {
             sess.command.clone()
@@ -198,12 +193,11 @@ fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
             &final_cmd,
             &sess.env,
             sess.ssh,
-        )?
-    };
-    std::process::exit(exit_code);
+        )
+    }
 }
 
-fn cmd_upgrade() -> Result<()> {
+fn cmd_upgrade() -> Result<i32> {
     let current_version = env!("CARGO_PKG_VERSION");
     println!("Current version: {}", current_version);
 
@@ -225,7 +219,7 @@ fn cmd_upgrade() -> Result<()> {
 
     if current_version == latest_version {
         println!("Already at latest version.");
-        return Ok(());
+        return Ok(0);
     }
 
     let asset_name = upgrade_asset_name()?;
@@ -267,7 +261,7 @@ fn cmd_upgrade() -> Result<()> {
     })?;
 
     println!("Upgraded from {} to {}.", current_version, latest_version);
-    Ok(())
+    Ok(0)
 }
 
 /// RAII guard that removes the temp file on drop.
@@ -297,7 +291,6 @@ fn upgrade_download(url: &str) -> Result<std::path::PathBuf> {
         .download_to(&mut tmp_file)
         .map_err(|e| anyhow::anyhow!("Download failed: {}", e))?;
 
-    use std::io::Write;
     tmp_file.flush()?;
     drop(tmp_file);
 
@@ -312,7 +305,7 @@ fn upgrade_download(url: &str) -> Result<std::path::PathBuf> {
     Ok(tmp_path)
 }
 
-fn cmd_delete(name: &str) -> Result<()> {
+fn cmd_delete(name: &str) -> Result<i32> {
     session::validate_name(name)?;
 
     if !session::session_exists(name) {
@@ -323,7 +316,7 @@ fn cmd_delete(name: &str) -> Result<()> {
     docker::remove_workspace(name);
     session::remove_dir(name)?;
     println!("Session '{}' removed.", name);
-    Ok(())
+    Ok(0)
 }
 
 #[cfg(test)]

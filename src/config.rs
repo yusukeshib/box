@@ -1,5 +1,11 @@
 pub const DEFAULT_IMAGE: &str = "alpine/git";
 
+/// Return the user's home directory.
+/// Uses the HOME environment variable with a fallback to "." if unset.
+pub fn home_dir() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| ".".into())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RealmConfig {
     pub name: String,
@@ -54,6 +60,10 @@ pub fn derive_mount_path(project_dir: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Serialize tests that mutate environment variables
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_derive_mount_path_normal() {
@@ -85,10 +95,13 @@ mod tests {
 
     #[test]
     fn test_resolve_defaults() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("REALM_DEFAULT_IMAGE").ok();
+        std::env::remove_var("REALM_DEFAULT_IMAGE");
+
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
             image: None,
-
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: vec![],
@@ -108,6 +121,10 @@ mod tests {
                 ssh: false,
             }
         );
+
+        if let Some(v) = saved {
+            std::env::set_var("REALM_DEFAULT_IMAGE", v);
+        }
     }
 
     #[test]
@@ -142,6 +159,7 @@ mod tests {
 
     #[test]
     fn test_resolve_env_default_image() {
+        let _lock = ENV_LOCK.lock().unwrap();
         std::env::set_var("REALM_DEFAULT_IMAGE", "ubuntu:latest");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -158,6 +176,7 @@ mod tests {
 
     #[test]
     fn test_resolve_image_flag_overrides_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
         std::env::set_var("REALM_DEFAULT_IMAGE", "ubuntu:latest");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),

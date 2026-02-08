@@ -2,6 +2,8 @@ use anyhow::{bail, Result};
 use std::path::Path;
 use std::process::Command;
 
+use crate::config;
+
 /// Create a workspace directory on the host for the session.
 /// On first run, clones the project repo via `git clone --local`.
 /// Returns the host path. The directory is world-writable so any container user can write.
@@ -47,27 +49,19 @@ pub fn ensure_workspace(home: &str, name: &str, project_dir: &str) -> Result<Str
 
 /// Remove the workspace directory for a session.
 pub fn remove_workspace(name: &str) {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = config::home_dir();
     let dir = format!("{}/.realm/workspaces/{}", home, name);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 pub fn check() -> Result<()> {
-    let has_docker = Command::new("command")
-        .args(["-v", "docker"])
+    let docker_exists = Command::new("docker")
+        .arg("version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
-
-    // "command -v" may not work outside a shell, so try "docker version" instead
-    let docker_exists = has_docker.map(|s| s.success()).unwrap_or(false)
-        || Command::new("docker")
-            .arg("version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
 
     if !docker_exists {
         bail!("docker is not installed. See https://docs.docker.com/get-docker/");
@@ -136,40 +130,41 @@ fn fix_ssh_socket_permissions(image: &str) {
         .status();
 }
 
+pub struct DockerRunConfig<'a> {
+    pub name: &'a str,
+    pub image: &'a str,
+    pub mount_path: &'a str,
+    pub cmd: &'a [String],
+    pub env: &'a [String],
+    pub home: &'a str,
+    pub gitconfig_exists: bool,
+    pub docker_args_env: Option<&'a str>,
+    pub ssh: bool,
+}
+
 /// Build the docker run argument list without executing. Used by run_container and tests.
-#[allow(clippy::too_many_arguments)]
-pub fn build_run_args(
-    name: &str,
-    image: &str,
-    mount_path: &str,
-    cmd: &[String],
-    env: &[String],
-    home: &str,
-    gitconfig_exists: bool,
-    docker_args_env: Option<&str>,
-    ssh: bool,
-) -> Result<Vec<String>> {
-    let workspace_dir = format!("{}/.realm/workspaces/{}", home, name);
+pub fn build_run_args(cfg: &DockerRunConfig) -> Result<Vec<String>> {
+    let workspace_dir = format!("{}/.realm/workspaces/{}", cfg.home, cfg.name);
     let mut args: Vec<String> = vec![
         "run".into(),
         "-it".into(),
         "--name".into(),
-        format!("realm-{}", name),
+        format!("realm-{}", cfg.name),
         "--hostname".into(),
-        format!("realm-{}", name),
+        format!("realm-{}", cfg.name),
         "-v".into(),
-        format!("{}:{}", workspace_dir, mount_path),
+        format!("{}:{}", workspace_dir, cfg.mount_path),
         "-w".into(),
-        mount_path.into(),
+        cfg.mount_path.into(),
     ];
 
-    if gitconfig_exists {
-        let gitconfig = format!("{}/.gitconfig", home);
+    if cfg.gitconfig_exists {
+        let gitconfig = format!("{}/.gitconfig", cfg.home);
         args.push("-v".into());
         args.push(format!("{}:/root/.gitconfig:ro", gitconfig));
     }
 
-    if ssh {
+    if cfg.ssh {
         let (host_path, container_path) = ssh_agent_paths()?;
         args.push("-v".into());
         args.push(format!("{}:{}", host_path, container_path));
@@ -177,7 +172,7 @@ pub fn build_run_args(
         args.push(format!("SSH_AUTH_SOCK={}", container_path));
     }
 
-    if let Some(extra) = docker_args_env {
+    if let Some(extra) = cfg.docker_args_env {
         if !extra.is_empty() {
             match shell_words::split(extra) {
                 Ok(extra_args) => args.extend(extra_args),
@@ -188,15 +183,15 @@ pub fn build_run_args(
         }
     }
 
-    for entry in env {
+    for entry in cfg.env {
         args.push("-e".into());
         args.push(entry.clone());
     }
 
-    args.push(image.into());
+    args.push(cfg.image.into());
 
-    if !cmd.is_empty() {
-        args.extend(cmd.iter().cloned());
+    if !cfg.cmd.is_empty() {
+        args.extend(cfg.cmd.iter().cloned());
     }
 
     Ok(args)
@@ -211,28 +206,28 @@ pub fn run_container(
     env: &[String],
     ssh: bool,
 ) -> Result<i32> {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = config::home_dir();
     let gitconfig = format!("{}/.gitconfig", home);
     let gitconfig_exists = Path::new(&gitconfig).exists();
     let docker_args_env = std::env::var("REALM_DOCKER_ARGS").ok();
 
     ensure_workspace(&home, name, project_dir)?;
 
-    if ssh && cfg!(target_os = "macos") {
+    if ssh && std::cfg!(target_os = "macos") {
         fix_ssh_socket_permissions(image);
     }
 
-    let args = build_run_args(
+    let args = build_run_args(&DockerRunConfig {
         name,
         image,
         mount_path,
         cmd,
         env,
-        &home,
+        home: &home,
         gitconfig_exists,
-        docker_args_env.as_deref(),
+        docker_args_env: docker_args_env.as_deref(),
         ssh,
-    )?;
+    })?;
 
     let status = Command::new("docker")
         .args(&args)
@@ -277,19 +272,26 @@ pub fn remove_container(name: &str) {
 mod tests {
     use super::*;
 
+    fn default_config<'a>() -> DockerRunConfig<'a> {
+        DockerRunConfig {
+            name: "sess",
+            image: "alpine/git",
+            mount_path: "/workspace",
+            cmd: &[],
+            env: &[],
+            home: "/home/user",
+            gitconfig_exists: false,
+            docker_args_env: None,
+            ssh: false,
+        }
+    }
+
     #[test]
     fn test_build_run_args_basic() {
-        let args = build_run_args(
-            "test-session",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            name: "test-session",
+            ..default_config()
+        })
         .unwrap();
 
         assert_eq!(args[0], "run");
@@ -313,17 +315,11 @@ mod tests {
     #[test]
     fn test_build_run_args_with_command() {
         let cmd = vec!["bash".to_string()];
-        let args = build_run_args(
-            "sess",
-            "ubuntu:latest",
-            "/workspace",
-            &cmd,
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            image: "ubuntu:latest",
+            cmd: &cmd,
+            ..default_config()
+        })
         .unwrap();
 
         // Command follows image directly
@@ -335,17 +331,12 @@ mod tests {
     #[test]
     fn test_build_run_args_with_multi_command() {
         let cmd = vec!["python".to_string(), "-m".to_string(), "pytest".to_string()];
-        let args = build_run_args(
-            "sess",
-            "python:3.11",
-            "/app",
-            &cmd,
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            image: "python:3.11",
+            mount_path: "/app",
+            cmd: &cmd,
+            ..default_config()
+        })
         .unwrap();
 
         let image_pos = args.iter().position(|a| a == "python:3.11").unwrap();
@@ -357,17 +348,10 @@ mod tests {
 
     #[test]
     fn test_build_run_args_with_gitconfig() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            true,
-            None,
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            gitconfig_exists: true,
+            ..default_config()
+        })
         .unwrap();
 
         assert!(args.contains(&"-v".to_string()));
@@ -376,35 +360,17 @@ mod tests {
 
     #[test]
     fn test_build_run_args_without_gitconfig() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
-        .unwrap();
+        let args = build_run_args(&default_config()).unwrap();
 
         assert!(!args.contains(&"/home/user/.gitconfig:/root/.gitconfig:ro".to_string()));
     }
 
     #[test]
     fn test_build_run_args_with_docker_args_env() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            Some("--network host -v /data:/data:ro"),
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            docker_args_env: Some("--network host -v /data:/data:ro"),
+            ..default_config()
+        })
         .unwrap();
 
         assert!(args.contains(&"--network".to_string()));
@@ -414,17 +380,10 @@ mod tests {
 
     #[test]
     fn test_build_run_args_docker_args_with_quotes() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            Some("-e 'FOO=hello world'"),
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            docker_args_env: Some("-e 'FOO=hello world'"),
+            ..default_config()
+        })
         .unwrap();
 
         assert!(args.contains(&"-e".to_string()));
@@ -433,17 +392,10 @@ mod tests {
 
     #[test]
     fn test_build_run_args_empty_docker_args() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            Some(""),
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            docker_args_env: Some(""),
+            ..default_config()
+        })
         .unwrap();
 
         // Should still work, just no extra args
@@ -452,17 +404,10 @@ mod tests {
 
     #[test]
     fn test_build_run_args_invalid_docker_args() {
-        let result = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            Some("--flag 'unclosed quote"),
-            false,
-        );
+        let result = build_run_args(&DockerRunConfig {
+            docker_args_env: Some("--flag 'unclosed quote"),
+            ..default_config()
+        });
 
         assert!(result.is_err());
         assert!(result
@@ -473,17 +418,10 @@ mod tests {
 
     #[test]
     fn test_build_run_args_custom_mount_path() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/src",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            mount_path: "/src",
+            ..default_config()
+        })
         .unwrap();
 
         assert!(args.contains(&"/home/user/.realm/workspaces/sess:/src".to_string()));
@@ -492,17 +430,10 @@ mod tests {
 
     #[test]
     fn test_build_run_args_hostname() {
-        let args = build_run_args(
-            "my-session",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            name: "my-session",
+            ..default_config()
+        })
         .unwrap();
 
         assert!(args.contains(&"realm-my-session".to_string()));
@@ -510,35 +441,17 @@ mod tests {
 
     #[test]
     fn test_build_run_args_no_rm_flag() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
-        .unwrap();
+        let args = build_run_args(&default_config()).unwrap();
 
         assert!(!args.contains(&"--rm".to_string()));
     }
 
     #[test]
     fn test_build_run_args_has_name() {
-        let args = build_run_args(
-            "my-session",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            name: "my-session",
+            ..default_config()
+        })
         .unwrap();
 
         let name_pos = args.iter().position(|a| a == "--name").unwrap();
@@ -548,17 +461,10 @@ mod tests {
     #[test]
     fn test_build_run_args_with_env() {
         let env = vec!["FOO=bar".to_string(), "BAZ".to_string()];
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &env,
-            "/home/user",
-            false,
-            None,
-            false,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            env: &env,
+            ..default_config()
+        })
         .unwrap();
 
         // env flags should appear before the image
@@ -576,18 +482,7 @@ mod tests {
 
     #[test]
     fn test_build_run_args_empty_env() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            None,
-            false,
-        )
-        .unwrap();
+        let args = build_run_args(&default_config()).unwrap();
 
         // No -e flags should be present
         assert!(!args.iter().any(|a| a == "-e"));
@@ -595,17 +490,10 @@ mod tests {
 
     #[test]
     fn test_build_run_args_with_ssh() {
-        let args = build_run_args(
-            "sess",
-            "alpine/git",
-            "/workspace",
-            &[],
-            &[],
-            "/home/user",
-            false,
-            None,
-            true,
-        )
+        let args = build_run_args(&DockerRunConfig {
+            ssh: true,
+            ..default_config()
+        })
         .unwrap();
 
         // Should have volume mount for the SSH socket
