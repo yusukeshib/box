@@ -3,81 +3,61 @@ mod git;
 mod session;
 
 use anyhow::{bail, Result};
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use std::fs;
 use std::path::Path;
 
 #[derive(Parser)]
 #[command(name = "realm", about = "Sandboxed Docker environments for git repos")]
 struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
+    /// Session name
+    name: Option<String>,
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Create, resume, or list sessions
-    Switch {
-        /// Create a new session
-        #[arg(short = 'c')]
-        create: bool,
+    /// Create a new session
+    #[arg(short = 'c')]
+    create: bool,
 
-        /// Session name
-        name: Option<String>,
+    /// Delete the session
+    #[arg(short = 'd')]
+    delete: bool,
 
-        /// Docker image to use (default: alpine/git)
-        #[arg(long, conflicts_with = "dockerfile")]
-        image: Option<String>,
+    /// Docker image to use (default: alpine/git)
+    #[arg(long, conflicts_with = "dockerfile")]
+    image: Option<String>,
 
-        /// Build image from Dockerfile (or set REALM_DOCKERFILE)
-        #[arg(long, env = "REALM_DOCKERFILE", conflicts_with = "image")]
-        dockerfile: Option<String>,
+    /// Build image from Dockerfile (or set REALM_DOCKERFILE)
+    #[arg(long, env = "REALM_DOCKERFILE", conflicts_with = "image")]
+    dockerfile: Option<String>,
 
-        /// Mount path inside container (default: /workspace)
-        #[arg(long = "mount")]
-        mount_path: Option<String>,
+    /// Mount path inside container (default: /workspace)
+    #[arg(long = "mount")]
+    mount_path: Option<String>,
 
-        /// Project directory (default: current directory)
-        #[arg(short = 'd', long = "dir")]
-        dir: Option<String>,
+    /// Project directory (default: current directory)
+    #[arg(long = "dir")]
+    dir: Option<String>,
 
-        /// Command to run in container
-        #[arg(last = true)]
-        cmd: Vec<String>,
-    },
-    /// Delete a session
-    Remove {
-        /// Session name
-        name: String,
-    },
+    /// Command to run in container
+    #[arg(last = true)]
+    cmd: Vec<String>,
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    let result = match cli.command {
-        Some(Commands::Switch {
-            create,
-            name,
-            image,
-            dockerfile,
-            mount_path,
-            dir,
-            cmd,
-        }) => {
-            if create {
-                cmd_switch_create(name, image, dockerfile, mount_path, dir, cmd)
-            } else if let Some(name) = name {
-                cmd_switch_resume(&name, cmd)
-            } else {
-                cmd_list()
-            }
-        }
-        Some(Commands::Remove { name }) => cmd_remove(&name),
-        None => {
-            Cli::parse_from(["realm", "--help"]);
-            Ok(())
-        }
+    let result = match cli.name.as_deref() {
+        None => cmd_list(),
+        Some("upgrade") => cmd_upgrade(),
+        Some(_) if cli.delete => cmd_delete(cli.name.as_deref().unwrap()),
+        Some(_) if cli.create => cmd_create(
+            cli.name.as_deref().unwrap(),
+            cli.image,
+            cli.dockerfile,
+            cli.mount_path,
+            cli.dir,
+            cli.cmd,
+        ),
+        Some(name) => cmd_resume(name, cli.cmd),
     };
 
     if let Err(e) = result {
@@ -86,21 +66,21 @@ fn main() {
     }
 }
 
-fn cmd_switch_create(
-    name: Option<String>,
+fn cmd_list() -> Result<()> {
+    let sessions = session::list()?;
+    session::print_table(&sessions);
+    Ok(())
+}
+
+fn cmd_create(
+    name: &str,
     image: Option<String>,
     dockerfile: Option<String>,
     mount_path: Option<String>,
     dir: Option<String>,
     cmd: Vec<String>,
 ) -> Result<()> {
-    let name = match name {
-        Some(n) => n,
-        None => {
-            bail!("Session name is required.\nUsage: realm switch -c <name> [options] [-- cmd...]")
-        }
-    };
-    session::validate_name(&name)?;
+    session::validate_name(name)?;
 
     let project_dir = match dir {
         Some(d) => fs::canonicalize(&d)
@@ -117,9 +97,9 @@ fn cmd_switch_create(
         bail!("'{}' is not a git repository.", project_dir);
     }
 
-    if session::session_exists(&name) {
+    if session::session_exists(name) {
         bail!(
-            "Session '{}' already exists. Remove it first: realm remove {}",
+            "Session '{}' already exists. Remove it first: realm {} -d",
             name,
             name
         );
@@ -135,14 +115,14 @@ fn cmd_switch_create(
             .map_err(|_| anyhow::anyhow!("Dockerfile '{}' not found.", df))?
             .to_string_lossy()
             .to_string();
-        final_image = docker::build_image(&name, &canonical)?;
+        final_image = docker::build_image(name, &canonical)?;
         final_dockerfile = Some(canonical);
     }
 
     let mount = mount_path.unwrap_or_else(|| session::DEFAULT_MOUNT.to_string());
 
     let sess = session::Session {
-        name: name.clone(),
+        name: name.to_string(),
         project_dir: project_dir.clone(),
         image: final_image.clone(),
         mount_path: mount.clone(),
@@ -151,12 +131,12 @@ fn cmd_switch_create(
     };
     session::save(&sess)?;
 
-    let exit_code = docker::run_container(&name, &project_dir, &final_image, &mount, &cmd)?;
+    let exit_code = docker::run_container(name, &project_dir, &final_image, &mount, &cmd)?;
     git::reset_index(&project_dir);
     std::process::exit(exit_code);
 }
 
-fn cmd_switch_resume(name: &str, cmd: Vec<String>) -> Result<()> {
+fn cmd_resume(name: &str, cmd: Vec<String>) -> Result<()> {
     session::validate_name(name)?;
 
     let sess = session::load(name)?;
@@ -194,13 +174,11 @@ fn cmd_switch_resume(name: &str, cmd: Vec<String>) -> Result<()> {
     std::process::exit(exit_code);
 }
 
-fn cmd_list() -> Result<()> {
-    let sessions = session::list()?;
-    session::print_table(&sessions);
-    Ok(())
+fn cmd_upgrade() -> Result<()> {
+    todo!("upgrade not yet implemented")
 }
 
-fn cmd_remove(name: &str) -> Result<()> {
+fn cmd_delete(name: &str) -> Result<()> {
     session::validate_name(name)?;
 
     if !session::session_exists(name) {
@@ -218,27 +196,15 @@ mod tests {
     use clap::Parser;
     use std::sync::Mutex;
 
-    // Serialize tests that touch REALM_DOCKERFILE env var
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
-    /// Helper to parse CLI args and extract the Switch variant fields.
-    /// Temporarily clears REALM_DOCKERFILE to avoid conflicts in tests.
-    fn parse_switch(
-        args: &[&str],
-    ) -> (
-        bool,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Vec<String>,
-    ) {
+    /// Helper to parse CLI args with REALM_DOCKERFILE cleared.
+    fn parse(args: &[&str]) -> Cli {
         let _lock = ENV_LOCK.lock().unwrap();
         let old_val = std::env::var("REALM_DOCKERFILE").ok();
         std::env::remove_var("REALM_DOCKERFILE");
 
-        let mut full_args = vec!["realm", "switch"];
+        let mut full_args = vec!["realm"];
         full_args.extend_from_slice(args);
         let cli = Cli::try_parse_from(full_args).unwrap();
 
@@ -246,179 +212,146 @@ mod tests {
             std::env::set_var("REALM_DOCKERFILE", v);
         }
 
-        match cli.command.unwrap() {
-            Commands::Switch {
-                create,
-                name,
-                image,
-                dockerfile,
-                mount_path,
-                dir,
-                cmd,
-            } => (create, name, image, dockerfile, mount_path, dir, cmd),
-            _ => panic!("Expected Switch command"),
-        }
+        cli
     }
 
     #[test]
-    fn test_parse_switch_list() {
-        let cli = Cli::try_parse_from(["realm", "switch"]).unwrap();
-        match cli.command.unwrap() {
-            Commands::Switch { create, name, .. } => {
-                assert!(!create);
-                assert!(name.is_none());
-            }
-            _ => panic!("Expected Switch command"),
-        }
+    fn test_no_args_lists() {
+        let cli = parse(&[]);
+        assert!(cli.name.is_none());
+        assert!(!cli.create);
+        assert!(!cli.delete);
     }
 
     #[test]
-    fn test_parse_switch_resume() {
-        let (create, name, ..) = parse_switch(&["my-session"]);
-        assert!(!create);
-        assert_eq!(name.as_deref(), Some("my-session"));
+    fn test_name_only_resumes() {
+        let cli = parse(&["my-session"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert!(!cli.create);
+        assert!(!cli.delete);
     }
 
     #[test]
-    fn test_parse_switch_create_flag_before_name() {
-        let (create, name, ..) = parse_switch(&["-c", "my-session"]);
-        assert!(create);
-        assert_eq!(name.as_deref(), Some("my-session"));
+    fn test_create_flag_before_name() {
+        let cli = parse(&["-c", "my-session"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert!(cli.create);
     }
 
     #[test]
-    fn test_parse_switch_create_flag_after_name() {
-        // This is the bug fix — -c works after the name
-        let (create, name, ..) = parse_switch(&["my-session", "-c"]);
-        assert!(create);
-        assert_eq!(name.as_deref(), Some("my-session"));
+    fn test_create_flag_after_name() {
+        let cli = parse(&["my-session", "-c"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert!(cli.create);
     }
 
     #[test]
-    fn test_parse_switch_create_with_image() {
-        let (create, name, image, ..) =
-            parse_switch(&["-c", "my-session", "--image", "ubuntu:latest"]);
-        assert!(create);
-        assert_eq!(name.as_deref(), Some("my-session"));
-        assert_eq!(image.as_deref(), Some("ubuntu:latest"));
+    fn test_delete_flag_before_name() {
+        let cli = parse(&["-d", "my-session"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert!(cli.delete);
     }
 
     #[test]
-    fn test_parse_switch_create_with_mount() {
-        let (create, name, _, _, mount_path, ..) =
-            parse_switch(&["-c", "my-session", "--mount", "/src"]);
-        assert!(create);
-        assert_eq!(name.as_deref(), Some("my-session"));
-        assert_eq!(mount_path.as_deref(), Some("/src"));
+    fn test_delete_flag_after_name() {
+        let cli = parse(&["my-session", "-d"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert!(cli.delete);
     }
 
     #[test]
-    fn test_parse_switch_create_with_dir() {
-        let (create, name, _, _, _, dir, _) =
-            parse_switch(&["-c", "my-session", "-d", "/tmp/project"]);
-        assert!(create);
-        assert_eq!(name.as_deref(), Some("my-session"));
-        assert_eq!(dir.as_deref(), Some("/tmp/project"));
+    fn test_create_with_image() {
+        let cli = parse(&["my-session", "-c", "--image", "ubuntu:latest"]);
+        assert!(cli.create);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert_eq!(cli.image.as_deref(), Some("ubuntu:latest"));
     }
 
     #[test]
-    fn test_parse_switch_with_command() {
-        let (_, name, _, _, _, _, cmd) =
-            parse_switch(&["my-session", "--", "bash", "-c", "echo hi"]);
-        assert_eq!(name.as_deref(), Some("my-session"));
-        assert_eq!(cmd, vec!["bash", "-c", "echo hi"]);
+    fn test_create_with_mount() {
+        let cli = parse(&["-c", "my-session", "--mount", "/src"]);
+        assert!(cli.create);
+        assert_eq!(cli.mount_path.as_deref(), Some("/src"));
     }
 
     #[test]
-    fn test_parse_switch_create_with_command() {
-        let (create, name, _, _, _, _, cmd) = parse_switch(&["-c", "my-session", "--", "bash"]);
-        assert!(create);
-        assert_eq!(name.as_deref(), Some("my-session"));
-        assert_eq!(cmd, vec!["bash"]);
+    fn test_create_with_dir() {
+        let cli = parse(&["-c", "my-session", "--dir", "/tmp/project"]);
+        assert!(cli.create);
+        assert_eq!(cli.dir.as_deref(), Some("/tmp/project"));
     }
 
     #[test]
-    fn test_parse_switch_create_all_options() {
-        let (create, name, image, _, mount_path, dir, cmd) = parse_switch(&[
+    fn test_with_command() {
+        let cli = parse(&["my-session", "--", "bash", "-c", "echo hi"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert_eq!(cli.cmd, vec!["bash", "-c", "echo hi"]);
+    }
+
+    #[test]
+    fn test_create_with_command() {
+        let cli = parse(&["-c", "my-session", "--", "bash"]);
+        assert!(cli.create);
+        assert_eq!(cli.cmd, vec!["bash"]);
+    }
+
+    #[test]
+    fn test_create_all_options() {
+        let cli = parse(&[
             "-c",
             "full-session",
             "--image",
             "python:3.11",
             "--mount",
             "/app",
-            "-d",
+            "--dir",
             "/tmp/project",
             "--",
             "python",
             "main.py",
         ]);
-        assert!(create);
-        assert_eq!(name.as_deref(), Some("full-session"));
-        assert_eq!(image.as_deref(), Some("python:3.11"));
-        assert_eq!(mount_path.as_deref(), Some("/app"));
-        assert_eq!(dir.as_deref(), Some("/tmp/project"));
-        assert_eq!(cmd, vec!["python", "main.py"]);
+        assert!(cli.create);
+        assert_eq!(cli.name.as_deref(), Some("full-session"));
+        assert_eq!(cli.image.as_deref(), Some("python:3.11"));
+        assert_eq!(cli.mount_path.as_deref(), Some("/app"));
+        assert_eq!(cli.dir.as_deref(), Some("/tmp/project"));
+        assert_eq!(cli.cmd, vec!["python", "main.py"]);
     }
 
     #[test]
-    fn test_parse_switch_image_dockerfile_conflict() {
-        let full_args = vec![
+    fn test_image_dockerfile_conflict() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let old_val = std::env::var("REALM_DOCKERFILE").ok();
+        std::env::remove_var("REALM_DOCKERFILE");
+
+        let result = Cli::try_parse_from([
             "realm",
-            "switch",
             "-c",
             "test",
             "--image",
             "foo",
             "--dockerfile",
             "bar",
-        ];
-        let result = Cli::try_parse_from(full_args);
+        ]);
         assert!(result.is_err());
-    }
 
-    #[test]
-    fn test_parse_remove() {
-        let cli = Cli::try_parse_from(["realm", "remove", "my-session"]).unwrap();
-        match cli.command.unwrap() {
-            Commands::Remove { name } => {
-                assert_eq!(name, "my-session");
-            }
-            _ => panic!("Expected Remove command"),
+        if let Some(v) = old_val {
+            std::env::set_var("REALM_DOCKERFILE", v);
         }
     }
 
     #[test]
-    fn test_parse_remove_missing_name() {
-        let result = Cli::try_parse_from(["realm", "remove"]);
-        assert!(result.is_err());
+    fn test_empty_command_after_separator() {
+        let cli = parse(&["my-session", "--"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert!(cli.cmd.is_empty());
     }
 
     #[test]
-    fn test_parse_no_command() {
-        let cli = Cli::try_parse_from(["realm"]).unwrap();
-        assert!(cli.command.is_none());
-    }
-
-    #[test]
-    fn test_parse_switch_create_flag_at_end_with_options() {
-        // Another variation: -c at the very end
-        let (create, name, image, ..) =
-            parse_switch(&["test-session", "--image", "ubuntu:latest", "-c"]);
-        assert!(create);
-        assert_eq!(name.as_deref(), Some("test-session"));
-        assert_eq!(image.as_deref(), Some("ubuntu:latest"));
-    }
-
-    #[test]
-    fn test_parse_switch_dir_long_form() {
-        let (_, _, _, _, _, dir, _) = parse_switch(&["-c", "sess", "--dir", "/tmp/project"]);
-        assert_eq!(dir.as_deref(), Some("/tmp/project"));
-    }
-
-    #[test]
-    fn test_parse_switch_empty_command_after_separator() {
-        let (_, name, _, _, _, _, cmd) = parse_switch(&["my-session", "--"]);
-        assert_eq!(name.as_deref(), Some("my-session"));
-        assert!(cmd.is_empty());
+    fn test_create_flag_at_end_with_options() {
+        let cli = parse(&["test-session", "--image", "ubuntu:latest", "-c"]);
+        assert!(cli.create);
+        assert_eq!(cli.name.as_deref(), Some("test-session"));
+        assert_eq!(cli.image.as_deref(), Some("ubuntu:latest"));
     }
 }

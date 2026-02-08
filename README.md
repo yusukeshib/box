@@ -4,7 +4,7 @@ Sandboxed Docker environments for git repos.
 
 ## How it works
 
-Realm mounts your repo's `.git` directory into a Docker container and checks out a dedicated branch. Your host working directory is never modified.
+Realm mounts your repo's `.git` directory into a Docker container. Your host working directory is never modified.
 
 - **`.git`-only mount** — The container gets full git functionality (commit, branch, diff) without touching your working tree
 - **Session isolation** — Each session works independently inside the container
@@ -27,38 +27,39 @@ cargo install realm-cli
 ## Usage
 
 ```bash
-realm switch                                        List all sessions
-realm switch <name> [-- cmd...]                     Resume a session
-realm switch -c <name> [options] [-- cmd...]        Create a new session
-realm remove <name>                                 Delete session
+realm                                               List all sessions
+realm <name> [-- cmd...]                            Resume a session
+realm <name> -c [options] [-- cmd...]               Create a new session
+realm <name> -d                                     Delete a session
+realm upgrade                                       Upgrade to latest version
 ```
 
 ### Create a session
 
 ```bash
 # Default: alpine/git image, sh shell, current directory
-realm switch -c my-feature
+realm my-feature -c
 
 # Specify a project directory
-realm switch -c my-feature -d ~/projects/my-app
+realm my-feature -c --dir ~/projects/my-app
 
 # Custom image with bash
-realm switch -c my-feature --image ubuntu:latest -- bash
+realm my-feature -c --image ubuntu:latest -- bash
 
 # Build from a Dockerfile
-realm switch -c my-feature --dockerfile ./Dockerfile -- bash
+realm my-feature -c --dockerfile ./Dockerfile -- bash
 
 # Custom mount path inside container
-realm switch -c my-feature --mount /src
+realm my-feature -c --mount /src
 
 # -c flag works in any position
-realm switch my-feature -c --image ubuntu:latest -- bash
+realm -c my-feature --image ubuntu:latest -- bash
 ```
 
 ### Resume a session
 
 ```bash
-realm switch my-feature
+realm my-feature
 ```
 
 The container resumes with the same configuration from the original session.
@@ -66,7 +67,7 @@ The container resumes with the same configuration from the original session.
 ### List sessions
 
 ```bash
-realm switch
+realm
 ```
 
 ```
@@ -76,10 +77,10 @@ my-feature           /Users/you/projects/app        alpine/git           2026-02
 test                 /Users/you/projects/other      ubuntu:latest        2026-02-07 12:30:00 UTC
 ```
 
-### Remove a session
+### Delete a session
 
 ```bash
-realm remove my-feature
+realm my-feature -d
 ```
 
 This deletes the session metadata.
@@ -89,10 +90,11 @@ This deletes the session metadata.
 | Option | Description |
 |--------|-------------|
 | `-c` | Create a new session |
-| `-d, --dir <path>` | Project directory (default: current directory) |
+| `-d` | Delete the session |
 | `--image <image>` | Docker image to use (default: `alpine/git`) |
 | `--dockerfile <path>` | Build image from a Dockerfile (mutually exclusive with `--image`) |
 | `--mount <path>` | Mount path inside the container (default: `/workspace`) |
+| `--dir <path>` | Project directory (default: current directory) |
 
 ## Session Storage
 
@@ -119,7 +121,7 @@ Examples:
 export REALM_DOCKERFILE=~/my-realm/Dockerfile
 
 # Pass extra Docker flags
-REALM_DOCKER_ARGS="--network host -v /data:/data:ro" realm switch -c my-session
+REALM_DOCKER_ARGS="--network host -v /data:/data:ro" realm my-session -c
 ```
 
 ## Security Model

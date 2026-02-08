@@ -157,14 +157,8 @@ pub fn print_table(sessions: &[SessionSummary]) {
         return;
     }
 
-    println!(
-        "{:<20} {:<30} {:<20} CREATED",
-        "NAME", "PROJECT", "IMAGE"
-    );
-    println!(
-        "{:<20} {:<30} {:<20} -------",
-        "----", "-------", "-----"
-    );
+    println!("{:<20} {:<30} {:<20} CREATED", "NAME", "PROJECT", "IMAGE");
+    println!("{:<20} {:<30} {:<20} -------", "----", "-------", "-----");
     for s in sessions {
         println!(
             "{:<20} {:<30} {:<20} {}",
