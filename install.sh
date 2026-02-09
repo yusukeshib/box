@@ -5,7 +5,7 @@
 set -e
 
 REPO="yusukeshib/realm"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 
 detect_platform() {
     local os arch
@@ -64,12 +64,8 @@ install_binary() {
 
     chmod +x "${tmpdir}/realm"
 
-    if [ -w "$INSTALL_DIR" ]; then
-        mv "${tmpdir}/realm" "${INSTALL_DIR}/realm"
-    else
-        echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-        sudo mv "${tmpdir}/realm" "${INSTALL_DIR}/realm"
-    fi
+    mkdir -p "$INSTALL_DIR"
+    mv "${tmpdir}/realm" "${INSTALL_DIR}/realm"
 
     echo "Installed realm to ${INSTALL_DIR}/realm"
 }
@@ -95,6 +91,10 @@ echo "Installing realm..."
 if install_binary; then
     echo ""
     echo "Done!"
+    if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
+        echo "Make sure ${INSTALL_DIR} is in your PATH:"
+        echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
 elif install_cargo; then
     echo ""
     echo "Done! Make sure ~/.cargo/bin is in your PATH:"
