@@ -16,7 +16,10 @@ impl Drop for TermGuard {
     }
 }
 
-fn clear_viewport(terminal: &mut Terminal<CrosstermBackend<io::Stderr>>, height: u16) -> Result<()> {
+fn clear_viewport(
+    terminal: &mut Terminal<CrosstermBackend<io::Stderr>>,
+    height: u16,
+) -> Result<()> {
     terminal.clear()?;
     execute!(
         io::stderr(),
