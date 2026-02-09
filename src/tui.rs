@@ -30,6 +30,10 @@ fn clear_viewport(
 }
 
 pub fn select_sessions_to_delete(sessions: &[SessionSummary]) -> Result<Vec<usize>> {
+    if sessions.is_empty() {
+        return Ok(vec![]);
+    }
+
     let height = (sessions.len() as u16) + 1;
 
     terminal::enable_raw_mode()?;

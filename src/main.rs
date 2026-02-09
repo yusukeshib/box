@@ -365,10 +365,14 @@ fn cmd_delete_interactive() -> Result<i32> {
         return Ok(0);
     }
 
+    let mut exit_code = 0;
     for name in &names {
-        cmd_delete(name)?;
+        let code = cmd_delete(name)?;
+        if exit_code == 0 && code != 0 {
+            exit_code = code;
+        }
     }
-    Ok(0)
+    Ok(exit_code)
 }
 
 fn cmd_delete(name: &str) -> Result<i32> {
