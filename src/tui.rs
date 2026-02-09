@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use crossterm::terminal;
+use crossterm::{cursor, execute, terminal};
 use ratatui::prelude::*;
 use ratatui::widgets::{Row, Table, TableState};
 use ratatui::{TerminalOptions, Viewport};
@@ -14,6 +14,16 @@ impl Drop for TermGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
     }
+}
+
+fn clear_viewport(terminal: &mut Terminal<CrosstermBackend<io::Stderr>>, height: u16) -> Result<()> {
+    terminal.clear()?;
+    execute!(
+        io::stderr(),
+        cursor::MoveUp(height),
+        terminal::Clear(terminal::ClearType::FromCursorDown)
+    )?;
+    Ok(())
 }
 
 pub fn select_sessions_to_delete(sessions: &[SessionSummary]) -> Result<Vec<usize>> {
@@ -53,12 +63,12 @@ pub fn select_sessions_to_delete(sessions: &[SessionSummary]) -> Result<Vec<usiz
                 .collect();
 
             let widths = [
-                Constraint::Max(3),
-                Constraint::Min(15),
-                Constraint::Min(10),
-                Constraint::Min(30),
-                Constraint::Min(20),
-                Constraint::Min(22),
+                Constraint::Length(3),
+                Constraint::Fill(15),
+                Constraint::Fill(10),
+                Constraint::Fill(30),
+                Constraint::Fill(20),
+                Constraint::Fill(22),
             ];
 
             let table = Table::new(rows, widths)
@@ -90,6 +100,7 @@ pub fn select_sessions_to_delete(sessions: &[SessionSummary]) -> Result<Vec<usiz
                     }
                 }
                 KeyCode::Enter => {
+                    clear_viewport(&mut terminal, height)?;
                     return Ok(checked
                         .iter()
                         .enumerate()
@@ -98,6 +109,7 @@ pub fn select_sessions_to_delete(sessions: &[SessionSummary]) -> Result<Vec<usiz
                         .collect());
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
+                    clear_viewport(&mut terminal, height)?;
                     return Ok(vec![]);
                 }
                 _ => {}
@@ -171,9 +183,11 @@ pub fn select_session(sessions: &[SessionSummary]) -> Result<Option<usize>> {
                     state.select(Some(next));
                 }
                 KeyCode::Enter => {
+                    clear_viewport(&mut terminal, height)?;
                     return Ok(state.selected());
                 }
                 KeyCode::Esc | KeyCode::Char('q') => {
+                    clear_viewport(&mut terminal, height)?;
                     return Ok(None);
                 }
                 _ => {}
