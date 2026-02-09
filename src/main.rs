@@ -17,10 +17,10 @@ use std::path::Path;
     after_help = "Examples:\n  realm my-feature --image ubuntu:latest -- bash\n  realm my-feature\n  realm my-feature -d -- claude -p \"do something\"\n  realm my-feature --delete\n  realm path my-feature\n  realm upgrade\n\nSessions are automatically created if they don't exist."
 )]
 struct Cli {
-    /// Session name
+    /// Session name or subcommand-like keyword (e.g. 'path', 'upgrade')
     name: Option<String>,
 
-    /// Subcommand argument (e.g. session name for 'path')
+    /// Subcommand argument (only valid when `name` is 'path', e.g. session name for 'path')
     arg: Option<String>,
 
     /// Run container in the background (detached)
@@ -52,6 +52,7 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
+    let has_docker_args = cli.docker_args.is_some();
     let docker_args = cli
         .docker_args
         .or_else(|| std::env::var("REALM_DOCKER_ARGS").ok())
@@ -69,11 +70,22 @@ fn main() {
             std::process::exit(1);
         }
         Some("upgrade") => cmd_upgrade(),
-        Some("path") if cli.detach => {
-            eprintln!("Error: -d cannot be used with path.");
+        Some("path")
+            if cli.detach
+                || cli.delete
+                || cli.image.is_some()
+                || has_docker_args
+                || cli.no_ssh
+                || !cli.cmd.is_empty() =>
+        {
+            eprintln!("Error: 'realm path' does not accept flags or commands.");
             std::process::exit(1);
         }
         Some("path") => cmd_path(cli.arg.as_deref()),
+        Some(_) if cli.arg.is_some() => {
+            eprintln!("Error: unexpected argument '{}'.", cli.arg.unwrap());
+            std::process::exit(1);
+        }
         Some(_) if cli.delete => cmd_delete(cli.name.as_deref().unwrap()),
         Some(name) => cmd_create_or_resume(
             name,
@@ -582,5 +594,28 @@ mod tests {
         let cli = parse(&["my-session"]);
         assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert!(cli.arg.is_none());
+    }
+
+    #[test]
+    fn test_path_with_flags_detected() {
+        // Verify that flags parsed alongside 'path' are detected for rejection
+        let cli = parse(&["path", "foo", "--delete"]);
+        assert_eq!(cli.name.as_deref(), Some("path"));
+        assert!(cli.delete);
+    }
+
+    #[test]
+    fn test_path_with_command_detected() {
+        let cli = parse(&["path", "foo", "--", "bash"]);
+        assert_eq!(cli.name.as_deref(), Some("path"));
+        assert!(!cli.cmd.is_empty());
+    }
+
+    #[test]
+    fn test_regular_session_extra_arg_detected() {
+        // Clap still parses this; the runtime match rejects it
+        let cli = parse(&["my-session", "extra"]);
+        assert_eq!(cli.name.as_deref(), Some("my-session"));
+        assert_eq!(cli.arg.as_deref(), Some("extra"));
     }
 }
