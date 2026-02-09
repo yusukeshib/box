@@ -201,6 +201,41 @@ On first run, `git clone --local` creates an independent copy of your repo in th
 | Workspace | Bind-mounted from `~/.realm/workspaces/<name>/`, persists across stop/start |
 | Session cleanup | `realm <name> -d` removes container, workspace, and session data |
 
+## Design Decisions
+
+### Why `git clone --local`?
+
+Several git isolation strategies exist — here's why the alternatives fall short:
+
+| Strategy | Problem |
+|----------|---------|
+| **Bind-mount the host repo** | No isolation at all; the agent modifies your actual files |
+| **git worktree** | Shares the `.git` directory with the host; checkout, reset, and rebase can affect host branches and refs |
+| **Bare-git mount** | Still shares state; branch creates/deletes in the container affect the host |
+| **Branch-only isolation** | Nothing stops the agent from checking out other branches or running destructive git commands on shared refs |
+| **Full copy (`cp -r`)** | Truly isolated but slow for large repos |
+| **Docker sandbox (`--sandbox`)** | Opaque — no control over image, no persistence, no SSH forwarding, no custom Docker args (see [below](#why-plain-docker-not---sandbox)) |
+
+`git clone --local` wins because it's:
+
+- **Fully independent** — the clone has its own `.git`; nothing in the container can touch the host repo
+- **Fast** — hardlinks file objects on the same filesystem instead of copying
+- **Complete** — full history, all branches, standard git repo
+- **Simple** — no wrapper scripts or special entrypoints needed
+
+### Why plain Docker (not `--sandbox`)?
+
+Claude Code's built-in `--sandbox` mode wraps Docker, but trades flexibility for convenience:
+
+- **Opaque** — you don't control the base image, installed packages, or container setup
+- **Not flexible** — can't bring your own toolchain, runtime, or dev environment
+- **No persistence** — no exit-and-resume; each run starts fresh
+- **No SSH forwarding** — git push/pull with SSH keys doesn't work out of the box
+- **No custom Docker args** — can't configure network, extra volumes, or env vars
+- **Single-agent** — tied to Claude Code; realm works with any agent or manual use
+
+Plain Docker gives full control while realm handles the isolation and lifecycle.
+
 ## SSH Agent Forwarding
 
 **The problem**: Docker containers can't normally access your host SSH keys. On macOS it's even harder — Docker runs in a VM, so Unix sockets can't cross the VM boundary.
