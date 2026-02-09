@@ -72,7 +72,10 @@ pub fn session_exists(name: &str) -> bool {
     match sessions_dir() {
         Ok(dir) => dir.join(name).is_dir(),
         Err(e) => {
-            eprintln!("Failed to determine sessions directory while checking if session '{}' exists: {}", name, e);
+            eprintln!(
+                "Failed to determine sessions directory while checking if session '{}' exists: {}",
+                name, e
+            );
             false
         }
     }
