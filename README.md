@@ -129,8 +129,8 @@ Running `realm` with no arguments opens an interactive TUI:
 
 ```
  NAME            STATUS   PROJECT                   IMAGE            CREATED
-> New realm...
-  my-feature     running  /Users/you/projects/app   alpine:latest    2026-02-07 12:00:00 UTC
+  New realm...
+> my-feature     running  /Users/you/projects/app   alpine:latest    2026-02-07 12:00:00 UTC
   test                    /Users/you/projects/other  ubuntu:latest   2026-02-07 12:30:00 UTC
 
  [Enter] Resume  [d] Delete  [q] Quit

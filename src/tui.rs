@@ -46,27 +46,45 @@ impl TextInput {
         match code {
             KeyCode::Char(c) => {
                 self.text.insert(self.cursor, c);
-                self.cursor += 1;
+                self.cursor += c.len_utf8();
             }
             KeyCode::Backspace => {
                 if self.cursor > 0 {
-                    self.cursor -= 1;
-                    self.text.remove(self.cursor);
+                    let prev = self.text[..self.cursor]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    self.text.drain(prev..self.cursor);
+                    self.cursor = prev;
                 }
             }
             KeyCode::Delete => {
                 if self.cursor < self.text.len() {
-                    self.text.remove(self.cursor);
+                    let next = self.text[self.cursor..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| self.cursor + i)
+                        .unwrap_or(self.text.len());
+                    self.text.drain(self.cursor..next);
                 }
             }
             KeyCode::Left => {
                 if self.cursor > 0 {
-                    self.cursor -= 1;
+                    self.cursor = self.text[..self.cursor]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
                 }
             }
             KeyCode::Right => {
                 if self.cursor < self.text.len() {
-                    self.cursor += 1;
+                    self.cursor = self.text[self.cursor..]
+                        .char_indices()
+                        .nth(1)
+                        .map(|(i, _)| self.cursor + i)
+                        .unwrap_or(self.text.len());
                 }
             }
             _ => {}
@@ -77,12 +95,17 @@ impl TextInput {
         let mut spans = vec![Span::styled(prefix.to_string(), Style::default().bold())];
         let text = &self.text;
         if self.cursor < text.len() {
+            let next = text[self.cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| self.cursor + i)
+                .unwrap_or(text.len());
             spans.push(Span::raw(text[..self.cursor].to_string()));
             spans.push(Span::styled(
-                text[self.cursor..self.cursor + 1].to_string(),
+                text[self.cursor..next].to_string(),
                 Style::default().reversed(),
             ));
-            spans.push(Span::raw(text[self.cursor + 1..].to_string()));
+            spans.push(Span::raw(text[next..].to_string()));
         } else {
             spans.push(Span::raw(text.clone()));
             spans.push(Span::styled(" ", Style::default().reversed()));
@@ -282,7 +305,7 @@ where
                     }
                 }
                 Mode::DeleteConfirm => match key.code {
-                    KeyCode::Char('y') => {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
                         if let Some(i) = state.selected() {
                             let item_idx = i - 1; // offset for "new session" row
                             let name = items[item_idx].name.clone();
@@ -307,7 +330,7 @@ where
                         }
                         mode = Mode::Normal;
                     }
-                    KeyCode::Char('n') | KeyCode::Esc => {
+                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                         mode = Mode::Normal;
                     }
                     _ => {}
@@ -319,7 +342,7 @@ where
                             footer_msg = e.to_string();
                             mode = Mode::Normal;
                             input = TextInput::new();
-                        } else if session::session_exists(&name) {
+                        } else if session::session_exists(&name).unwrap_or(false) {
                             footer_msg = format!("Session '{}' already exists.", name);
                             mode = Mode::Normal;
                             input = TextInput::new();

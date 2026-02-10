@@ -187,7 +187,7 @@ fn cmd_create_or_resume(
     detach: bool,
 ) -> Result<i32> {
     // Check if session exists
-    if session::session_exists(name) {
+    if session::session_exists(name)? {
         // Session exists - resume it
         return cmd_resume(name, &docker_args, cmd, ssh, detach);
     }
@@ -262,7 +262,7 @@ fn cmd_resume(
 fn cmd_path(arg: Option<&str>) -> Result<i32> {
     let name = arg.ok_or_else(|| anyhow::anyhow!("Usage: realm path <session-name>"))?;
     session::validate_name(name)?;
-    if !session::session_exists(name) {
+    if !session::session_exists(name)? {
         bail!("Session '{}' not found.", name);
     }
     let home = config::home_dir()?;
@@ -491,7 +491,6 @@ mod tests {
         assert_eq!(cli.name.as_deref(), Some("my-session"));
         assert!(cli.cmd.is_empty());
     }
-
 
     #[test]
     fn test_path_subcommand_parses() {
