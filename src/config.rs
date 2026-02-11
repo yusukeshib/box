@@ -186,6 +186,8 @@ mod tests {
     #[test]
     fn test_resolve_env_default_image() {
         let _lock = ENV_LOCK.lock().unwrap();
+        let saved_cmd = std::env::var("REALM_DEFAULT_CMD").ok();
+        std::env::remove_var("REALM_DEFAULT_CMD");
         std::env::set_var("REALM_DEFAULT_IMAGE", "ubuntu:latest");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -199,11 +201,16 @@ mod tests {
         .unwrap();
         assert_eq!(config.image, "ubuntu:latest");
         std::env::remove_var("REALM_DEFAULT_IMAGE");
+        if let Some(v) = saved_cmd {
+            std::env::set_var("REALM_DEFAULT_CMD", v);
+        }
     }
 
     #[test]
     fn test_resolve_image_flag_overrides_env() {
         let _lock = ENV_LOCK.lock().unwrap();
+        let saved_cmd = std::env::var("REALM_DEFAULT_CMD").ok();
+        std::env::remove_var("REALM_DEFAULT_CMD");
         std::env::set_var("REALM_DEFAULT_IMAGE", "ubuntu:latest");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -217,6 +224,9 @@ mod tests {
         .unwrap();
         assert_eq!(config.image, "python:3.11");
         std::env::remove_var("REALM_DEFAULT_IMAGE");
+        if let Some(v) = saved_cmd {
+            std::env::set_var("REALM_DEFAULT_CMD", v);
+        }
     }
 
     #[test]
@@ -290,6 +300,7 @@ mod tests {
     #[test]
     fn test_resolve_env_default_cmd() {
         let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("REALM_DEFAULT_CMD").ok();
         std::env::set_var("REALM_DEFAULT_CMD", "bash");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -302,12 +313,16 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.command, vec!["bash".to_string()]);
-        std::env::remove_var("REALM_DEFAULT_CMD");
+        match saved {
+            Some(v) => std::env::set_var("REALM_DEFAULT_CMD", v),
+            None => std::env::remove_var("REALM_DEFAULT_CMD"),
+        }
     }
 
     #[test]
     fn test_resolve_cli_cmd_overrides_env() {
         let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("REALM_DEFAULT_CMD").ok();
         std::env::set_var("REALM_DEFAULT_CMD", "bash");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -320,12 +335,16 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.command, vec!["sh".to_string()]);
-        std::env::remove_var("REALM_DEFAULT_CMD");
+        match saved {
+            Some(v) => std::env::set_var("REALM_DEFAULT_CMD", v),
+            None => std::env::remove_var("REALM_DEFAULT_CMD"),
+        }
     }
 
     #[test]
     fn test_resolve_env_default_cmd_multi_word() {
         let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("REALM_DEFAULT_CMD").ok();
         std::env::set_var("REALM_DEFAULT_CMD", "bash -c 'echo hello'");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -345,12 +364,16 @@ mod tests {
                 "echo hello".to_string()
             ]
         );
-        std::env::remove_var("REALM_DEFAULT_CMD");
+        match saved {
+            Some(v) => std::env::set_var("REALM_DEFAULT_CMD", v),
+            None => std::env::remove_var("REALM_DEFAULT_CMD"),
+        }
     }
 
     #[test]
     fn test_resolve_env_default_cmd_empty() {
         let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("REALM_DEFAULT_CMD").ok();
         std::env::set_var("REALM_DEFAULT_CMD", "");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -363,12 +386,16 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
-        std::env::remove_var("REALM_DEFAULT_CMD");
+        match saved {
+            Some(v) => std::env::set_var("REALM_DEFAULT_CMD", v),
+            None => std::env::remove_var("REALM_DEFAULT_CMD"),
+        }
     }
 
     #[test]
     fn test_resolve_env_default_cmd_invalid_parse() {
         let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("REALM_DEFAULT_CMD").ok();
         std::env::set_var("REALM_DEFAULT_CMD", "bash -c 'unclosed");
         let result = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -384,12 +411,16 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("REALM_DEFAULT_CMD"));
-        std::env::remove_var("REALM_DEFAULT_CMD");
+        match saved {
+            Some(v) => std::env::set_var("REALM_DEFAULT_CMD", v),
+            None => std::env::remove_var("REALM_DEFAULT_CMD"),
+        }
     }
 
     #[test]
     fn test_resolve_env_default_cmd_unset() {
         let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("REALM_DEFAULT_CMD").ok();
         std::env::remove_var("REALM_DEFAULT_CMD");
         let config = resolve(RealmConfigInput {
             name: "test".to_string(),
@@ -402,5 +433,8 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
+        if let Some(v) = saved {
+            std::env::set_var("REALM_DEFAULT_CMD", v);
+        }
     }
 }
