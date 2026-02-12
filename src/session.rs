@@ -257,6 +257,12 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_name_reserved_config() {
+        let err = validate_name("config").unwrap_err();
+        assert!(err.to_string().contains("reserved name"));
+    }
+
+    #[test]
     fn test_validate_name_invalid_chars() {
         let err = validate_name("bad name").unwrap_err();
         assert!(err.to_string().contains("Invalid session name"));
