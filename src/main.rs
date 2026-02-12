@@ -153,7 +153,7 @@ fn cmd_create(
     name: &str,
     image: Option<String>,
     docker_args: &str,
-    cmd: Vec<String>,
+    cmd: Option<Vec<String>>,
     ssh: bool,
     detach: bool,
 ) -> Result<i32> {
@@ -220,6 +220,7 @@ fn cmd_create_or_resume(
     }
 
     // Session doesn't exist - create it
+    let cmd = if cmd.is_empty() { None } else { Some(cmd) };
     cmd_create(name, image, &docker_args, cmd, ssh, detach)
 }
 

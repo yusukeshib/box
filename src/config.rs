@@ -27,7 +27,7 @@ pub struct RealmConfigInput {
     pub image: Option<String>,
     pub mount_path: Option<String>,
     pub project_dir: String,
-    pub command: Vec<String>,
+    pub command: Option<Vec<String>>,
     pub env: Vec<String>,
     pub ssh: bool,
 }
@@ -39,14 +39,13 @@ pub fn resolve(input: RealmConfigInput) -> Result<RealmConfig> {
     let image = input.image.unwrap_or_else(|| {
         std::env::var("REALM_DEFAULT_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.to_string())
     });
-    let command = if input.command.is_empty() {
-        match std::env::var("REALM_DEFAULT_CMD") {
+    let command = match input.command {
+        None => match std::env::var("REALM_DEFAULT_CMD") {
             Ok(val) if !val.is_empty() => shell_words::split(&val)
                 .map_err(|e| anyhow::anyhow!("Failed to parse REALM_DEFAULT_CMD: {}", e))?,
             _ => vec![],
-        }
-    } else {
-        input.command
+        },
+        Some(cmd) => cmd,
     };
 
     Ok(RealmConfig {
@@ -120,7 +119,7 @@ mod tests {
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -156,7 +155,7 @@ mod tests {
             image: None,
             mount_path: Some("/custom".to_string()),
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -174,7 +173,7 @@ mod tests {
             image: Some("ubuntu:latest".to_string()),
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -194,7 +193,7 @@ mod tests {
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -217,7 +216,7 @@ mod tests {
             image: Some("python:3.11".to_string()),
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -277,7 +276,7 @@ mod tests {
             image: Some("python:3.11".to_string()),
             mount_path: Some("/app".to_string()),
             project_dir: "/home/user/project".to_string(),
-            command: vec!["python".to_string(), "main.py".to_string()],
+            command: Some(vec!["python".to_string(), "main.py".to_string()]),
             env: vec!["FOO=bar".to_string()],
             ssh: false,
         })
@@ -307,7 +306,7 @@ mod tests {
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -329,7 +328,7 @@ mod tests {
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec!["sh".to_string()],
+            command: Some(vec!["sh".to_string()]),
             env: vec![],
             ssh: false,
         })
@@ -351,7 +350,7 @@ mod tests {
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -380,7 +379,7 @@ mod tests {
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -402,7 +401,7 @@ mod tests {
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         });
@@ -427,7 +426,7 @@ mod tests {
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
-            command: vec![],
+            command: None,
             env: vec![],
             ssh: false,
         })
@@ -435,6 +434,28 @@ mod tests {
         assert_eq!(config.command, Vec::<String>::new());
         if let Some(v) = saved {
             std::env::set_var("REALM_DEFAULT_CMD", v);
+        }
+    }
+
+    #[test]
+    fn test_resolve_explicit_empty_command_skips_default() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("REALM_DEFAULT_CMD").ok();
+        std::env::set_var("REALM_DEFAULT_CMD", "bash");
+        let config = resolve(RealmConfigInput {
+            name: "test".to_string(),
+            image: None,
+            mount_path: None,
+            project_dir: "/home/user/myproject".to_string(),
+            command: Some(vec![]),
+            env: vec![],
+            ssh: false,
+        })
+        .unwrap();
+        assert_eq!(config.command, Vec::<String>::new());
+        match saved {
+            Some(v) => std::env::set_var("REALM_DEFAULT_CMD", v),
+            None => std::env::remove_var("REALM_DEFAULT_CMD"),
         }
     }
 }
