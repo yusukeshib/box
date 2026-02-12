@@ -92,10 +92,19 @@ pub fn run_with_overlay(
 
     let mut app_cursor = false;
     let mut mouse_mode = false;
+    let mut cursor_visible = true;
     let mut ctrl_p_pressed = false;
 
     // Draw initial status bar
-    draw_status_bar(&mut stdout, term_rows, term_cols, session_name, &fg_color)?;
+    draw_status_bar(&mut stdout, term_rows, term_cols, session_name, &fg_color, cursor_visible)?;
+    stdout.flush()?;
+
+    // Nudge the inner app to redraw by toggling the PTY size.
+    // TIOCSWINSZ sends SIGWINCH to the foreground process group, which makes
+    // shells and TUI apps repaint.  This is needed because we just cleared the
+    // screen and the inner app doesn't know it should redraw.
+    set_pty_size(master_fd, content_rows.saturating_sub(1).max(1), term_cols);
+    set_pty_size(master_fd, content_rows, term_cols);
 
     let result = run_event_loop(
         &mut stdout,
@@ -107,6 +116,7 @@ pub fn run_with_overlay(
         &mut ctrl_p_pressed,
         &mut mouse_mode,
         &mut app_cursor,
+        &mut cursor_visible,
     );
 
     // Close master fd so the reader thread's read() gets EIO.
@@ -129,6 +139,7 @@ fn run_event_loop(
     ctrl_p_pressed: &mut bool,
     mouse_mode: &mut bool,
     app_cursor: &mut bool,
+    cursor_visible: &mut bool,
 ) -> Result<OverlayResult> {
     let mut reader_done = false;
     let mut buf = Vec::with_capacity(8192);
@@ -140,6 +151,7 @@ fn run_event_loop(
                 Ok(data) => {
                     detect_mouse_mode(&data, mouse_mode);
                     detect_app_cursor_mode(&data, app_cursor);
+                    detect_cursor_visible(&data, cursor_visible);
                     buf.extend_from_slice(&data);
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -156,7 +168,7 @@ fn run_event_loop(
             // Begin synchronized update (terminals that don't support it ignore this)
             stdout.write_all(b"\x1b[?2026h")?;
             stdout.write_all(&buf)?;
-            draw_status_bar(stdout, rows, cols, session_name, fg_color)?;
+            draw_status_bar(stdout, rows, cols, session_name, fg_color, *cursor_visible)?;
             // End synchronized update — terminal renders the whole frame at once
             stdout.write_all(b"\x1b[?2026l")?;
             stdout.flush()?;
@@ -237,7 +249,7 @@ fn run_event_loop(
                         let content_rows = rows - 1;
                         set_pty_size(master_fd, content_rows, cols);
                         stdout.write_all(b"\x1b[?2026h")?;
-                        draw_status_bar(stdout, rows, cols, session_name, fg_color)?;
+                        draw_status_bar(stdout, rows, cols, session_name, fg_color, *cursor_visible)?;
                         stdout.write_all(b"\x1b[?2026l")?;
                         stdout.flush()?;
                     }
@@ -263,6 +275,7 @@ fn draw_status_bar(
     cols: u16,
     session_name: &str,
     fg_color: &str,
+    cursor_visible: bool,
 ) -> Result<()> {
     let content_rows = rows.saturating_sub(1).max(1);
     let width = cols as usize;
@@ -279,26 +292,24 @@ fn draw_status_bar(
     let left_len = left.len();
     let pad = width.saturating_sub(left_len + right_len);
 
+    // Hide cursor during status bar draw so it never blinks at intermediate
+    // positions (e.g. the status bar row).
+    //
     // Uses SCP/RCP (\x1b[s / \x1b[u) instead of DECSC/DECRC (\x1b7 / \x1b8)
     // to avoid clobbering the inner application's cursor save slot.
     //
-    // \x1b[s              = save cursor position (SCP — separate slot from DECSC)
-    // \x1b[{rows};1H     = move to bottom row (status bar)
-    // \x1b[2K             = clear entire line (removes stale content after resize)
-    // \x1b[{fg};1;100m   = bold + fg color + dark gray bg
-    // ... bar content ...
-    // \x1b[0m             = reset SGR attributes
-    // \x1b[1;{N}r         = re-assert scroll region (resets cursor to 1,1)
-    // \x1b[u              = restore cursor to saved position (RCP)
+    // After restoring cursor, only re-show it if the inner app had it visible.
+    let cursor_suffix = if cursor_visible { "\x1b[?25h" } else { "" };
     write!(
         stdout,
-        "\x1b[s\x1b[{};1H\x1b[2K\x1b[{}1;100m{}{}{}\x1b[0m\x1b[1;{}r\x1b[u",
+        "\x1b[?25l\x1b[s\x1b[{};1H\x1b[2K\x1b[{}1;100m{}{}{}\x1b[0m\x1b[1;{}r\x1b[u{}",
         rows,
         fg_color,
         left,
         " ".repeat(pad),
         right,
         content_rows,
+        cursor_suffix,
     )?;
     Ok(())
 }
@@ -312,6 +323,21 @@ fn detect_app_cursor_mode(data: &[u8], app_cursor: &mut bool) {
             *app_cursor = true;
         } else if window == b"\x1b[?1l" {
             *app_cursor = false;
+        }
+    }
+}
+
+/// Detect whether the inner application wants the cursor visible or hidden.
+///
+/// Scans for DECTCEM set/reset: `\e[?25h` (show) / `\e[?25l` (hide).
+fn detect_cursor_visible(data: &[u8], visible: &mut bool) {
+    for window in data.windows(6) {
+        if window[..5] == *b"\x1b[?25" {
+            if window[5] == b'h' {
+                *visible = true;
+            } else if window[5] == b'l' {
+                *visible = false;
+            }
         }
     }
 }
