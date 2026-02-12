@@ -250,12 +250,13 @@ fn run_event_loop(
 
 /// Draw the status bar on the bottom row using raw ANSI escapes.
 ///
-/// Sequence: save cursor → move to bottom row → draw styled text →
-/// re-assert scroll region → restore cursor.
+/// Sequence: save cursor (SCP) → move to bottom row → draw styled text →
+/// re-assert scroll region → restore cursor (RCP).
 ///
-/// The scroll region command (`\e[1;Nr`) is included here because it resets
-/// the cursor to home (1,1) as a side effect.  By issuing it between
-/// save (`\e7`) and restore (`\e8`), the cursor position is preserved.
+/// Uses SCP/RCP (`\e[s`/`\e[u`) instead of DECSC/DECRC (`\e7`/`\e8`) so
+/// we don't clobber the inner application's cursor save slot.  The scroll
+/// region command (`\e[1;Nr`) resets the cursor to home (1,1) as a side
+/// effect, but the RCP restore undoes that.
 fn draw_status_bar(
     stdout: &mut io::Stdout,
     rows: u16,
@@ -278,17 +279,20 @@ fn draw_status_bar(
     let left_len = left.len();
     let pad = width.saturating_sub(left_len + right_len);
 
-    // \x1b7              = save cursor position
+    // Uses SCP/RCP (\x1b[s / \x1b[u) instead of DECSC/DECRC (\x1b7 / \x1b8)
+    // to avoid clobbering the inner application's cursor save slot.
+    //
+    // \x1b[s              = save cursor position (SCP — separate slot from DECSC)
     // \x1b[{rows};1H     = move to bottom row (status bar)
     // \x1b[2K             = clear entire line (removes stale content after resize)
     // \x1b[{fg};1;100m   = bold + fg color + dark gray bg
     // ... bar content ...
     // \x1b[0m             = reset SGR attributes
     // \x1b[1;{N}r         = re-assert scroll region (resets cursor to 1,1)
-    // \x1b8               = restore cursor to saved position
+    // \x1b[u              = restore cursor to saved position (RCP)
     write!(
         stdout,
-        "\x1b7\x1b[{};1H\x1b[2K\x1b[{}1;100m{}{}{}\x1b[0m\x1b[1;{}r\x1b8",
+        "\x1b[s\x1b[{};1H\x1b[2K\x1b[{}1;100m{}{}{}\x1b[0m\x1b[1;{}r\x1b[u",
         rows,
         fg_color,
         left,
