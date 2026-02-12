@@ -1,14 +1,12 @@
 use anyhow::{Context, Result};
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::{execute, terminal};
 use nix::libc;
 use nix::pty::openpty;
-use ratatui::prelude::*;
-use ratatui::widgets::Paragraph;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::os::fd::BorrowedFd;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::process::Child;
@@ -23,26 +21,24 @@ pub enum OverlayResult {
     Stopped,
 }
 
-/// Run a Docker session with a TUI overlay that shows a title bar.
+/// Run a Docker session with a TUI overlay that shows a bottom status bar.
 ///
-/// `spawn_docker` receives the slave PTY fd and must return a `Child`.
+/// Uses a transparent PTY proxy: Docker output is forwarded as raw bytes to stdout.
+/// The bottom terminal row is reserved for a status bar using ANSI scroll regions.
 pub fn run_with_overlay(
     session_name: &str,
     title_color: Option<&str>,
     spawn_docker: impl FnOnce(RawFd) -> Result<Child>,
 ) -> Result<OverlayResult> {
-    let color = parse_color(title_color);
+    let fg_color = parse_color_ansi(title_color);
 
-    // Get terminal size
     let (term_cols, term_rows) = terminal::size().context("Failed to get terminal size")?;
     if term_rows < 3 || term_cols < 20 {
         anyhow::bail!("Terminal too small (need at least 20x3)");
     }
 
-    // Content area is term_rows - 1 (row 0 is title bar)
     let content_rows = term_rows - 1;
 
-    // Open PTY with content area size
     let pty = openpty(
         Some(&nix::pty::Winsize {
             ws_row: content_rows,
@@ -57,14 +53,8 @@ pub fn run_with_overlay(
     let master_fd = pty.master.as_raw_fd();
     let slave_fd = pty.slave.as_raw_fd();
 
-    // Spawn docker with the slave fd
     let mut child = spawn_docker(slave_fd)?;
-
-    // Close slave fd in parent process - Docker child owns it now
     drop(pty.slave);
-
-    // Set up vt100 parser
-    let mut parser = vt100::Parser::new(content_rows, term_cols, 0);
 
     // Reader thread: reads PTY master output, sends to main thread
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -89,33 +79,34 @@ pub fn run_with_overlay(
         }
     });
 
-    // Enter alternate screen + raw mode + mouse capture
+    // Enter raw mode + mouse capture (NO alternate screen)
     let mut stdout = io::stdout();
-    execute!(stdout, terminal::EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnableMouseCapture)?;
     terminal::enable_raw_mode()?;
 
-    let _guard = TerminalGuard;
+    // Set scroll region to reserve bottom row for status bar
+    write!(stdout, "\x1b[1;{}r", content_rows)?;
+    stdout.flush()?;
 
-    let backend = CrosstermBackend::new(io::stdout());
-    let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
+    let _guard = TerminalGuard { content_rows };
 
-    // Detach state machine: Ctrl+P then Q
+    let mut app_cursor = false;
+    let mut mouse_mode = false;
     let mut ctrl_p_pressed = false;
 
-    // Track mouse mode from inner terminal
-    let mut mouse_mode = false;
+    // Draw initial status bar
+    draw_status_bar(&mut stdout, term_rows, term_cols, session_name, &fg_color)?;
 
     let result = run_event_loop(
-        &mut terminal,
+        &mut stdout,
         &mut child,
-        &mut parser,
         &rx,
         master_fd,
         session_name,
-        color,
+        &fg_color,
         &mut ctrl_p_pressed,
         &mut mouse_mode,
+        &mut app_cursor,
     );
 
     // Clean up reader thread
@@ -127,25 +118,25 @@ pub fn run_with_overlay(
 
 #[allow(clippy::too_many_arguments)]
 fn run_event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    stdout: &mut io::Stdout,
     child: &mut Child,
-    parser: &mut vt100::Parser,
     rx: &mpsc::Receiver<Vec<u8>>,
     master_fd: RawFd,
     session_name: &str,
-    title_color: Color,
+    fg_color: &str,
     ctrl_p_pressed: &mut bool,
     mouse_mode: &mut bool,
+    app_cursor: &mut bool,
 ) -> Result<OverlayResult> {
     loop {
-        // Drain PTY output
+        // Drain PTY output — forward raw bytes to stdout
         let mut got_output = false;
         loop {
             match rx.try_recv() {
                 Ok(data) => {
-                    // Check for mouse mode escape sequences in output
                     detect_mouse_mode(&data, mouse_mode);
-                    parser.process(&data);
+                    detect_app_cursor_mode(&data, app_cursor);
+                    stdout.write_all(&data)?;
                     got_output = true;
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
@@ -153,24 +144,26 @@ fn run_event_loop(
             }
         }
 
+        // After forwarding output, re-assert scroll region and redraw status bar
+        if got_output {
+            let (cols, rows) = terminal::size().unwrap_or((80, 24));
+            let content_rows = rows.saturating_sub(1).max(1);
+            write!(stdout, "\x1b[1;{}r", content_rows)?;
+            draw_status_bar(stdout, rows, cols, session_name, fg_color)?;
+        }
+
         // Check if child exited
         match child.try_wait() {
             Ok(Some(status)) => {
                 // Drain remaining output
                 while let Ok(data) = rx.try_recv() {
-                    parser.process(&data);
+                    stdout.write_all(&data)?;
                 }
-                // Final render
-                render(terminal, parser, session_name, title_color)?;
+                stdout.flush()?;
                 return Ok(OverlayResult::Exited(status.code().unwrap_or(1)));
             }
             Ok(None) => {}
             Err(_) => return Ok(OverlayResult::Exited(1)),
-        }
-
-        // Render
-        if got_output || !event::poll(Duration::ZERO)? {
-            render(terminal, parser, session_name, title_color)?;
         }
 
         // Poll for events with timeout for ~60fps
@@ -181,17 +174,25 @@ fn run_event_loop(
                         continue;
                     }
 
-                    // Detach: Ctrl+P, Q
                     if *ctrl_p_pressed {
                         *ctrl_p_pressed = false;
-                        if key.code == KeyCode::Char('q') || key.code == KeyCode::Char('Q') {
-                            return Ok(OverlayResult::Detached);
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                return Ok(OverlayResult::Detached);
+                            }
+                            KeyCode::Char('x') | KeyCode::Char('X') => {
+                                docker::stop_container(session_name);
+                                let _ = child.wait();
+                                return Ok(OverlayResult::Stopped);
+                            }
+                            _ => {
+                                // Not a recognized combo — send the buffered Ctrl+P then this key
+                                write_to_pty(master_fd, &[0x10]);
+                                let bytes = key_to_bytes(key, *app_cursor);
+                                write_to_pty(master_fd, &bytes);
+                                continue;
+                            }
                         }
-                        // Not Q - send the buffered Ctrl+P then this key
-                        write_to_pty(master_fd, &[0x10]); // Ctrl+P
-                        let bytes = key_to_bytes(key, parser.screen());
-                        write_to_pty(master_fd, &bytes);
-                        continue;
                     }
 
                     if key.code == KeyCode::Char('p')
@@ -201,37 +202,25 @@ fn run_event_loop(
                         continue;
                     }
 
-                    let bytes = key_to_bytes(key, parser.screen());
+                    let bytes = key_to_bytes(key, *app_cursor);
                     write_to_pty(master_fd, &bytes);
                 }
                 Event::Mouse(mouse) => {
-                    let (_, term_rows) = terminal::size().unwrap_or((80, 24));
-                    handle_mouse(
-                        mouse,
-                        master_fd,
-                        session_name,
-                        term_rows,
-                        child,
-                        *mouse_mode,
-                    )?;
-
-                    // Check if we got a stop/detach action from title bar
-                    if let Some(action) = check_title_bar_click(mouse, term_rows, session_name) {
-                        match action {
-                            TitleBarAction::Detach => return Ok(OverlayResult::Detached),
-                            TitleBarAction::Stop => {
-                                docker::stop_container(session_name);
-                                let _ = child.wait();
-                                return Ok(OverlayResult::Stopped);
-                            }
-                        }
+                    if !*mouse_mode {
+                        continue;
+                    }
+                    // No row offset needed — status bar is at the bottom,
+                    // so Docker's coordinate space maps directly.
+                    if let Some(seq) = encode_mouse_event(mouse.kind, mouse.column, mouse.row) {
+                        write_to_pty(master_fd, seq.as_bytes());
                     }
                 }
                 Event::Resize(cols, rows) => {
                     if rows > 1 {
                         let content_rows = rows - 1;
-                        parser.set_size(content_rows, cols);
                         set_pty_size(master_fd, content_rows, cols);
+                        write!(stdout, "\x1b[1;{}r", content_rows)?;
+                        draw_status_bar(stdout, rows, cols, session_name, fg_color)?;
                     }
                 }
                 _ => {}
@@ -240,160 +229,120 @@ fn run_event_loop(
     }
 }
 
-fn render(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    parser: &vt100::Parser,
+/// Draw the status bar on the bottom row using raw ANSI escapes.
+///
+/// Sequence: save cursor → move to bottom row → draw bar → re-assert scroll region → restore cursor
+fn draw_status_bar(
+    stdout: &mut io::Stdout,
+    rows: u16,
+    cols: u16,
     session_name: &str,
-    title_color: Color,
+    fg_color: &str,
 ) -> Result<()> {
-    let screen = parser.screen();
-    terminal.draw(|f| {
-        let area = f.area();
-        if area.height < 2 {
-            return;
-        }
+    let width = cols as usize;
+    let right = " ctrl+p,q:detach | ctrl+p,x:stop ";
+    let right_len = right.len();
 
-        let title_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: 1,
-        };
-        let content_area = Rect {
-            x: area.x,
-            y: area.y + 1,
-            width: area.width,
-            height: area.height - 1,
-        };
-
-        // Render title bar
-        render_title_bar(f, title_area, session_name, title_color);
-
-        // Render terminal content
-        render_content(f, content_area, screen);
-
-        // Position cursor
-        if !screen.hide_cursor() {
-            let cursor = screen.cursor_position();
-            let cx = content_area.x + cursor.1;
-            let cy = content_area.y + cursor.0;
-            if cx < content_area.x + content_area.width && cy < content_area.y + content_area.height
-            {
-                f.set_cursor_position((cx, cy));
-            }
-        }
-    })?;
-    Ok(())
-}
-
-fn render_title_bar(f: &mut Frame, area: Rect, session_name: &str, title_color: Color) {
-    let width = area.width as usize;
-    if width < 10 {
-        return;
-    }
-
-    let detach_btn = "[_]";
-    let stop_btn = "[x]";
-    let buttons = format!(" {} {} ", detach_btn, stop_btn);
-    let buttons_len = buttons.len();
-    let name_max = width.saturating_sub(buttons_len + 2);
+    let name_max = width.saturating_sub(right_len + 2);
     let display_name = if session_name.len() > name_max {
         &session_name[..name_max]
     } else {
         session_name
     };
-    let padding = width.saturating_sub(display_name.len() + 1 + buttons_len);
+    let left = format!(" {}", display_name);
+    let left_len = left.len();
+    let pad = width.saturating_sub(left_len + right_len);
 
-    let spans = vec![
-        Span::styled(
-            format!(" {}", display_name),
-            Style::default().fg(title_color).bg(Color::DarkGray).bold(),
-        ),
-        Span::styled(" ".repeat(padding), Style::default().bg(Color::DarkGray)),
-        Span::styled(
-            buttons,
-            Style::default().fg(Color::White).bg(Color::DarkGray),
-        ),
-    ];
-
-    let line = Line::from(spans);
-    f.render_widget(Paragraph::new(line), area);
+    // \x1b7          = save cursor
+    // \x1b[{rows};1H = move to bottom row
+    // \x1b[{fg};1;100m = bold + fg color + dark gray bg (SGR 100 = bright black bg)
+    // ... content ...
+    // \x1b[0m        = reset attributes
+    // \x1b8          = restore cursor
+    write!(
+        stdout,
+        "\x1b7\x1b[{};1H\x1b[{}1;100m{}{}{}\x1b[0m\x1b8",
+        rows,
+        fg_color,
+        left,
+        " ".repeat(pad),
+        right,
+    )?;
+    stdout.flush()?;
+    Ok(())
 }
 
-fn render_content(f: &mut Frame, area: Rect, screen: &vt100::Screen) {
-    let rows = area.height;
-    let cols = area.width;
-
-    let buf = f.buffer_mut();
-
-    for row in 0..rows {
-        for col in 0..cols {
-            let cell = screen.cell(row, col);
-            let x = area.x + col;
-            let y = area.y + row;
-
-            if x >= buf.area.x + buf.area.width || y >= buf.area.y + buf.area.height {
-                continue;
-            }
-
-            if let Some(cell) = cell {
-                if cell.is_wide_continuation() {
-                    continue;
-                }
-
-                let buf_cell = &mut buf[(x, y)];
-                let ch = cell.contents();
-                if ch.is_empty() {
-                    buf_cell.set_char(' ');
-                } else {
-                    // Set the symbol (may be multi-char for wide chars)
-                    buf_cell.set_symbol(&ch);
-                }
-
-                let fg = convert_color(cell.fgcolor());
-                let bg = convert_color(cell.bgcolor());
-                let mut style = Style::default().fg(fg).bg(bg);
-
-                if cell.bold() {
-                    style = style.add_modifier(Modifier::BOLD);
-                }
-                if cell.italic() {
-                    style = style.add_modifier(Modifier::ITALIC);
-                }
-                if cell.underline() {
-                    style = style.add_modifier(Modifier::UNDERLINED);
-                }
-                if cell.inverse() {
-                    style = style.add_modifier(Modifier::REVERSED);
-                }
-
-                buf_cell.set_style(style);
-
-                if cell.is_wide() {
-                    // Clear the continuation cell
-                    let next_x = x + 1;
-                    if next_x < area.x + area.width {
-                        let next_cell = &mut buf[(next_x, y)];
-                        next_cell.set_symbol("");
-                        next_cell.set_style(style);
-                    }
-                }
-            }
+/// Detect whether the inner application wants application cursor key mode.
+///
+/// Scans for DECCKM set/reset: `\e[?1h` (enable) / `\e[?1l` (disable).
+fn detect_app_cursor_mode(data: &[u8], app_cursor: &mut bool) {
+    // Look for \x1b[?1h and \x1b[?1l in the byte stream
+    if data.len() < 5 {
+        // Can't contain the sequence if shorter than 5 bytes, but check windows anyway
+        // Actually the sequence is exactly 5 bytes: ESC [ ? 1 h/l
+    }
+    for window in data.windows(5) {
+        if window == b"\x1b[?1h" {
+            *app_cursor = true;
+        } else if window == b"\x1b[?1l" {
+            *app_cursor = false;
         }
     }
 }
 
-fn convert_color(color: vt100::Color) -> Color {
-    match color {
-        vt100::Color::Default => Color::Reset,
-        vt100::Color::Idx(i) => Color::Indexed(i),
-        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+/// Detect whether the inner application is requesting mouse tracking.
+fn detect_mouse_mode(data: &[u8], mouse_mode: &mut bool) {
+    let s = match std::str::from_utf8(data) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    for window in ["\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h"] {
+        if s.contains(window) {
+            *mouse_mode = true;
+        }
+    }
+    for window in ["\x1b[?1000l", "\x1b[?1002l", "\x1b[?1003l", "\x1b[?1006l"] {
+        if s.contains(window) {
+            *mouse_mode = false;
+        }
     }
 }
 
-fn parse_color(color: Option<&str>) -> Color {
+/// Encode a crossterm mouse event as an SGR (1006) escape sequence.
+///
+/// No row offset is needed since the status bar is at the bottom.
+fn encode_mouse_event(kind: MouseEventKind, col: u16, row: u16) -> Option<String> {
+    let (button, suffix) = match kind {
+        MouseEventKind::Down(MouseButton::Left) => (0, 'M'),
+        MouseEventKind::Down(MouseButton::Right) => (2, 'M'),
+        MouseEventKind::Down(MouseButton::Middle) => (1, 'M'),
+        MouseEventKind::Up(MouseButton::Left) => (0, 'm'),
+        MouseEventKind::Up(MouseButton::Right) => (2, 'm'),
+        MouseEventKind::Up(MouseButton::Middle) => (1, 'm'),
+        MouseEventKind::Drag(MouseButton::Left) => (32, 'M'),
+        MouseEventKind::Drag(MouseButton::Right) => (34, 'M'),
+        MouseEventKind::Drag(MouseButton::Middle) => (33, 'M'),
+        MouseEventKind::Moved => (35, 'M'),
+        MouseEventKind::ScrollUp => (64, 'M'),
+        MouseEventKind::ScrollDown => (65, 'M'),
+        MouseEventKind::ScrollLeft => (66, 'M'),
+        MouseEventKind::ScrollRight => (67, 'M'),
+    };
+    Some(format!(
+        "\x1b[<{};{};{}{}",
+        button,
+        col + 1,
+        row + 1,
+        suffix
+    ))
+}
+
+/// Parse a color name/hex into an ANSI SGR foreground code string.
+///
+/// Returns a string like "37;" (white fg) or "38;2;R;G;B;" (true color fg).
+fn parse_color_ansi(color: Option<&str>) -> String {
     match color {
-        None => Color::White,
+        None => "37;".to_string(), // white
         Some(s) => {
             // Try hex color
             if let Some(hex) = s.strip_prefix('#') {
@@ -403,38 +352,36 @@ fn parse_color(color: Option<&str>) -> Color {
                         u8::from_str_radix(&hex[2..4], 16),
                         u8::from_str_radix(&hex[4..6], 16),
                     ) {
-                        return Color::Rgb(r, g, b);
+                        return format!("38;2;{};{};{};", r, g, b);
                     }
                 }
             }
-            // Named colors
+            // Named colors → SGR foreground codes
             match s.to_lowercase().as_str() {
-                "black" => Color::Black,
-                "red" => Color::Red,
-                "green" => Color::Green,
-                "yellow" => Color::Yellow,
-                "blue" => Color::Blue,
-                "magenta" => Color::Magenta,
-                "cyan" => Color::Cyan,
-                "white" => Color::White,
-                "gray" | "grey" => Color::Gray,
-                "darkgray" | "darkgrey" => Color::DarkGray,
-                "lightred" => Color::LightRed,
-                "lightgreen" => Color::LightGreen,
-                "lightyellow" => Color::LightYellow,
-                "lightblue" => Color::LightBlue,
-                "lightmagenta" => Color::LightMagenta,
-                "lightcyan" => Color::LightCyan,
-                _ => Color::White,
+                "black" => "30;",
+                "red" => "31;",
+                "green" => "32;",
+                "yellow" => "33;",
+                "blue" => "34;",
+                "magenta" => "35;",
+                "cyan" => "36;",
+                "white" => "37;",
+                "gray" | "grey" => "90;",
+                "darkgray" | "darkgrey" => "90;",
+                "lightred" => "91;",
+                "lightgreen" => "92;",
+                "lightyellow" => "93;",
+                "lightblue" => "94;",
+                "lightmagenta" => "95;",
+                "lightcyan" => "96;",
+                _ => "37;",
             }
+            .to_string()
         }
     }
 }
 
-fn key_to_bytes(key: KeyEvent, screen: &vt100::Screen) -> Vec<u8> {
-    let app_cursor = screen.application_cursor();
-    let _app_keypad = screen.application_keypad();
-
+fn key_to_bytes(key: KeyEvent, app_cursor: bool) -> Vec<u8> {
     // Handle Ctrl+<key> combinations
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         if let KeyCode::Char(c) = key.code {
@@ -456,7 +403,7 @@ fn key_to_bytes(key: KeyEvent, screen: &vt100::Screen) -> Vec<u8> {
     // Handle Alt+<key>
     if key.modifiers.contains(KeyModifiers::ALT) {
         if let KeyCode::Char(c) = key.code {
-            let mut bytes = vec![0x1b]; // ESC
+            let mut bytes = vec![0x1b];
             let mut char_buf = [0u8; 4];
             let encoded = c.encode_utf8(&mut char_buf);
             bytes.extend_from_slice(encoded.as_bytes());
@@ -564,235 +511,124 @@ fn set_pty_size(master_fd: RawFd, rows: u16, cols: u16) {
     }
 }
 
-/// Detect whether the inner application is requesting mouse tracking.
-fn detect_mouse_mode(data: &[u8], mouse_mode: &mut bool) {
-    // Look for common mouse enable/disable sequences
-    // Enable: \e[?1000h, \e[?1002h, \e[?1003h, \e[?1006h
-    // Disable: \e[?1000l, \e[?1002l, \e[?1003l, \e[?1006l
-    let s = match std::str::from_utf8(data) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    // Simple detection - check for the last relevant sequence
-    for window in ["\x1b[?1000h", "\x1b[?1002h", "\x1b[?1003h", "\x1b[?1006h"] {
-        if s.contains(window) {
-            *mouse_mode = true;
-        }
-    }
-    for window in ["\x1b[?1000l", "\x1b[?1002l", "\x1b[?1003l", "\x1b[?1006l"] {
-        if s.contains(window) {
-            *mouse_mode = false;
-        }
-    }
+/// RAII guard for terminal cleanup.
+///
+/// Restores: scroll region, raw mode, mouse capture.
+/// Does NOT leave alternate screen (we never entered it).
+struct TerminalGuard {
+    content_rows: u16,
 }
-
-enum TitleBarAction {
-    Detach,
-    Stop,
-}
-
-fn check_title_bar_click(
-    mouse: MouseEvent,
-    _term_rows: u16,
-    _session_name: &str,
-) -> Option<TitleBarAction> {
-    // Only handle clicks on row 0 (title bar)
-    if mouse.row != 0 {
-        return None;
-    }
-    if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-        return None;
-    }
-
-    let (term_cols, _) = terminal::size().unwrap_or((80, 24));
-    let width = term_cols as usize;
-
-    // Button layout: " session_name <padding> [_] [x] "
-    let detach_btn = "[_]";
-    let stop_btn = "[x]";
-    let buttons_str = format!(" {} {} ", detach_btn, stop_btn);
-    let buttons_len = buttons_str.len();
-
-    let col = mouse.column as usize;
-
-    // Buttons are right-aligned
-    let buttons_start = width.saturating_sub(buttons_len);
-
-    // [_] starts at buttons_start + 1, length 3
-    let detach_start = buttons_start + 1;
-    let detach_end = detach_start + 3;
-
-    // [x] starts at detach_end + 1, length 3
-    let stop_start = detach_end + 1;
-    let stop_end = stop_start + 3;
-
-    if col >= detach_start && col < detach_end {
-        Some(TitleBarAction::Detach)
-    } else if col >= stop_start && col < stop_end {
-        Some(TitleBarAction::Stop)
-    } else {
-        None
-    }
-}
-
-fn handle_mouse(
-    mouse: MouseEvent,
-    master_fd: RawFd,
-    _session_name: &str,
-    _term_rows: u16,
-    _child: &mut Child,
-    mouse_mode: bool,
-) -> Result<()> {
-    // Title bar clicks are handled separately in the event loop
-    if mouse.row == 0 {
-        return Ok(());
-    }
-
-    // Forward mouse events to inner terminal if mouse mode is active
-    if !mouse_mode {
-        return Ok(());
-    }
-
-    // Translate row: subtract 1 for title bar
-    let inner_row = mouse.row.saturating_sub(1);
-    let col = mouse.column;
-
-    // Use SGR (1006) mouse encoding: \e[<Cb;Cx;CyM or \e[<Cb;Cx;Cym
-    let (button, suffix) = match mouse.kind {
-        MouseEventKind::Down(MouseButton::Left) => (0, 'M'),
-        MouseEventKind::Down(MouseButton::Right) => (2, 'M'),
-        MouseEventKind::Down(MouseButton::Middle) => (1, 'M'),
-        MouseEventKind::Up(MouseButton::Left) => (0, 'm'),
-        MouseEventKind::Up(MouseButton::Right) => (2, 'm'),
-        MouseEventKind::Up(MouseButton::Middle) => (1, 'm'),
-        MouseEventKind::Drag(MouseButton::Left) => (32, 'M'),
-        MouseEventKind::Drag(MouseButton::Right) => (34, 'M'),
-        MouseEventKind::Drag(MouseButton::Middle) => (33, 'M'),
-        MouseEventKind::Moved => (35, 'M'),
-        MouseEventKind::ScrollUp => (64, 'M'),
-        MouseEventKind::ScrollDown => (65, 'M'),
-        MouseEventKind::ScrollLeft => (66, 'M'),
-        MouseEventKind::ScrollRight => (67, 'M'),
-    };
-
-    // SGR encoding: \e[<button;col+1;row+1M/m
-    let seq = format!("\x1b[<{};{};{}{}", button, col + 1, inner_row + 1, suffix);
-    write_to_pty(master_fd, seq.as_bytes());
-
-    Ok(())
-}
-
-/// RAII guard for terminal cleanup
-struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(
-            io::stdout(),
-            DisableMouseCapture,
-            terminal::LeaveAlternateScreen
-        );
+        let mut stdout = io::stdout();
+        let _ = execute!(stdout, DisableMouseCapture);
+        // Reset scroll region to full terminal
+        let _ = write!(stdout, "\x1b[r");
+        // Move cursor below where the status bar was so the shell prompt appears cleanly
+        let _ = writeln!(stdout, "\x1b[{};1H", self.content_rows + 1);
+        let _ = stdout.flush();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::MouseEventKind;
 
     #[test]
-    fn test_parse_color_none() {
-        assert_eq!(parse_color(None), Color::White);
+    fn test_parse_color_ansi_none() {
+        assert_eq!(parse_color_ansi(None), "37;");
     }
 
     #[test]
-    fn test_parse_color_named() {
-        assert_eq!(parse_color(Some("blue")), Color::Blue);
-        assert_eq!(parse_color(Some("Blue")), Color::Blue);
-        assert_eq!(parse_color(Some("RED")), Color::Red);
-        assert_eq!(parse_color(Some("green")), Color::Green);
-        assert_eq!(parse_color(Some("yellow")), Color::Yellow);
-        assert_eq!(parse_color(Some("cyan")), Color::Cyan);
-        assert_eq!(parse_color(Some("magenta")), Color::Magenta);
-        assert_eq!(parse_color(Some("white")), Color::White);
-        assert_eq!(parse_color(Some("black")), Color::Black);
-        assert_eq!(parse_color(Some("gray")), Color::Gray);
-        assert_eq!(parse_color(Some("grey")), Color::Gray);
+    fn test_parse_color_ansi_named() {
+        assert_eq!(parse_color_ansi(Some("blue")), "34;");
+        assert_eq!(parse_color_ansi(Some("Blue")), "34;");
+        assert_eq!(parse_color_ansi(Some("RED")), "31;");
+        assert_eq!(parse_color_ansi(Some("green")), "32;");
+        assert_eq!(parse_color_ansi(Some("yellow")), "33;");
+        assert_eq!(parse_color_ansi(Some("cyan")), "36;");
+        assert_eq!(parse_color_ansi(Some("magenta")), "35;");
+        assert_eq!(parse_color_ansi(Some("white")), "37;");
+        assert_eq!(parse_color_ansi(Some("black")), "30;");
+        assert_eq!(parse_color_ansi(Some("gray")), "90;");
+        assert_eq!(parse_color_ansi(Some("grey")), "90;");
     }
 
     #[test]
-    fn test_parse_color_hex() {
-        assert_eq!(parse_color(Some("#ff0000")), Color::Rgb(255, 0, 0));
-        assert_eq!(parse_color(Some("#00ff00")), Color::Rgb(0, 255, 0));
-        assert_eq!(parse_color(Some("#0000ff")), Color::Rgb(0, 0, 255));
-        assert_eq!(parse_color(Some("#abcdef")), Color::Rgb(171, 205, 239));
+    fn test_parse_color_ansi_hex() {
+        assert_eq!(parse_color_ansi(Some("#ff0000")), "38;2;255;0;0;");
+        assert_eq!(parse_color_ansi(Some("#00ff00")), "38;2;0;255;0;");
+        assert_eq!(parse_color_ansi(Some("#0000ff")), "38;2;0;0;255;");
+        assert_eq!(parse_color_ansi(Some("#abcdef")), "38;2;171;205;239;");
     }
 
     #[test]
-    fn test_parse_color_invalid_hex() {
-        // Too short
-        assert_eq!(parse_color(Some("#fff")), Color::White);
-        // Invalid chars
-        assert_eq!(parse_color(Some("#gggggg")), Color::White);
+    fn test_parse_color_ansi_invalid_hex() {
+        assert_eq!(parse_color_ansi(Some("#fff")), "37;");
+        assert_eq!(parse_color_ansi(Some("#gggggg")), "37;");
     }
 
     #[test]
-    fn test_parse_color_unknown() {
-        assert_eq!(parse_color(Some("unknown")), Color::White);
+    fn test_parse_color_ansi_unknown() {
+        assert_eq!(parse_color_ansi(Some("unknown")), "37;");
     }
 
     #[test]
     fn test_key_to_bytes_char() {
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
-        let parser = vt100::Parser::new(24, 80, 0);
-        assert_eq!(key_to_bytes(key, parser.screen()), vec![b'a']);
+        assert_eq!(key_to_bytes(key, false), vec![b'a']);
     }
 
     #[test]
     fn test_key_to_bytes_enter() {
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        let parser = vt100::Parser::new(24, 80, 0);
-        assert_eq!(key_to_bytes(key, parser.screen()), vec![b'\r']);
+        assert_eq!(key_to_bytes(key, false), vec![b'\r']);
     }
 
     #[test]
     fn test_key_to_bytes_ctrl_c() {
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        let parser = vt100::Parser::new(24, 80, 0);
-        assert_eq!(key_to_bytes(key, parser.screen()), vec![3]);
+        assert_eq!(key_to_bytes(key, false), vec![3]);
     }
 
     #[test]
     fn test_key_to_bytes_arrow_keys() {
-        let parser = vt100::Parser::new(24, 80, 0);
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        assert_eq!(key_to_bytes(up, parser.screen()), vec![0x1b, b'[', b'A']);
+        assert_eq!(key_to_bytes(up, false), vec![0x1b, b'[', b'A']);
         let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(key_to_bytes(down, parser.screen()), vec![0x1b, b'[', b'B']);
+        assert_eq!(key_to_bytes(down, false), vec![0x1b, b'[', b'B']);
+    }
+
+    #[test]
+    fn test_key_to_bytes_arrow_keys_app_cursor() {
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(key_to_bytes(up, true), vec![0x1b, b'O', b'A']);
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(key_to_bytes(down, true), vec![0x1b, b'O', b'B']);
     }
 
     #[test]
     fn test_key_to_bytes_esc() {
         let key = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        let parser = vt100::Parser::new(24, 80, 0);
-        assert_eq!(key_to_bytes(key, parser.screen()), vec![0x1b]);
+        assert_eq!(key_to_bytes(key, false), vec![0x1b]);
     }
 
     #[test]
     fn test_key_to_bytes_backspace() {
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
-        let parser = vt100::Parser::new(24, 80, 0);
-        assert_eq!(key_to_bytes(key, parser.screen()), vec![0x7f]);
+        assert_eq!(key_to_bytes(key, false), vec![0x7f]);
     }
 
     #[test]
     fn test_key_to_bytes_f_keys() {
-        let parser = vt100::Parser::new(24, 80, 0);
         let f1 = KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE);
-        assert_eq!(key_to_bytes(f1, parser.screen()), vec![0x1b, b'O', b'P']);
+        assert_eq!(key_to_bytes(f1, false), vec![0x1b, b'O', b'P']);
         let f5 = KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE);
         assert_eq!(
-            key_to_bytes(f5, parser.screen()),
+            key_to_bytes(f5, false),
             vec![0x1b, b'[', b'1', b'5', b'~']
         );
     }
@@ -800,8 +636,7 @@ mod tests {
     #[test]
     fn test_key_to_bytes_alt_char() {
         let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT);
-        let parser = vt100::Parser::new(24, 80, 0);
-        assert_eq!(key_to_bytes(key, parser.screen()), vec![0x1b, b'x']);
+        assert_eq!(key_to_bytes(key, false), vec![0x1b, b'x']);
     }
 
     #[test]
@@ -826,66 +661,47 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_color() {
-        assert_eq!(convert_color(vt100::Color::Default), Color::Reset);
-        assert_eq!(convert_color(vt100::Color::Idx(1)), Color::Indexed(1));
-        assert_eq!(
-            convert_color(vt100::Color::Rgb(255, 0, 0)),
-            Color::Rgb(255, 0, 0)
-        );
+    fn test_detect_app_cursor_mode_enable() {
+        let mut mode = false;
+        detect_app_cursor_mode(b"\x1b[?1h", &mut mode);
+        assert!(mode);
     }
 
     #[test]
-    fn test_title_bar_click_detach() {
-        let (_cols, _) = (80u16, 24u16);
-        // Simulate: buttons are " [_] [x] " at end
-        // width=80, buttons=" [_] [x] " len=9
-        // buttons_start = 80-9 = 71
-        // detach_start = 72, detach_end = 75
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 72,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        };
-        let result = check_title_bar_click(mouse, 24, "test");
-        assert!(matches!(result, Some(TitleBarAction::Detach)));
+    fn test_detect_app_cursor_mode_disable() {
+        let mut mode = true;
+        detect_app_cursor_mode(b"\x1b[?1l", &mut mode);
+        assert!(!mode);
     }
 
     #[test]
-    fn test_title_bar_click_stop() {
-        // stop_start = 76, stop_end = 79
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 76,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        };
-        let result = check_title_bar_click(mouse, 24, "test");
-        assert!(matches!(result, Some(TitleBarAction::Stop)));
+    fn test_detect_app_cursor_mode_short_data() {
+        let mut mode = false;
+        detect_app_cursor_mode(b"\x1b[", &mut mode);
+        assert!(!mode); // unchanged
     }
 
     #[test]
-    fn test_title_bar_click_name_area() {
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 5,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        };
-        let result = check_title_bar_click(mouse, 24, "test");
-        assert!(result.is_none());
+    fn test_encode_mouse_event_left_click() {
+        let seq = encode_mouse_event(MouseEventKind::Down(MouseButton::Left), 10, 5);
+        assert_eq!(seq, Some("\x1b[<0;11;6M".to_string()));
     }
 
     #[test]
-    fn test_title_bar_click_not_row_0() {
-        let mouse = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 72,
-            row: 1,
-            modifiers: KeyModifiers::NONE,
-        };
-        let result = check_title_bar_click(mouse, 24, "test");
-        assert!(result.is_none());
+    fn test_encode_mouse_event_right_click() {
+        let seq = encode_mouse_event(MouseEventKind::Down(MouseButton::Right), 0, 0);
+        assert_eq!(seq, Some("\x1b[<2;1;1M".to_string()));
+    }
+
+    #[test]
+    fn test_encode_mouse_event_release() {
+        let seq = encode_mouse_event(MouseEventKind::Up(MouseButton::Left), 5, 3);
+        assert_eq!(seq, Some("\x1b[<0;6;4m".to_string()));
+    }
+
+    #[test]
+    fn test_encode_mouse_event_scroll() {
+        let seq = encode_mouse_event(MouseEventKind::ScrollUp, 10, 10);
+        assert_eq!(seq, Some("\x1b[<64;11;11M".to_string()));
     }
 }
