@@ -15,7 +15,7 @@ pub enum TuiAction {
     New {
         name: String,
         image: Option<String>,
-        command: Vec<String>,
+        command: Option<Vec<String>>,
     },
     Quit,
 }
@@ -391,10 +391,10 @@ where
                     KeyCode::Enter => {
                         let cmd_text = input.text.trim().to_string();
                         let command = if cmd_text.is_empty() {
-                            vec![]
+                            Some(vec![])
                         } else {
                             match shell_words::split(&cmd_text) {
-                                Ok(args) => args,
+                                Ok(args) => Some(args),
                                 Err(e) => {
                                     footer_msg = format!("Invalid command: {e}");
                                     mode = Mode::Normal;
