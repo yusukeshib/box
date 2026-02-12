@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
@@ -135,6 +136,13 @@ fn fix_ssh_socket_permissions(image: &str) {
         .status();
 }
 
+/// Restore terminal state after an interactive Docker session.
+/// Writes show-cursor and attribute-reset escape sequences. Best-effort; errors ignored.
+fn restore_terminal() {
+    let _ = std::io::stdout().write_all(b"\x1b[?25h\x1b[0m");
+    let _ = std::io::stdout().flush();
+}
+
 pub struct DockerRunConfig<'a> {
     pub name: &'a str,
     pub project_dir: &'a str,
@@ -235,6 +243,7 @@ pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
             .status()?;
+        restore_terminal();
         Ok(status.code().unwrap_or(1))
     }
 }
@@ -283,14 +292,20 @@ pub fn running_sessions() -> std::collections::HashSet<String> {
 }
 
 pub fn start_container(name: &str) -> Result<i32> {
+    // Start container in background first, then attach separately.
+    // This avoids the PTY size race condition that `docker start -ai` has,
+    // where the terminal inside may not receive the correct dimensions.
     let status = Command::new("docker")
-        .args(["start", "-ai", &format!("realm-{}", name)])
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
+        .args(["start", &format!("realm-{}", name)])
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
         .status()?;
 
-    Ok(status.code().unwrap_or(1))
+    if !status.success() {
+        return Ok(status.code().unwrap_or(1));
+    }
+
+    attach_container(name)
 }
 
 pub fn attach_container(name: &str) -> Result<i32> {
@@ -300,6 +315,7 @@ pub fn attach_container(name: &str) -> Result<i32> {
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()?;
+    restore_terminal();
 
     Ok(status.code().unwrap_or(1))
 }
