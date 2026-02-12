@@ -45,7 +45,7 @@ pub fn sessions_dir() -> Result<PathBuf> {
         .join("sessions"))
 }
 
-const RESERVED_NAMES: &[&str] = &["upgrade", "path"];
+const RESERVED_NAMES: &[&str] = &["upgrade", "path", "config"];
 
 pub fn validate_name(name: &str) -> Result<()> {
     if name.is_empty() {
@@ -253,6 +253,12 @@ mod tests {
     #[test]
     fn test_validate_name_reserved_path() {
         let err = validate_name("path").unwrap_err();
+        assert!(err.to_string().contains("reserved name"));
+    }
+
+    #[test]
+    fn test_validate_name_reserved_config() {
+        let err = validate_name("config").unwrap_err();
         assert!(err.to_string().contains("reserved name"));
     }
 

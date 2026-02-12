@@ -61,6 +61,19 @@ enum Commands {
     },
     /// Self-update to the latest version
     Upgrade,
+    /// Output shell configuration (e.g. eval "$(realm config zsh)")
+    Config {
+        #[command(subcommand)]
+        shell: ConfigShell,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigShell {
+    /// Output Zsh completions
+    Zsh,
+    /// Output Bash completions
+    Bash,
 }
 
 fn main() {
@@ -69,6 +82,10 @@ fn main() {
     let result = match cli.command {
         Some(Commands::Path { name }) => cmd_path(&name),
         Some(Commands::Upgrade) => cmd_upgrade(),
+        Some(Commands::Config { shell }) => match shell {
+            ConfigShell::Zsh => cmd_config_zsh(),
+            ConfigShell::Bash => cmd_config_bash(),
+        },
         None => {
             let session = cli.session;
             let docker_args = session
@@ -285,6 +302,114 @@ fn cmd_path(name: &str) -> Result<i32> {
         .join("workspaces")
         .join(name);
     println!("{}", path.display());
+    Ok(0)
+}
+
+fn cmd_config_zsh() -> Result<i32> {
+    print!(
+        r#"_realm() {{
+    local curcontext="$curcontext" state line
+    typeset -A opt_args
+
+    _arguments -C \
+        '-d[Run container in the background]' \
+        '--image=[Docker image to use]:image' \
+        '--docker-args=[Extra Docker flags]:args' \
+        '--no-ssh[Disable SSH agent forwarding]' \
+        '1: :->cmd_or_session' \
+        '*:: :->args'
+
+    case $state in
+        cmd_or_session)
+            local -a sessions
+            if [[ -d "$HOME/.realm/sessions" ]]; then
+                for s in "$HOME/.realm/sessions"/*(N:t); do
+                    local desc=""
+                    if [[ -f "$HOME/.realm/sessions/$s/project_dir" ]]; then
+                        desc=$(< "$HOME/.realm/sessions/$s/project_dir")
+                        desc=${{desc/#$HOME/\~}}
+                    fi
+                    sessions+=("$s:[$desc]")
+                done
+            fi
+            if (( ${{#sessions}} )); then
+                _describe -V 'session' sessions
+            fi
+            ;;
+        args)
+            case $words[1] in
+                path)
+                    if (( CURRENT == 2 )); then
+                        local -a sessions
+                        if [[ -d "$HOME/.realm/sessions" ]]; then
+                            for s in "$HOME/.realm/sessions"/*(N:t); do
+                                local desc=""
+                                if [[ -f "$HOME/.realm/sessions/$s/project_dir" ]]; then
+                                    desc=$(< "$HOME/.realm/sessions/$s/project_dir")
+                                    desc=${{desc/#$HOME/\~}}
+                                fi
+                                sessions+=("$s:[$desc]")
+                            done
+                        fi
+                        if (( ${{#sessions}} )); then
+                            _describe 'session' sessions
+                        fi
+                    fi
+                    ;;
+                config)
+                    if (( CURRENT == 2 )); then
+                        local -a shells
+                        shells=('zsh:Zsh completion script' 'bash:Bash completion script')
+                        _describe 'shell' shells
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+}}
+compdef _realm realm
+"#
+    );
+    Ok(0)
+}
+
+fn cmd_config_bash() -> Result<i32> {
+    print!(
+        r#"_realm() {{
+    local cur prev words cword
+    _init_completion || return
+
+    local subcommands="path upgrade config"
+    local sessions=""
+    if [[ -d "$HOME/.realm/sessions" ]]; then
+        sessions=$(command ls "$HOME/.realm/sessions" 2>/dev/null)
+    fi
+
+    case "${{words[1]}}" in
+        path)
+            COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+            return
+            ;;
+        config)
+            COMPREPLY=($(compgen -W "zsh bash" -- "$cur"))
+            return
+            ;;
+    esac
+
+    if [[ $cword -eq 1 ]]; then
+        COMPREPLY=($(compgen -W "$subcommands $sessions" -- "$cur"))
+        return
+    fi
+
+    case "$cur" in
+        -*)
+            COMPREPLY=($(compgen -W "-d --image --docker-args --no-ssh" -- "$cur"))
+            ;;
+    esac
+}}
+complete -F _realm realm
+"#
+    );
     Ok(0)
 }
 
@@ -561,6 +686,34 @@ mod tests {
     #[test]
     fn test_upgrade_rejects_flags() {
         let result = try_parse(&["upgrade", "-d"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_config_zsh_subcommand_parses() {
+        let cli = parse(&["config", "zsh"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Config {
+                shell: ConfigShell::Zsh
+            })
+        ));
+    }
+
+    #[test]
+    fn test_config_bash_subcommand_parses() {
+        let cli = parse(&["config", "bash"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Config {
+                shell: ConfigShell::Bash
+            })
+        ));
+    }
+
+    #[test]
+    fn test_config_requires_shell() {
+        let result = try_parse(&["config"]);
         assert!(result.is_err());
     }
 
