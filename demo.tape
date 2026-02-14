@@ -1,4 +1,4 @@
-# VHS demo tape for realm
+# VHS demo tape for box
 # Run: vhs demo.tape
 # Prerequisites: Docker running, inside a git repo
 
@@ -14,14 +14,14 @@ Set TypingSpeed 60ms
 # ── 1. Launch TUI session manager ──────────────────────────────
 
 Sleep 500ms
-Type "realm"
+Type "box"
 Sleep 300ms
 Enter
 Sleep 1s
 
 # ── 2. Create a new session ────────────────────────────────────
 
-# "New realm..." is already selected, press Enter
+# "New box..." is already selected, press Enter
 Enter
 Sleep 500ms
 
@@ -63,7 +63,7 @@ Sleep 1s
 
 # ── 5. Resume the session ─────────────────────────────────────
 
-Type "realm my-feature"
+Type "box my-feature"
 Sleep 300ms
 Enter
 Sleep 2s
@@ -80,7 +80,7 @@ Sleep 1s
 
 # ── 6. Show session in TUI ────────────────────────────────────
 
-Type "realm"
+Type "box"
 Sleep 300ms
 Enter
 Sleep 2s
