@@ -227,7 +227,7 @@ pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
 
     let args = build_run_args(cfg)?;
     eprintln!("\x1b[2mrunning container:\x1b[0m");
-    eprintln!("docker {}", shell_words::join(&args));
+    eprintln!("docker {}\n", shell_words::join(&args));
 
     if cfg.detach {
         let output = Command::new("docker").args(&args).output()?;
