@@ -405,17 +405,7 @@ _box() {{
 
     case $state in
         subcmd)
-            local -a subcmds
-            subcmds=(
-                'create:Create a new session'
-                'resume:Resume an existing session'
-                'remove:Remove a session'
-                'stop:Stop a running session'
-                'path:Print workspace path for a session'
-                'upgrade:Self-update to the latest version'
-                'config:Output shell configuration'
-            )
-            _describe 'command' subcmds
+            __box_sessions
             ;;
         args)
             case $words[1] in
@@ -466,7 +456,11 @@ fn cmd_config_bash() -> Result<i32> {
     local session_cmds="resume remove stop path"
 
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
+        local sessions=""
+        if [[ -d "$HOME/.box/sessions" ]]; then
+            sessions=$(command ls "$HOME/.box/sessions" 2>/dev/null)
+        fi
+        COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
         return
     fi
 
