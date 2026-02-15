@@ -221,6 +221,47 @@ fn output_cd_path(path: &str) {
     }
 }
 
+/// Shorten a project path for display by abbreviating intermediate components
+/// to their first character. e.g. `/Users/yusuke/projects/my-app` => `/U/y/p/my-app`
+/// The home directory prefix is replaced with `~` first.
+pub(crate) fn shorten_project_path(path: &str, home: &str) -> String {
+    let (prefix, rest) = if !home.is_empty() {
+        if let Some(r) = path.strip_prefix(home) {
+            ("~", r)
+        } else {
+            ("", path)
+        }
+    } else {
+        ("", path)
+    };
+
+    let full = format!("{}{}", prefix, rest);
+    let parts: Vec<&str> = full.split('/').collect();
+
+    if parts.len() <= 2 {
+        return full;
+    }
+
+    // Abbreviate all components except the first (empty for leading /) and last
+    let last = parts.len() - 1;
+    let shortened: Vec<String> = parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| {
+            if i == 0 || i == last || part.is_empty() {
+                part.to_string()
+            } else {
+                part.chars()
+                    .next()
+                    .map(|c| c.to_string())
+                    .unwrap_or_default()
+            }
+        })
+        .collect();
+
+    shortened.join("/")
+}
+
 fn cmd_list() -> Result<i32> {
     let mut sessions = session::list()?;
 
@@ -296,18 +337,11 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .unwrap_or(0)
         .max(5);
 
-    let shorten_home = |p: &str| -> String {
-        if !home.is_empty() {
-            if let Some(rest) = p.strip_prefix(&home) {
-                return format!("~{}", rest);
-            }
-        }
-        p.to_string()
-    };
+    let shorten_path = |p: &str| -> String { shorten_project_path(p, &home) };
 
     let project_w = sessions
         .iter()
-        .map(|s| shorten_home(&s.project_dir).len())
+        .map(|s| shorten_path(&s.project_dir).len())
         .max()
         .unwrap_or(0)
         .max(7);
@@ -319,16 +353,16 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max(7);
 
     println!(
-        "{:<name_w$}  {:<status_w$}  {:<image_w$}  {:<project_w$}  {:<command_w$}  CREATED",
-        "NAME", "STATUS", "IMAGE", "PROJECT", "COMMAND",
+        "{:<name_w$}  {:<project_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED",
+        "NAME", "PROJECT", "STATUS", "COMMAND", "IMAGE",
     );
 
     for s in &sessions {
         let status = if s.running { "running" } else { "stopped" };
-        let project = shorten_home(&s.project_dir);
+        let project = shorten_path(&s.project_dir);
         println!(
-            "{:<name_w$}  {:<status_w$}  {:<image_w$}  {:<project_w$}  {:<command_w$}  {}",
-            s.name, status, s.image, project, s.command, s.created_at,
+            "{:<name_w$}  {:<project_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
+            s.name, project, status, s.command, s.image, s.created_at,
         );
     }
 

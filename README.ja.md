@@ -111,7 +111,9 @@ box create <name> [options] [-- cmd...]           新しいセッションを作
 box resume <name> [-d] [--docker-args <args>]     既存のセッションを再開
 box stop <name>                                   実行中のセッションを停止
 box exec <name> -- <cmd...>                       実行中のセッションでコマンドを実行
+box list [options]                                セッション一覧を表示（エイリアス: ls）
 box remove <name>                                 セッションを削除
+box cd <name>                                     ホストのプロジェクトディレクトリを表示
 box path <name>                                   ワークスペースパスを表示
 box config zsh|bash                               シェル補完を出力
 box upgrade                                       最新版にアップグレード
@@ -122,15 +124,16 @@ box upgrade                                       最新版にアップグレー
 引数なしで `box` を実行すると、対話型TUIが開きます：
 
 ```
- NAME            STATUS   PROJECT                   IMAGE            CREATED
+ NAME            PROJECT      STATUS   CMD      IMAGE            CREATED
   New box...
-> my-feature     running  /Users/you/projects/app   alpine:latest    2026-02-07 12:00:00 UTC
-  test                    /Users/you/projects/other  ubuntu:latest   2026-02-07 12:30:00 UTC
+> my-feature     /U/y/p/app   running  claude   alpine:latest    2026-02-07 12:00:00 UTC
+  test           /U/y/p/other                   ubuntu:latest    2026-02-07 12:30:00 UTC
 
- [Enter] Resume  [d] Delete  [q] Quit
+ [Enter] Resume  [c] Cd  [d] Delete  [q] Quit
 ```
 
 - **Enter** でセッションを再開、または「New box...」で新規作成
+- **c** でセッションのホストプロジェクトディレクトリにcd
 - **d** でハイライト中のセッションを削除（確認あり）
 - **q** / **Esc** で終了
 
@@ -175,6 +178,38 @@ box exec my-feature -- ls -la
 box exec my-feature -- bash
 ```
 
+### セッション一覧の表示
+
+```bash
+# 全セッションを一覧表示
+box list
+
+# エイリアス
+box ls
+
+# 実行中のセッションのみ表示
+box list --running
+
+# 停止中のセッションのみ表示
+box list --stopped
+
+# クワイエットモード — 名前のみ出力（スクリプト用途に便利）
+box list -q --running
+
+# 例: 実行中の全セッションを停止
+box stop $(box list -q --running)
+```
+
+### プロジェクトディレクトリへのcd
+
+```bash
+# セッションのホストプロジェクトディレクトリを表示
+box cd my-feature
+
+# シェル補完を有効にしている場合、プロジェクトディレクトリにcd
+cd "$(box cd my-feature)"
+```
+
 ### 停止と削除
 
 ```bash
@@ -196,6 +231,14 @@ box remove my-feature
 | `--docker-args <args>` | 追加のDockerフラグ（例: `-e KEY=VALUE`、`-v /host:/container`）。`$BOX_DOCKER_ARGS` を上書き |
 | `--no-ssh` | SSHエージェント転送を無効化（デフォルトは有効） |
 | `-- cmd...` | コンテナで実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
+
+### `box list`
+
+| オプション | 説明 |
+|--------|-------------|
+| `--running`, `-r` | 実行中のセッションのみ表示 |
+| `--stopped`, `-s` | 停止中のセッションのみ表示 |
+| `--quiet`, `-q` | セッション名のみ出力（スクリプト用途に便利） |
 
 ### `box resume`
 
