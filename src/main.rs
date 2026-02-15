@@ -182,14 +182,18 @@ fn main() {
         Some(Commands::External(args)) => {
             let name = args[0].to_string_lossy().to_string();
             let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
-            let cmd: Vec<String> = args[1..]
-                .iter()
-                .skip_while(|a| *a != "--")
-                .skip(1)
-                .map(|a| a.to_string_lossy().to_string())
-                .collect();
-            let cmd = if cmd.is_empty() { None } else { Some(cmd) };
-            cmd_create(&name, None, &docker_args, cmd, true, false)
+            if session::session_exists(&name).unwrap_or(false) {
+                cmd_resume(&name, &docker_args, false)
+            } else {
+                let cmd: Vec<String> = args[1..]
+                    .iter()
+                    .skip_while(|a| *a != "--")
+                    .skip(1)
+                    .map(|a| a.to_string_lossy().to_string())
+                    .collect();
+                let cmd = if cmd.is_empty() { None } else { Some(cmd) };
+                cmd_create(&name, None, &docker_args, cmd, true, false)
+            }
         }
         None => cmd_list(),
     };
