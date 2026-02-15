@@ -114,6 +114,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "libc",
  "ratatui",
  "self_update",
  "shell-words",
