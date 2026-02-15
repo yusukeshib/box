@@ -111,7 +111,9 @@ box create <name> [options] [-- cmd...]           Create a new session
 box resume <name> [-d] [--docker-args <args>]     Resume an existing session
 box stop <name>                                   Stop a running session
 box exec <name> -- <cmd...>                       Run a command in a running session
+box list [options]                                List sessions (alias: ls)
 box remove <name>                                 Remove a session
+box cd <name>                                     Print host project directory
 box path <name>                                   Print workspace path
 box config zsh|bash                               Output shell completions
 box upgrade                                       Upgrade to latest version
@@ -122,15 +124,16 @@ box upgrade                                       Upgrade to latest version
 Running `box` with no arguments opens an interactive TUI:
 
 ```
- NAME            STATUS   PROJECT                   IMAGE            CREATED
+ NAME            PROJECT      STATUS   CMD      IMAGE            CREATED
   New box...
-> my-feature     running  /Users/you/projects/app   alpine:latest    2026-02-07 12:00:00 UTC
-  test                    /Users/you/projects/other  ubuntu:latest   2026-02-07 12:30:00 UTC
+> my-feature     /U/y/p/app   running  claude   alpine:latest    2026-02-07 12:00:00 UTC
+  test           /U/y/p/other                   ubuntu:latest    2026-02-07 12:30:00 UTC
 
- [Enter] Resume  [d] Delete  [q] Quit
+ [Enter] Resume  [c] Cd  [d] Delete  [q] Quit
 ```
 
 - **Enter** on a session to resume it, or on "New box..." to create a new one
+- **c** to cd to the session's host project directory
 - **d** to delete the highlighted session (with confirmation)
 - **q** / **Esc** to quit
 
@@ -175,6 +178,38 @@ box exec my-feature -- ls -la
 box exec my-feature -- bash
 ```
 
+### List sessions
+
+```bash
+# List all sessions
+box list
+
+# Alias
+box ls
+
+# Show only running sessions
+box list --running
+
+# Show only stopped sessions
+box list --stopped
+
+# Quiet mode — names only (useful for scripting)
+box list -q --running
+
+# Example: stop all running sessions
+box stop $(box list -q --running)
+```
+
+### Cd to project directory
+
+```bash
+# Print the host project directory for a session
+box cd my-feature
+
+# With shell completions enabled, cd to the project directory
+cd "$(box cd my-feature)"
+```
+
 ### Stop and remove
 
 ```bash
@@ -196,6 +231,14 @@ box remove my-feature
 | `--docker-args <args>` | Extra Docker flags (e.g. `-e KEY=VALUE`, `-v /host:/container`). Overrides `$BOX_DOCKER_ARGS` |
 | `--no-ssh` | Disable SSH agent forwarding (enabled by default) |
 | `-- cmd...` | Command to run in container (default: `$BOX_DEFAULT_CMD` if set) |
+
+### `box list`
+
+| Option | Description |
+|--------|-------------|
+| `--running`, `-r` | Show only running sessions |
+| `--stopped`, `-s` | Show only stopped sessions |
+| `--quiet`, `-q` | Only print session names (useful for scripting) |
 
 ### `box resume`
 

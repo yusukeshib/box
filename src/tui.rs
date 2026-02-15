@@ -9,6 +9,7 @@ use std::io;
 use crate::config;
 use crate::docker;
 use crate::session::{self, SessionSummary};
+use crate::shorten_project_path;
 
 pub enum TuiAction {
     Resume(String),
@@ -146,6 +147,10 @@ where
     F: Fn(&str) -> Result<()>,
 {
     let mut items: Vec<SessionSummary> = sessions.to_vec();
+    let home = config::home_dir().unwrap_or_default();
+    for s in &mut items {
+        s.project_dir = shorten_project_path(&s.project_dir, &home);
+    }
     // +1 for "new session" row, +1 for header, +1 for footer
     let viewport_height = (items.len() as u16) + 3;
 
@@ -186,7 +191,7 @@ where
 
             // Table
             {
-                let header = Row::new(["NAME", "STATUS", "PROJECT", "IMAGE", "CMD", "CREATED"])
+                let header = Row::new(["NAME", "PROJECT", "STATUS", "CMD", "IMAGE", "CREATED"])
                     .style(Style::default().dim());
 
                 let total_rows = 1 + items.len(); // "new session" + actual sessions
@@ -200,10 +205,10 @@ where
                     let status = if s.running { "running" } else { "" };
                     let row = Row::new([
                         s.name.as_str(),
-                        status,
                         s.project_dir.as_str(),
-                        s.image.as_str(),
+                        status,
                         s.command.as_str(),
+                        s.image.as_str(),
                         s.created_at.as_str(),
                     ]);
                     let row_idx = i + 1; // offset by "new session" row
@@ -216,10 +221,10 @@ where
 
                 let widths = [
                     Constraint::Min(15),
-                    Constraint::Min(10),
                     Constraint::Min(30),
-                    Constraint::Min(20),
+                    Constraint::Min(10),
                     Constraint::Min(15),
+                    Constraint::Min(20),
                     Constraint::Min(22),
                 ];
 
