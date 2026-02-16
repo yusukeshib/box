@@ -283,7 +283,9 @@ fn resolve_project_dir(
             if cwd.starts_with(&workspaces) {
                 // Extract the session name (first component after workspaces/)
                 if let Some(name) = cwd.strip_prefix(&workspaces).ok().and_then(|r| {
-                    r.components().next().map(|c| c.as_os_str().to_string_lossy().to_string())
+                    r.components()
+                        .next()
+                        .map(|c| c.as_os_str().to_string_lossy().to_string())
                 }) {
                     // Find the session's project_dir
                     if let Some(s) = sessions.iter().find(|s| s.name == name) {
