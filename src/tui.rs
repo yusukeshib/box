@@ -220,11 +220,11 @@ where
                 }
 
                 let widths = [
-                    Constraint::Min(15),
-                    Constraint::Min(30),
-                    Constraint::Min(10),
-                    Constraint::Min(15),
-                    Constraint::Min(20),
+                    Constraint::Length(15),
+                    Constraint::Length(30),
+                    Constraint::Length(10),
+                    Constraint::Length(15),
+                    Constraint::Length(20),
                     Constraint::Min(22),
                 ];
 
