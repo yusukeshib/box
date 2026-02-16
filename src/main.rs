@@ -265,6 +265,39 @@ pub(crate) fn shorten_project_path(path: &str, home: &str) -> String {
     shortened.join("/")
 }
 
+/// Resolve the current directory to a project_dir suitable for filtering sessions.
+///
+/// 1. If the cwd is inside a workspace (`~/.box/workspaces/<name>/`), look up
+///    that session's project_dir so we can find sibling sessions for the same project.
+/// 2. Otherwise, walk up to the nearest git root and use that.
+fn resolve_project_dir(
+    cwd: &std::path::Path,
+    sessions: &[session::SessionSummary],
+) -> Option<String> {
+    // Check if we're inside a workspace directory
+    if let Ok(home) = config::home_dir() {
+        let workspaces = std::path::PathBuf::from(&home)
+            .join(".box")
+            .join("workspaces");
+        if let Ok(workspaces) = std::fs::canonicalize(&workspaces) {
+            if cwd.starts_with(&workspaces) {
+                // Extract the session name (first component after workspaces/)
+                if let Some(name) = cwd.strip_prefix(&workspaces).ok().and_then(|r| {
+                    r.components().next().map(|c| c.as_os_str().to_string_lossy().to_string())
+                }) {
+                    // Find the session's project_dir
+                    if let Some(s) = sessions.iter().find(|s| s.name == name) {
+                        return Some(s.project_dir.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to git root
+    git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
+}
+
 fn cmd_list() -> Result<i32> {
     let mut sessions = session::list()?;
 
@@ -313,11 +346,10 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     if args.project {
         let cwd = std::env::current_dir()?;
         let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-        if let Some(root) = git::find_root(&cwd) {
-            let root = root.to_string_lossy().to_string();
-            sessions.retain(|s| s.project_dir == root);
+        let project = resolve_project_dir(&cwd, &sessions);
+        if let Some(project) = project {
+            sessions.retain(|s| s.project_dir == project);
         } else {
-            // Not inside a git repo – no sessions can match
             sessions.clear();
         }
     }
