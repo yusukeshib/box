@@ -131,6 +131,9 @@ struct ListArgs {
     /// Show only stopped sessions
     #[arg(long, short)]
     stopped: bool,
+    /// Show only sessions for the current project directory
+    #[arg(long, short)]
+    project: bool,
     /// Only print session names
     #[arg(long, short)]
     quiet: bool,
@@ -262,6 +265,41 @@ pub(crate) fn shorten_project_path(path: &str, home: &str) -> String {
     shortened.join("/")
 }
 
+/// Resolve the current directory to a project_dir suitable for filtering sessions.
+///
+/// 1. If the cwd is inside a workspace (`~/.box/workspaces/<name>/`), look up
+///    that session's project_dir so we can find sibling sessions for the same project.
+/// 2. Otherwise, walk up to the nearest git root and use that.
+fn resolve_project_dir(
+    cwd: &std::path::Path,
+    sessions: &[session::SessionSummary],
+) -> Option<String> {
+    // Check if we're inside a workspace directory
+    if let Ok(home) = config::home_dir() {
+        let workspaces = std::path::PathBuf::from(&home)
+            .join(".box")
+            .join("workspaces");
+        if let Ok(workspaces) = std::fs::canonicalize(&workspaces) {
+            if cwd.starts_with(&workspaces) {
+                // Extract the session name (first component after workspaces/)
+                if let Some(name) = cwd.strip_prefix(&workspaces).ok().and_then(|r| {
+                    r.components()
+                        .next()
+                        .map(|c| c.as_os_str().to_string_lossy().to_string())
+                }) {
+                    // Find the session's project_dir
+                    if let Some(s) = sessions.iter().find(|s| s.name == name) {
+                        return Some(s.project_dir.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to git root
+    git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
+}
+
 fn cmd_list() -> Result<i32> {
     let mut sessions = session::list()?;
 
@@ -307,6 +345,16 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     if args.stopped {
         sessions.retain(|s| !s.running);
     }
+    if args.project {
+        let cwd = std::env::current_dir()?;
+        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+        let project = resolve_project_dir(&cwd, &sessions);
+        if let Some(project) = project {
+            sessions.retain(|s| s.project_dir == project);
+        } else {
+            sessions.clear();
+        }
+    }
 
     if args.quiet {
         for s in &sessions {
@@ -350,11 +398,11 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .map(|s| s.command.len())
         .max()
         .unwrap_or(0)
-        .max(7);
+        .max(3);
 
     println!(
-        "{:<name_w$}  {:<project_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED",
-        "NAME", "PROJECT", "STATUS", "COMMAND", "IMAGE",
+        "\x1b[2m{:<name_w$}  {:<project_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED\x1b[0m",
+        "NAME", "PROJECT", "STATUS", "CMD", "IMAGE",
     );
 
     for s in &sessions {
@@ -636,6 +684,8 @@ _box() {{
                         '-r[Show only running sessions]' \
                         '--stopped[Show only stopped sessions]' \
                         '-s[Show only stopped sessions]' \
+                        '--project[Show only sessions for the current project]' \
+                        '-p[Show only sessions for the current project]' \
                         '--quiet[Only print session names]' \
                         '-q[Only print session names]'
                     ;;
@@ -731,7 +781,7 @@ fn cmd_config_bash() -> Result<i32> {
         list|ls)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--running -r --stopped -s --quiet -q" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--running -r --stopped -s --project -p --quiet -q" -- "$cur"))
                     ;;
             esac
             ;;
