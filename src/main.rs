@@ -131,6 +131,9 @@ struct ListArgs {
     /// Show only stopped sessions
     #[arg(long, short)]
     stopped: bool,
+    /// Show only sessions for the current project directory
+    #[arg(long, short)]
+    project: bool,
     /// Only print session names
     #[arg(long, short)]
     quiet: bool,
@@ -307,6 +310,17 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     if args.stopped {
         sessions.retain(|s| !s.running);
     }
+    if args.project {
+        let cwd = std::env::current_dir()?;
+        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+        if let Some(root) = git::find_root(&cwd) {
+            let root = root.to_string_lossy().to_string();
+            sessions.retain(|s| s.project_dir == root);
+        } else {
+            // Not inside a git repo – no sessions can match
+            sessions.clear();
+        }
+    }
 
     if args.quiet {
         for s in &sessions {
@@ -350,11 +364,11 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .map(|s| s.command.len())
         .max()
         .unwrap_or(0)
-        .max(7);
+        .max(3);
 
     println!(
-        "{:<name_w$}  {:<project_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED",
-        "NAME", "PROJECT", "STATUS", "COMMAND", "IMAGE",
+        "\x1b[2m{:<name_w$}  {:<project_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED\x1b[0m",
+        "NAME", "PROJECT", "STATUS", "CMD", "IMAGE",
     );
 
     for s in &sessions {
@@ -636,6 +650,8 @@ _box() {{
                         '-r[Show only running sessions]' \
                         '--stopped[Show only stopped sessions]' \
                         '-s[Show only stopped sessions]' \
+                        '--project[Show only sessions for the current project]' \
+                        '-p[Show only sessions for the current project]' \
                         '--quiet[Only print session names]' \
                         '-q[Only print session names]'
                     ;;
@@ -731,7 +747,7 @@ fn cmd_config_bash() -> Result<i32> {
         list|ls)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--running -r --stopped -s --quiet -q" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--running -r --stopped -s --project -p --quiet -q" -- "$cur"))
                     ;;
             esac
             ;;
