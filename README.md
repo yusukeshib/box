@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-Safe, disposable dev environments for AI coding agents — powered by Docker and git.
+Safe, disposable dev environments for AI coding agents — powered by Docker and git. Supports `--local` mode for Docker-free git workspace sessions.
 
 ![demo](./demo.gif)
 
@@ -19,11 +19,12 @@ AI coding agents (Claude Code, Cursor, Copilot) are powerful — but letting the
 - **Persistent sessions** — exit and resume where you left off, files are preserved
 - **Named sessions** — run multiple experiments in parallel
 - **Bring your own toolchain** — works with any Docker image
+- **Local mode** — use `--local` for Docker-free git workspace sessions
 
 ## Requirements
 
-- [Docker](https://www.docker.com/) (or [OrbStack](https://orbstack.dev/) on macOS)
 - [Git](https://git-scm.com/)
+- [Docker](https://www.docker.com/) (or [OrbStack](https://orbstack.dev/) on macOS) — optional when using `--local` mode
 
 ## Install
 
@@ -60,9 +61,12 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 ```bash
 box my-feature
 # Shortcut for `box create my-feature` — creates a new isolated session
+
+box my-feature --local
+# Creates a local session (git workspace only, no Docker)
 ```
 
-Box must be run inside a git repository — it clones the current repo into the container.
+Box must be run inside a git repository — it clones the current repo into the workspace.
 
 For a zero-flags workflow, see [Custom Image Setup](#custom-image-setup) below.
 
@@ -106,8 +110,8 @@ box create experiment-v2
 
 ```bash
 box                                               Session manager (TUI)
-box <name>                                        Shortcut for `box create <name>`
-box create <name> [options] [-- cmd...]           Create a new session
+box <name> [--local]                              Shortcut for `box create <name>`
+box create <name> [--local] [options] [-- cmd...] Create a new session
 box resume <name> [-d] [--docker-args <args>]     Resume an existing session
 box stop <name>                                   Stop a running session
 box exec <name> -- <cmd...>                       Run a command in a running session
@@ -124,10 +128,11 @@ box upgrade                                       Upgrade to latest version
 Running `box` with no arguments opens an interactive TUI:
 
 ```
- NAME            PROJECT      STATUS   CMD      IMAGE            CREATED
+ NAME            PROJECT      MODE    STATUS   CMD      IMAGE            CREATED
   New box...
-> my-feature     /U/y/p/app   running  claude   alpine:latest    2026-02-07 12:00:00 UTC
-  test           /U/y/p/other                   ubuntu:latest    2026-02-07 12:30:00 UTC
+> my-feature     /U/y/p/app   docker  running  claude   alpine:latest    2026-02-07 12:00:00 UTC
+  local-exp      /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
+  test           /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
 
  [Enter] Resume  [c] Cd  [d] Delete  [q] Quit
 ```
@@ -154,6 +159,9 @@ box create my-feature --docker-args "-e KEY=VALUE -v /host:/container --network 
 
 # Create in detached mode (background)
 box create my-feature -d -- claude -p "do something"
+
+# Create a local session (no Docker required)
+box create my-feature --local
 ```
 
 ### Resume a session
@@ -227,6 +235,7 @@ box remove my-feature
 | Option | Description |
 |--------|-------------|
 | `-d` | Run container in the background (detached) |
+| `--local` | Create a local session (git workspace only, no Docker) |
 | `--image <image>` | Docker image to use (default: `alpine:latest`) |
 | `--docker-args <args>` | Extra Docker flags (e.g. `-e KEY=VALUE`, `-v /host:/container`). Overrides `$BOX_DOCKER_ARGS` |
 | `-- cmd...` | Command to run in container (default: `$BOX_DEFAULT_CMD` if set) |
@@ -255,6 +264,7 @@ These let you configure defaults so you can skip CLI flags entirely. Set them in
 | `BOX_DEFAULT_IMAGE` | Default Docker image for new sessions (default: `alpine:latest`) |
 | `BOX_DOCKER_ARGS` | Default extra Docker flags, used when `--docker-args` is not provided |
 | `BOX_DEFAULT_CMD` | Default command for new sessions, used when no `-- cmd` is provided |
+| `BOX_MODE` | Set to `local` to create all sessions in local mode by default |
 
 ```bash
 # Set default Docker flags for all sessions

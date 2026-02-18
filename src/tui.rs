@@ -192,27 +192,25 @@ where
 
             // Table
             {
-                let header = Row::new(["NAME", "PROJECT", "STATUS", "CMD", "IMAGE", "CREATED"])
-                    .style(Style::default().dim());
+                let header = Row::new([
+                    "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE", "CREATED",
+                ])
+                .style(Style::default().dim());
 
                 let total_rows = 1 + items.len(); // "new session" + actual sessions
                 let mut rows: Vec<Row> = Vec::with_capacity(total_rows);
 
                 // First row: "+ new session"
-                rows.push(Row::new(["New box...", "", "", "", "", ""]));
+                rows.push(Row::new(["New box...", "", "", "", "", "", ""]));
 
                 // Session rows
                 for (i, s) in items.iter().enumerate() {
-                    let status = if s.local {
-                        "local"
-                    } else if s.running {
-                        "running"
-                    } else {
-                        ""
-                    };
+                    let session_mode = if s.local { "local" } else { "docker" };
+                    let status = if s.running { "running" } else { "" };
                     let row = Row::new([
                         s.name.as_str(),
                         s.project_dir.as_str(),
+                        session_mode,
                         status,
                         s.command.as_str(),
                         s.image.as_str(),
@@ -229,6 +227,7 @@ where
                 let widths = [
                     Constraint::Length(15),
                     Constraint::Length(30),
+                    Constraint::Length(8),
                     Constraint::Length(10),
                     Constraint::Length(15),
                     Constraint::Length(20),

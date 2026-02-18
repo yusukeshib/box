@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-AIコーディングエージェントのための安全で使い捨て可能な開発環境 — DockerとGitで動作。
+AIコーディングエージェントのための安全で使い捨て可能な開発環境 — DockerとGitで動作。Docker不要の `--local` モードにも対応。
 
 ![demo](./demo.gif)
 
@@ -19,11 +19,12 @@ AIコーディングエージェント（Claude Code、Cursor、Copilot）は強
 - **永続的なセッション** — 終了しても再開時にそのまま続行、ファイルは保持されます
 - **名前付きセッション** — 複数の実験を並行して実行可能
 - **自分のツールチェーンを使用** — 任意のDockerイメージで動作
+- **ローカルモード** — `--local` でDocker不要のgitワークスペースセッションを作成
 
 ## 必要なもの
 
-- [Docker](https://www.docker.com/)（macOSでは[OrbStack](https://orbstack.dev/)も可）
 - [Git](https://git-scm.com/)
+- [Docker](https://www.docker.com/)（macOSでは[OrbStack](https://orbstack.dev/)も可） — `--local` モード使用時は不要
 
 ## インストール
 
@@ -60,9 +61,12 @@ nix run github:yusukeshib/box
 ```bash
 box my-feature
 # `box create my-feature` のショートカット — 新しい隔離セッションを作成
+
+box my-feature --local
+# ローカルセッションを作成（gitワークスペースのみ、Docker不要）
 ```
 
-Boxはgitリポジトリ内で実行する必要があります — 現在のリポジトリをコンテナ内にクローンします。
+Boxはgitリポジトリ内で実行する必要があります — 現在のリポジトリをワークスペースにクローンします。
 
 フラグ不要のワークフローについては、下記の[カスタムイメージのセットアップ](#カスタムイメージのセットアップ)を参照してください。
 
@@ -106,8 +110,8 @@ box create experiment-v2
 
 ```bash
 box                                               セッションマネージャー（TUI）
-box <name>                                        `box create <name>` のショートカット
-box create <name> [options] [-- cmd...]           新しいセッションを作成
+box <name> [--local]                              `box create <name>` のショートカット
+box create <name> [--local] [options] [-- cmd...] 新しいセッションを作成
 box resume <name> [-d] [--docker-args <args>]     既存のセッションを再開
 box stop <name>                                   実行中のセッションを停止
 box exec <name> -- <cmd...>                       実行中のセッションでコマンドを実行
@@ -124,10 +128,11 @@ box upgrade                                       最新版にアップグレー
 引数なしで `box` を実行すると、対話型TUIが開きます：
 
 ```
- NAME            PROJECT      STATUS   CMD      IMAGE            CREATED
+ NAME            PROJECT      MODE    STATUS   CMD      IMAGE            CREATED
   New box...
-> my-feature     /U/y/p/app   running  claude   alpine:latest    2026-02-07 12:00:00 UTC
-  test           /U/y/p/other                   ubuntu:latest    2026-02-07 12:30:00 UTC
+> my-feature     /U/y/p/app   docker  running  claude   alpine:latest    2026-02-07 12:00:00 UTC
+  local-exp      /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
+  test           /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
 
  [Enter] Resume  [c] Cd  [d] Delete  [q] Quit
 ```
@@ -154,6 +159,9 @@ box create my-feature --docker-args "-e KEY=VALUE -v /host:/container --network 
 
 # デタッチモードで作成（バックグラウンド）
 box create my-feature -d -- claude -p "do something"
+
+# ローカルセッションを作成（Docker不要）
+box create my-feature --local
 ```
 
 ### セッションの再開
@@ -227,6 +235,7 @@ box remove my-feature
 | オプション | 説明 |
 |--------|-------------|
 | `-d` | バックグラウンドでコンテナを実行（デタッチ） |
+| `--local` | ローカルセッションを作成（gitワークスペースのみ、Docker不要） |
 | `--image <image>` | 使用するDockerイメージ（デフォルト: `alpine:latest`） |
 | `--docker-args <args>` | 追加のDockerフラグ（例: `-e KEY=VALUE`、`-v /host:/container`）。`$BOX_DOCKER_ARGS` を上書き |
 | `-- cmd...` | コンテナで実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
@@ -255,6 +264,7 @@ CLIフラグを完全に省略するためのデフォルト設定です。`.zsh
 | `BOX_DEFAULT_IMAGE` | 新規セッションのデフォルトDockerイメージ（デフォルト: `alpine:latest`） |
 | `BOX_DOCKER_ARGS` | デフォルトの追加Dockerフラグ。`--docker-args` が指定されていない場合に使用 |
 | `BOX_DEFAULT_CMD` | 新規セッションのデフォルトコマンド。`-- cmd` が指定されていない場合に使用 |
+| `BOX_MODE` | `local` に設定すると、すべてのセッションをデフォルトでローカルモードで作成 |
 
 ```bash
 # 全セッションにデフォルトのDockerフラグを設定

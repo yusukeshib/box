@@ -400,6 +400,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max()
         .unwrap_or(0)
         .max(4);
+    let mode_w = 6; // "docker" or "local"
     let status_w = 7; // "running" or "stopped"
     let image_w = sessions
         .iter()
@@ -424,22 +425,17 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max(3);
 
     println!(
-        "\x1b[2m{:<name_w$}  {:<project_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED\x1b[0m",
-        "NAME", "PROJECT", "STATUS", "CMD", "IMAGE",
+        "\x1b[2m{:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED\x1b[0m",
+        "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE",
     );
 
     for s in &sessions {
-        let status = if s.local {
-            "local"
-        } else if s.running {
-            "running"
-        } else {
-            "stopped"
-        };
+        let mode = if s.local { "local" } else { "docker" };
+        let status = if s.running { "running" } else { "stopped" };
         let project = shorten_path(&s.project_dir);
         println!(
-            "{:<name_w$}  {:<project_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
-            s.name, project, status, s.command, s.image, s.created_at,
+            "{:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
+            s.name, project, mode, status, s.command, s.image, s.created_at,
         );
     }
 
