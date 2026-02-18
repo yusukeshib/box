@@ -17,6 +17,7 @@ pub enum TuiAction {
         name: String,
         image: Option<String>,
         command: Option<Vec<String>>,
+        local: bool,
     },
     Cd(String),
     Quit,
@@ -202,7 +203,13 @@ where
 
                 // Session rows
                 for (i, s) in items.iter().enumerate() {
-                    let status = if s.running { "running" } else { "" };
+                    let status = if s.local {
+                        "local"
+                    } else if s.running {
+                        "running"
+                    } else {
+                        ""
+                    };
                     let row = Row::new([
                         s.name.as_str(),
                         s.project_dir.as_str(),
@@ -299,8 +306,12 @@ where
                                     input = TextInput::new();
                                     mode = Mode::InputName;
                                 } else {
-                                    let name = items[i - 1].name.clone();
+                                    let s = &items[i - 1];
+                                    let name = s.name.clone();
                                     clear_viewport(&mut terminal, viewport_height)?;
+                                    if s.local {
+                                        return Ok(TuiAction::Cd(name));
+                                    }
                                     return Ok(TuiAction::Resume(name));
                                 }
                             }
@@ -370,6 +381,17 @@ where
                             footer_msg = format!("Session '{}' already exists.", name);
                             mode = Mode::Normal;
                             input = TextInput::new();
+                        } else if std::env::var("BOX_MODE")
+                            .map(|v| v == "local")
+                            .unwrap_or(false)
+                        {
+                            clear_viewport(&mut terminal, viewport_height)?;
+                            return Ok(TuiAction::New {
+                                name,
+                                image: None,
+                                command: None,
+                                local: true,
+                            });
                         } else {
                             new_name = name;
                             let default_image = std::env::var("BOX_DEFAULT_IMAGE")
@@ -425,6 +447,7 @@ where
                             name: new_name,
                             image: new_image,
                             command,
+                            local: false,
                         });
                     }
                     KeyCode::Esc => {
