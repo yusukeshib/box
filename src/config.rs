@@ -32,14 +32,27 @@ pub struct BoxConfigInput {
     pub local: bool,
 }
 
+fn resolve_command(command: Option<Vec<String>>) -> Result<Vec<String>> {
+    match command {
+        None => match std::env::var("BOX_DEFAULT_CMD") {
+            Ok(val) if !val.is_empty() => shell_words::split(&val)
+                .map_err(|e| anyhow::anyhow!("Failed to parse BOX_DEFAULT_CMD: {}", e)),
+            _ => Ok(vec![]),
+        },
+        Some(cmd) => Ok(cmd),
+    }
+}
+
 pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
+    let command = resolve_command(input.command)?;
+
     if input.local {
         return Ok(BoxConfig {
             name: input.name,
             project_dir: input.project_dir,
             image: String::new(),
             mount_path: String::new(),
-            command: vec![],
+            command,
             env: vec![],
             local: true,
         });
@@ -51,14 +64,6 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
     let image = input.image.unwrap_or_else(|| {
         std::env::var("BOX_DEFAULT_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.to_string())
     });
-    let command = match input.command {
-        None => match std::env::var("BOX_DEFAULT_CMD") {
-            Ok(val) if !val.is_empty() => shell_words::split(&val)
-                .map_err(|e| anyhow::anyhow!("Failed to parse BOX_DEFAULT_CMD: {}", e))?,
-            _ => vec![],
-        },
-        Some(cmd) => cmd,
-    };
 
     Ok(BoxConfig {
         name: input.name,
@@ -443,6 +448,29 @@ mod tests {
         assert_eq!(config.command, Vec::<String>::new());
         if let Some(v) = saved {
             std::env::set_var("BOX_DEFAULT_CMD", v);
+        }
+    }
+
+    #[test]
+    fn test_resolve_local_respects_default_cmd() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let saved = std::env::var("BOX_DEFAULT_CMD").ok();
+        std::env::set_var("BOX_DEFAULT_CMD", "bash");
+        let config = resolve(BoxConfigInput {
+            name: "test".to_string(),
+            image: None,
+            mount_path: None,
+            project_dir: "/home/user/myproject".to_string(),
+            command: None,
+            env: vec![],
+            local: true,
+        })
+        .unwrap();
+        assert_eq!(config.command, vec!["bash".to_string()]);
+        assert!(config.local);
+        match saved {
+            Some(v) => std::env::set_var("BOX_DEFAULT_CMD", v),
+            None => std::env::remove_var("BOX_DEFAULT_CMD"),
         }
     }
 
