@@ -77,10 +77,6 @@ struct CreateArgs {
     #[arg(long = "docker-args", allow_hyphen_values = true)]
     docker_args: Option<String>,
 
-    /// Disable SSH agent forwarding (enabled by default)
-    #[arg(long = "no-ssh")]
-    no_ssh: bool,
-
     /// Command to run in container (default: $BOX_DEFAULT_CMD if set)
     #[arg(last = true)]
     cmd: Vec<String>,
@@ -161,14 +157,7 @@ fn main() {
             } else {
                 Some(args.cmd)
             };
-            cmd_create(
-                &args.name,
-                args.image,
-                &docker_args,
-                cmd,
-                !args.no_ssh,
-                args.detach,
-            )
+            cmd_create(&args.name, args.image, &docker_args, cmd, args.detach)
         }
         Some(Commands::Resume(args)) => {
             let docker_args = args
@@ -201,7 +190,7 @@ fn main() {
                     .map(|a| a.to_string_lossy().to_string())
                     .collect();
                 let cmd = if cmd.is_empty() { None } else { Some(cmd) };
-                cmd_create(&name, None, &docker_args, cmd, true, false)
+                cmd_create(&name, None, &docker_args, cmd, false)
             }
         }
         None => cmd_list(),
@@ -324,7 +313,7 @@ fn cmd_list() -> Result<i32> {
             name,
             image,
             command,
-        } => cmd_create(&name, image, &docker_args, command, true, false),
+        } => cmd_create(&name, image, &docker_args, command, false),
         tui::TuiAction::Cd(name) => cmd_cd(&name),
         tui::TuiAction::Quit => Ok(0),
     }
@@ -422,7 +411,6 @@ fn cmd_create(
     image: Option<String>,
     docker_args: &str,
     cmd: Option<Vec<String>>,
-    ssh: bool,
     detach: bool,
 ) -> Result<i32> {
     session::validate_name(name)?;
@@ -452,15 +440,11 @@ fn cmd_create(
         project_dir,
         command: cmd,
         env: vec![],
-        ssh,
     })?;
 
     eprintln!("\x1b[2msession:\x1b[0m {}", cfg.name);
     eprintln!("\x1b[2mimage:\x1b[0m {}", cfg.image);
     eprintln!("\x1b[2mmount:\x1b[0m {}", cfg.mount_path);
-    if cfg.ssh {
-        eprintln!("\x1b[2mssh:\x1b[0m true");
-    }
     if !cfg.command.is_empty() {
         eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
     }
@@ -489,7 +473,6 @@ fn cmd_create(
         env: &sess.env,
         home: &home,
         docker_args: docker_args_opt,
-        ssh: sess.ssh,
         detach,
     })
 }
@@ -540,7 +523,6 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
             env: &sess.env,
             home: &home,
             docker_args: docker_args_opt,
-            ssh: sess.ssh,
             detach,
         })
     }
@@ -663,7 +645,6 @@ _box() {{
                         '-d[Run container in the background]' \
                         '--image=[Docker image to use]:image' \
                         '--docker-args=[Extra Docker flags]:args' \
-                        '--no-ssh[Disable SSH agent forwarding]' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -749,7 +730,7 @@ fn cmd_config_bash() -> Result<i32> {
         create)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "-d --image --docker-args --no-ssh" -- "$cur"))
+                    COMPREPLY=($(compgen -W "-d --image --docker-args" -- "$cur"))
                     ;;
             esac
             ;;
@@ -965,7 +946,6 @@ mod tests {
                 assert!(!args.detach);
                 assert!(args.image.is_none());
                 assert!(args.docker_args.is_none());
-                assert!(!args.no_ssh);
                 assert!(args.cmd.is_empty());
             }
             other => panic!("expected Create, got {:?}", other),
@@ -982,7 +962,6 @@ mod tests {
             "python:3.11",
             "--docker-args",
             "-e FOO=bar --network host",
-            "--no-ssh",
             "--",
             "python",
             "main.py",
@@ -996,7 +975,6 @@ mod tests {
                     args.docker_args.as_deref(),
                     Some("-e FOO=bar --network host")
                 );
-                assert!(args.no_ssh);
                 assert_eq!(args.cmd, vec!["python", "main.py"]);
             }
             other => panic!("expected Create, got {:?}", other),
@@ -1093,12 +1071,6 @@ mod tests {
     #[test]
     fn test_resume_rejects_image() {
         let result = try_parse(&["resume", "my-session", "--image", "ubuntu"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resume_rejects_no_ssh() {
-        let result = try_parse(&["resume", "my-session", "--no-ssh"]);
         assert!(result.is_err());
     }
 

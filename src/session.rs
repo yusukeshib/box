@@ -13,7 +13,6 @@ pub struct Session {
     pub mount_path: String,
     pub command: Vec<String>,
     pub env: Vec<String>,
-    pub ssh: bool,
 }
 
 impl From<config::BoxConfig> for Session {
@@ -25,7 +24,6 @@ impl From<config::BoxConfig> for Session {
             mount_path: cfg.mount_path,
             command: cfg.command,
             env: cfg.env,
-            ssh: cfg.ssh,
         }
     }
 }
@@ -99,12 +97,6 @@ pub fn save(session: &Session) -> Result<()> {
     } else {
         let _ = fs::remove_file(dir.join("env"));
     }
-    if session.ssh {
-        fs::write(dir.join("ssh"), "true")?;
-    } else {
-        let _ = fs::remove_file(dir.join("ssh"));
-    }
-
     Ok(())
 }
 
@@ -146,8 +138,6 @@ pub fn load(name: &str) -> Result<Session> {
         })
         .unwrap_or_default();
 
-    let ssh = dir.join("ssh").exists();
-
     Ok(Session {
         name: name.to_string(),
         project_dir,
@@ -155,7 +145,6 @@ pub fn load(name: &str) -> Result<Session> {
         mount_path,
         command,
         env,
-        ssh,
     })
 }
 
@@ -308,7 +297,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
 
@@ -335,7 +323,6 @@ mod tests {
                     "echo hello".to_string(),
                 ],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
 
@@ -354,7 +341,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
 
@@ -418,7 +404,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
             assert!(session_exists("exists-test").unwrap());
@@ -444,7 +429,6 @@ mod tests {
                     mount_path: "/workspace".to_string(),
                     command: vec![],
                     env: vec![],
-                    ssh: false,
                 };
                 save(&sess).unwrap();
             }
@@ -468,7 +452,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
 
@@ -490,7 +473,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
             assert!(session_exists("to-remove").unwrap());
@@ -518,7 +500,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
 
@@ -556,7 +537,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
 
@@ -576,7 +556,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
-                ssh: false,
             };
             save(&sess).unwrap();
 
@@ -599,7 +578,6 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                ssh: false,
             };
             save(&sess).unwrap();
 
