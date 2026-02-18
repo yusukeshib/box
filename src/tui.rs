@@ -17,6 +17,7 @@ pub enum TuiAction {
         name: String,
         image: Option<String>,
         command: Option<Vec<String>>,
+        local: bool,
     },
     Cd(String),
     Quit,
@@ -191,21 +192,25 @@ where
 
             // Table
             {
-                let header = Row::new(["NAME", "PROJECT", "STATUS", "CMD", "IMAGE", "CREATED"])
-                    .style(Style::default().dim());
+                let header = Row::new([
+                    "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE", "CREATED",
+                ])
+                .style(Style::default().dim());
 
                 let total_rows = 1 + items.len(); // "new session" + actual sessions
                 let mut rows: Vec<Row> = Vec::with_capacity(total_rows);
 
                 // First row: "+ new session"
-                rows.push(Row::new(["New box...", "", "", "", "", ""]));
+                rows.push(Row::new(["New box...", "", "", "", "", "", ""]));
 
                 // Session rows
                 for (i, s) in items.iter().enumerate() {
+                    let session_mode = if s.local { "local" } else { "docker" };
                     let status = if s.running { "running" } else { "" };
                     let row = Row::new([
                         s.name.as_str(),
                         s.project_dir.as_str(),
+                        session_mode,
                         status,
                         s.command.as_str(),
                         s.image.as_str(),
@@ -222,6 +227,7 @@ where
                 let widths = [
                     Constraint::Length(15),
                     Constraint::Length(30),
+                    Constraint::Length(8),
                     Constraint::Length(10),
                     Constraint::Length(15),
                     Constraint::Length(20),
@@ -299,8 +305,12 @@ where
                                     input = TextInput::new();
                                     mode = Mode::InputName;
                                 } else {
-                                    let name = items[i - 1].name.clone();
+                                    let s = &items[i - 1];
+                                    let name = s.name.clone();
                                     clear_viewport(&mut terminal, viewport_height)?;
+                                    if s.local {
+                                        return Ok(TuiAction::Cd(name));
+                                    }
                                     return Ok(TuiAction::Resume(name));
                                 }
                             }
@@ -370,6 +380,17 @@ where
                             footer_msg = format!("Session '{}' already exists.", name);
                             mode = Mode::Normal;
                             input = TextInput::new();
+                        } else if std::env::var("BOX_MODE")
+                            .map(|v| v == "local")
+                            .unwrap_or(false)
+                        {
+                            clear_viewport(&mut terminal, viewport_height)?;
+                            return Ok(TuiAction::New {
+                                name,
+                                image: None,
+                                command: None,
+                                local: true,
+                            });
                         } else {
                             new_name = name;
                             let default_image = std::env::var("BOX_DEFAULT_IMAGE")
@@ -425,6 +446,7 @@ where
                             name: new_name,
                             image: new_image,
                             command,
+                            local: false,
                         });
                     }
                     KeyCode::Esc => {

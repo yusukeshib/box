@@ -13,6 +13,7 @@ pub struct Session {
     pub mount_path: String,
     pub command: Vec<String>,
     pub env: Vec<String>,
+    pub local: bool,
 }
 
 impl From<config::BoxConfig> for Session {
@@ -24,6 +25,7 @@ impl From<config::BoxConfig> for Session {
             mount_path: cfg.mount_path,
             command: cfg.command,
             env: cfg.env,
+            local: cfg.local,
         }
     }
 }
@@ -36,6 +38,7 @@ pub struct SessionSummary {
     pub command: String,
     pub created_at: String,
     pub running: bool,
+    pub local: bool,
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
@@ -81,6 +84,10 @@ pub fn save(session: &Session) -> Result<()> {
     fs::write(dir.join("project_dir"), &session.project_dir)?;
     fs::write(dir.join("image"), &session.image)?;
     fs::write(dir.join("mount_path"), &session.mount_path)?;
+    fs::write(
+        dir.join("mode"),
+        if session.local { "local" } else { "docker" },
+    )?;
     fs::write(
         dir.join("created_at"),
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
@@ -138,6 +145,10 @@ pub fn load(name: &str) -> Result<Session> {
         })
         .unwrap_or_default();
 
+    let local = fs::read_to_string(dir.join("mode"))
+        .map(|s| s.trim() == "local")
+        .unwrap_or(false);
+
     Ok(Session {
         name: name.to_string(),
         project_dir,
@@ -145,6 +156,7 @@ pub fn load(name: &str) -> Result<Session> {
         mount_path,
         command,
         env,
+        local,
     })
 }
 
@@ -183,6 +195,10 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             })
             .unwrap_or_default();
 
+        let local = fs::read_to_string(session_path.join("mode"))
+            .map(|s| s.trim() == "local")
+            .unwrap_or(false);
+
         sessions.push(SessionSummary {
             name,
             project_dir,
@@ -190,6 +206,7 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             command,
             created_at,
             running: false,
+            local,
         });
     }
 
@@ -297,6 +314,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
 
@@ -323,6 +341,7 @@ mod tests {
                     "echo hello".to_string(),
                 ],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
 
@@ -341,6 +360,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
 
@@ -404,6 +424,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
             assert!(session_exists("exists-test").unwrap());
@@ -429,6 +450,7 @@ mod tests {
                     mount_path: "/workspace".to_string(),
                     command: vec![],
                     env: vec![],
+                    local: false,
                 };
                 save(&sess).unwrap();
             }
@@ -452,6 +474,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
 
@@ -473,6 +496,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
             assert!(session_exists("to-remove").unwrap());
@@ -500,6 +524,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
 
@@ -537,6 +562,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
 
@@ -556,6 +582,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
+                local: false,
             };
             save(&sess).unwrap();
 
@@ -578,6 +605,7 @@ mod tests {
                 mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
+                local: false,
             };
             save(&sess).unwrap();
 

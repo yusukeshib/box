@@ -19,6 +19,7 @@ pub struct BoxConfig {
     pub mount_path: String,
     pub command: Vec<String>,
     pub env: Vec<String>,
+    pub local: bool,
 }
 
 pub struct BoxConfigInput {
@@ -28,9 +29,22 @@ pub struct BoxConfigInput {
     pub project_dir: String,
     pub command: Option<Vec<String>>,
     pub env: Vec<String>,
+    pub local: bool,
 }
 
 pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
+    if input.local {
+        return Ok(BoxConfig {
+            name: input.name,
+            project_dir: input.project_dir,
+            image: String::new(),
+            mount_path: String::new(),
+            command: vec![],
+            env: vec![],
+            local: true,
+        });
+    }
+
     let mount_path = input
         .mount_path
         .unwrap_or_else(|| derive_mount_path(&input.project_dir));
@@ -53,6 +67,7 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
         mount_path,
         command,
         env: input.env,
+        local: false,
     })
 }
 
@@ -118,6 +133,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
 
@@ -130,6 +146,7 @@ mod tests {
                 mount_path: "/workspace/myproject".to_string(),
                 command: vec![],
                 env: vec![],
+                local: false,
             }
         );
 
@@ -152,6 +169,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
 
@@ -169,6 +187,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
 
@@ -188,6 +207,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
         assert_eq!(config.image, "ubuntu:latest");
@@ -210,6 +230,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
         assert_eq!(config.image, "python:3.11");
@@ -269,6 +290,7 @@ mod tests {
             project_dir: "/home/user/project".to_string(),
             command: Some(vec!["python".to_string(), "main.py".to_string()]),
             env: vec!["FOO=bar".to_string()],
+            local: false,
         })
         .unwrap();
 
@@ -281,6 +303,7 @@ mod tests {
                 mount_path: "/app".to_string(),
                 command: vec!["python".to_string(), "main.py".to_string()],
                 env: vec!["FOO=bar".to_string()],
+                local: false,
             }
         );
     }
@@ -297,6 +320,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
         assert_eq!(config.command, vec!["bash".to_string()]);
@@ -318,6 +342,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: Some(vec!["sh".to_string()]),
             env: vec![],
+            local: false,
         })
         .unwrap();
         assert_eq!(config.command, vec!["sh".to_string()]);
@@ -339,6 +364,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
         assert_eq!(
@@ -367,6 +393,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
@@ -388,6 +415,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("BOX_DEFAULT_CMD"));
@@ -409,6 +437,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
+            local: false,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
@@ -429,6 +458,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: Some(vec![]),
             env: vec![],
+            local: false,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
