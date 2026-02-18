@@ -87,56 +87,6 @@ pub fn check() -> Result<()> {
     Ok(())
 }
 
-const SSH_CONTAINER_PATH: &str = "/run/host-services/ssh-auth.sock";
-
-/// Return (host_path, container_path) for SSH agent forwarding.
-///
-/// On macOS, both Docker Desktop and OrbStack expose a magic VM-internal socket
-/// at `/run/host-services/ssh-auth.sock` that forwards to the host SSH agent.
-/// Mounting the raw host socket (e.g. 1Password's) does NOT work because Unix
-/// sockets cannot cross the VM boundary.
-///
-/// On Linux, the host socket from `SSH_AUTH_SOCK` is used directly.
-fn ssh_agent_paths() -> Result<(String, String)> {
-    if cfg!(target_os = "macos") {
-        Ok((
-            "/run/host-services/ssh-auth.sock".to_string(),
-            SSH_CONTAINER_PATH.to_string(),
-        ))
-    } else {
-        let host = std::env::var("SSH_AUTH_SOCK").map_err(|_| {
-            anyhow::anyhow!("SSH_AUTH_SOCK is not set. Cannot forward SSH agent on Linux.")
-        })?;
-        Ok((host, SSH_CONTAINER_PATH.to_string()))
-    }
-}
-
-/// Fix SSH agent socket permissions for non-root container users.
-///
-/// OrbStack sets restrictive permissions (0660) on the forwarded SSH agent socket,
-/// which prevents non-root container users from accessing it. This runs a one-shot
-/// container as root to make the socket world-accessible. Silently ignored if it fails.
-fn fix_ssh_socket_permissions(image: &str) {
-    let mount = format!("{p}:{p}", p = SSH_CONTAINER_PATH);
-    let _ = Command::new("docker")
-        .args([
-            "run",
-            "--rm",
-            "--user",
-            "root",
-            "--entrypoint",
-            "chmod",
-            "-v",
-            &mount,
-            image,
-            "666",
-            SSH_CONTAINER_PATH,
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-}
-
 /// Restore terminal state after an interactive Docker session.
 /// Writes show-cursor and attribute-reset escape sequences. Best-effort; errors ignored.
 fn restore_terminal() {
@@ -153,7 +103,6 @@ pub struct DockerRunConfig<'a> {
     pub env: &'a [String],
     pub home: &'a str,
     pub docker_args: Option<&'a str>,
-    pub ssh: bool,
     pub detach: bool,
 }
 
@@ -185,14 +134,6 @@ pub fn build_run_args(cfg: &DockerRunConfig) -> Result<Vec<String>> {
         args.push(format!("{}:/etc/gitconfig:ro", gitconfig.display()));
     }
 
-    if cfg.ssh {
-        let (host_path, container_path) = ssh_agent_paths()?;
-        args.push("-v".into());
-        args.push(format!("{}:{}", host_path, container_path));
-        args.push("-e".into());
-        args.push(format!("SSH_AUTH_SOCK={}", container_path));
-    }
-
     if let Some(extra) = cfg.docker_args {
         if !extra.is_empty() {
             match shell_words::split(extra) {
@@ -220,10 +161,6 @@ pub fn build_run_args(cfg: &DockerRunConfig) -> Result<Vec<String>> {
 
 pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
     ensure_workspace(cfg.home, cfg.name, cfg.project_dir)?;
-
-    if cfg.ssh && std::cfg!(target_os = "macos") {
-        fix_ssh_socket_permissions(cfg.image);
-    }
 
     let args = build_run_args(cfg)?;
     eprintln!("\x1b[2mrunning container:\x1b[0m");
@@ -413,7 +350,6 @@ mod tests {
             env: &[],
             home: "/home/user",
             docker_args: None,
-            ssh: false,
             detach: false,
         }
     }
@@ -628,36 +564,5 @@ mod tests {
         let image_pos = args.iter().position(|a| a == "alpine:latest").unwrap();
         assert_eq!(args[image_pos + 1], "sleep");
         assert_eq!(args[image_pos + 2], "60");
-    }
-
-    #[test]
-    fn test_build_run_args_with_ssh() {
-        unsafe { std::env::set_var("SSH_AUTH_SOCK", "/tmp/fake-ssh-agent.sock") };
-        let args = build_run_args(&DockerRunConfig {
-            ssh: true,
-            ..default_config()
-        })
-        .unwrap();
-
-        // Should have volume mount for the SSH socket
-        let (host_path, container_path) = ssh_agent_paths().unwrap();
-        let vol_mount = format!("{}:{}", host_path, container_path);
-        let vol_pos = args
-            .iter()
-            .position(|a| a.contains("ssh-auth.sock"))
-            .expect("SSH socket volume mount not found");
-        assert_eq!(args[vol_pos - 1], "-v");
-        assert_eq!(args[vol_pos], vol_mount);
-
-        // Should have SSH_AUTH_SOCK env var
-        let env_pos = args
-            .iter()
-            .position(|a| a.starts_with("SSH_AUTH_SOCK="))
-            .expect("SSH_AUTH_SOCK env var not found");
-        assert_eq!(args[env_pos - 1], "-e");
-        assert_eq!(
-            args[env_pos],
-            format!("SSH_AUTH_SOCK={}", SSH_CONTAINER_PATH)
-        );
     }
 }

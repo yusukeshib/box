@@ -229,7 +229,6 @@ box remove my-feature
 | `-d` | バックグラウンドでコンテナを実行（デタッチ） |
 | `--image <image>` | 使用するDockerイメージ（デフォルト: `alpine:latest`） |
 | `--docker-args <args>` | 追加のDockerフラグ（例: `-e KEY=VALUE`、`-v /host:/container`）。`$BOX_DOCKER_ARGS` を上書き |
-| `--no-ssh` | SSHエージェント転送を無効化（デフォルトは有効） |
 | `-- cmd...` | コンテナで実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
 
 ### `box list`
@@ -325,37 +324,12 @@ gitの隔離戦略はいくつか存在しますが、それぞれに問題が�
 
 - **自分のツールチェーンを使用** — 必要な言語、ランタイム、ツールを含む任意のDockerイメージを使用可能
 - **永続的なセッション** — 終了しても再開可能、ファイルと状態が保持される
-- **SSHエージェント転送** — ホストのSSH鍵で `git push` / `git pull` がそのまま動作
 - **完全なDocker制御** — カスタムネットワーク、ボリューム、環境変数、その他の `docker run` フラグが使用可能
 - **任意のエージェントで動作** — 特定のツールに縛られず、Claude Code、Cursor、Copilot、手動操作で使用可能
 
 素のDockerを使うことで完全な制御を維持しつつ、Boxが隔離とライフサイクルを管理します。
 
 </details>
-
-## SSHエージェント転送
-
-**課題**: Dockerコンテナは通常、ホストのSSH鍵にアクセスできません。macOSではさらに困難です — DockerがVM内で動作するため、UnixソケットがVM境界を越えられません。
-
-**boxの解決策**: ホストのSSHエージェントをコンテナに自動転送します。`git push`、`git pull`、`ssh` がすべて既存の鍵で動作します — 鍵のコピーは不要です。
-
-**プラットフォーム別の仕組み**:
-
-- **macOS**（Docker Desktop / OrbStack）: VM経由のソケット `/run/host-services/ssh-auth.sock` をマウント
-- **Linux**: `$SSH_AUTH_SOCK` を直接コンテナにマウント
-
-Boxはクローンしたリポジトリの `origin` リモートを実際のURL（ローカルクローンパスではなく）に自動修正するため、`git push origin` がそのまま動作します。
-
-```bash
-box create my-feature --image ubuntu:latest -- bash
-
-# コンテナ内で
-ssh-add -l          # 鍵の一覧が表示されるはずです
-git push origin main
-
-# SSH転送を無効にする場合
-box create my-feature --no-ssh -- bash
-```
 
 ## Claude Code連携
 

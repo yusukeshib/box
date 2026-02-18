@@ -229,7 +229,6 @@ box remove my-feature
 | `-d` | Run container in the background (detached) |
 | `--image <image>` | Docker image to use (default: `alpine:latest`) |
 | `--docker-args <args>` | Extra Docker flags (e.g. `-e KEY=VALUE`, `-v /host:/container`). Overrides `$BOX_DOCKER_ARGS` |
-| `--no-ssh` | Disable SSH agent forwarding (enabled by default) |
 | `-- cmd...` | Command to run in container (default: `$BOX_DEFAULT_CMD` if set) |
 
 ### `box list`
@@ -325,37 +324,12 @@ Some tools (e.g. Claude Code's `--sandbox`) provide built-in Docker sandboxing. 
 
 - **Your own toolchain** — use any Docker image with the exact languages, runtimes, and tools you need
 - **Persistent sessions** — exit and resume where you left off; files and state are preserved
-- **SSH agent forwarding** — `git push` / `git pull` with your host SSH keys, out of the box
 - **Full Docker control** — custom network, volumes, env vars, and any other `docker run` flags
 - **Works with any agent** — not tied to a specific tool; use Claude Code, Cursor, Copilot, or manual workflows
 
 Plain Docker gives full control while box handles the isolation and lifecycle.
 
 </details>
-
-## SSH Agent Forwarding
-
-**The problem**: Docker containers can't normally access your host SSH keys. On macOS it's even harder — Docker runs in a VM, so Unix sockets can't cross the VM boundary.
-
-**What box does**: Automatically forwards the host's SSH agent into the container. `git push`, `git pull`, and `ssh` all work with your existing keys — no key copying needed.
-
-**How it works per platform**:
-
-- **macOS** (Docker Desktop / OrbStack): Mounts the VM-bridged socket at `/run/host-services/ssh-auth.sock`
-- **Linux**: Mounts `$SSH_AUTH_SOCK` directly into the container
-
-Box also re-points the cloned repo's `origin` remote to the real URL (not the local clone path), so `git push origin` works out of the box.
-
-```bash
-box create my-feature --image ubuntu:latest -- bash
-
-# Inside the container
-ssh-add -l          # should list your keys
-git push origin main
-
-# To disable SSH forwarding
-box create my-feature --no-ssh -- bash
-```
 
 ## Security Note
 
