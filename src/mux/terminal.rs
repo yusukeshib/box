@@ -216,15 +216,26 @@ pub fn write_bytes_to_pty(pty: &pty_process::blocking::Pty, data: &[u8]) -> Resu
     Ok(())
 }
 
+/// Scrollback state passed to `draw_frame` for rendering the scrollbar.
+pub struct ScrollState {
+    pub active: bool,
+    pub offset: usize,
+    pub max: usize,
+}
+
 /// Render the mux frame: header bar + terminal grid.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_frame(
     f: &mut ratatui::Frame,
     screen: &vt100::Screen,
     session_name: &str,
     project_name: &str,
     show_help: bool,
-    is_scrollback: bool,
+    scroll: &ScrollState,
 ) {
+    let is_scrollback = scroll.active;
+    let scroll_offset = scroll.offset;
+    let max_scrollback = scroll.max;
     let area = f.area();
 
     let header_area = Rect {
@@ -248,11 +259,14 @@ pub fn draw_frame(
         format!(" {} > {} ", project_name, session_name)
     };
     let right = if show_help {
-        " Ctrl+P,Q:detach  ,X:stop  ,[:scroll  ,?:help "
+        " Ctrl+P,Q:detach  ,X:stop  ,[:scroll  ,?:help ".to_string()
     } else if is_scrollback {
-        " SCROLL: Up/Down PgUp/PgDn  q:exit "
+        format!(
+            " [{}/{}] Up/Down PgUp/PgDn q:exit ",
+            scroll_offset, max_scrollback
+        )
     } else {
-        " Ctrl+P,? for help "
+        " Ctrl+P,? for help ".to_string()
     };
 
     let pad = (area.width as usize)
@@ -268,6 +282,42 @@ pub fn draw_frame(
         show_cursor: !is_scrollback,
     };
     f.render_widget(widget, grid_area);
+
+    // Render scrollbar when in scrollback mode
+    if is_scrollback && max_scrollback > 0 && grid_area.height > 0 {
+        let track_height = grid_area.height as usize;
+        // Thumb size: at least 1 row, proportional to visible / total
+        let total_lines = max_scrollback + track_height;
+        let thumb_size = (track_height * track_height / total_lines).max(1);
+        // Thumb position: 0 = bottom (scroll_offset 0), top = max scroll
+        let max_thumb_top = track_height.saturating_sub(thumb_size);
+        let thumb_top = if max_scrollback > 0 {
+            scroll_offset * max_thumb_top / max_scrollback
+        } else {
+            0
+        };
+        // Invert: scroll_offset=max means thumb at top (y=0)
+        let thumb_y_start = max_thumb_top - thumb_top;
+
+        let scrollbar_x = grid_area.x + grid_area.width.saturating_sub(1);
+        let track_style = Style::default().fg(Color::DarkGray);
+        let thumb_style = Style::default().fg(Color::White);
+
+        for row in 0..track_height {
+            let y = grid_area.y + row as u16;
+            if scrollbar_x >= f.area().width || y >= f.area().height {
+                continue;
+            }
+            let cell = &mut f.buffer_mut()[(scrollbar_x, y)];
+            if row >= thumb_y_start && row < thumb_y_start + thumb_size {
+                cell.set_symbol("\u{2588}"); // █ (full block)
+                cell.set_style(thumb_style);
+            } else {
+                cell.set_symbol("\u{2502}"); // │ (thin vertical line)
+                cell.set_style(track_style);
+            }
+        }
+    }
 }
 
 /// Input processing state machine for the Ctrl+P prefix and scrollback mode.

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::session;
 
-use terminal::{InputAction, InputState, RawModeGuard};
+use terminal::{InputAction, InputState, RawModeGuard, ScrollState};
 
 /// Acquire an exclusive lock on a session-specific lockfile.
 /// Returns the lock file (must be kept alive for the duration of the lock).
@@ -313,12 +313,17 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 // Draw only when the event queue is quiet, so rapid bursts
                 // of output are coalesced into a single frame.
                 if dirty {
+                    let max_scrollback = parser.screen().scrollback();
                     parser.set_scrollback(input_state.scroll_offset);
                     let session_name = config.session_name.clone();
                     let project_name = project_name.clone();
                     let screen = parser.screen();
                     let show_help = input_state.show_help;
-                    let is_scrollback = input_state.scrollback_mode;
+                    let scroll = ScrollState {
+                        active: input_state.scrollback_mode,
+                        offset: input_state.scroll_offset,
+                        max: max_scrollback,
+                    };
                     term.draw(|f| {
                         terminal::draw_frame(
                             f,
@@ -326,7 +331,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             &session_name,
                             &project_name,
                             show_help,
-                            is_scrollback,
+                            &scroll,
                         );
                     })
                     .context("Failed to draw terminal frame")?;

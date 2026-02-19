@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::protocol::{self, ClientMsg, ServerMsg};
-use super::terminal::{self, InputAction, InputState, RawModeGuard};
+use super::terminal::{self, InputAction, InputState, RawModeGuard, ScrollState};
 
 enum ClientEvent {
     ServerMsg(ServerMsg),
@@ -246,10 +246,16 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                 }
 
                 if dirty {
+                    let max_scrollback = parser.screen().scrollback();
                     parser.set_scrollback(input_state.scroll_offset);
                     let session_name = session_name.to_string();
                     let project_name = project_name.clone();
                     let screen = parser.screen();
+                    let scroll = ScrollState {
+                        active: input_state.scrollback_mode,
+                        offset: input_state.scroll_offset,
+                        max: max_scrollback,
+                    };
                     terminal
                         .draw(|f| {
                             terminal::draw_frame(
@@ -258,7 +264,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                                 &session_name,
                                 &project_name,
                                 input_state.show_help,
-                                input_state.scrollback_mode,
+                                &scroll,
                             );
                         })
                         .context("Failed to draw terminal frame")?;
