@@ -536,11 +536,14 @@ impl InputState {
             // SGR mouse: intercept scroll wheel, forward other events to PTY.
             if let Some((btn, consumed)) = parse_sgr_mouse(data, i) {
                 match btn {
-                    64 if max_scrollback > 0 => {
-                        // Scroll wheel up — enter scrollback mode
-                        self.scrollback_mode = true;
-                        self.scroll_offset = 3;
-                        actions.push(InputAction::Redraw);
+                    64 => {
+                        // Scroll wheel up — enter scrollback mode (if there's history)
+                        if max_scrollback > 0 {
+                            self.scrollback_mode = true;
+                            self.scroll_offset = 3;
+                            actions.push(InputAction::Redraw);
+                        }
+                        // Always consumed — never forward scroll wheel to PTY
                     }
                     65 => {} // Scroll wheel down at bottom — ignore
                     _ => {
