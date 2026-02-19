@@ -30,10 +30,13 @@ impl RawModeGuard {
             anyhow::bail!("Failed to set raw mode: {}", io::Error::last_os_error());
         }
 
-        // Enter alternate screen, hide cursor, enable alternate scroll mode
-        // ?1007h converts scroll wheel to Up/Down arrows in alternate screen
-        // without capturing mouse buttons (so text selection keeps working)
-        tty.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1007h")?;
+        // Enter alternate screen, hide cursor, enable SGR mouse tracking.
+        // ?1000h = normal mouse tracking (reports button press/release)
+        // ?1006h = SGR encoding (\x1b[<Btn;Col;RowM/m) for reliable parsing
+        // We intercept scroll wheel (buttons 64/65) for scrollback and
+        // forward other mouse events to the PTY child.
+        // Text selection: hold Option (macOS) or Shift to bypass mouse tracking.
+        tty.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h")?;
         tty.flush()?;
 
         Ok(RawModeGuard {
@@ -50,8 +53,8 @@ impl Drop for RawModeGuard {
             .write(true)
             .open("/dev/tty")
         {
-            // Disable alternate scroll, show cursor, leave alternate screen, reset attributes
-            let _ = tty.write_all(b"\x1b[?1007l\x1b[?25h\x1b[?1049l\x1b[0m");
+            // Disable mouse tracking, show cursor, leave alternate screen, reset attributes
+            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
         }
         unsafe {
@@ -288,6 +291,41 @@ pub enum InputAction {
     Redraw,
 }
 
+/// Try to parse an SGR mouse sequence at data[i..].
+/// Format: \x1b[<Btn;Col;RowM (press) or \x1b[<Btn;Col;Rowm (release).
+/// Returns (button, bytes_consumed) on success, None if not a valid sequence.
+fn parse_sgr_mouse(data: &[u8], i: usize) -> Option<(u32, usize)> {
+    // Need at least \x1b[< = 3 bytes
+    if i + 2 >= data.len() || data[i] != 0x1b || data[i + 1] != b'[' || data[i + 2] != b'<' {
+        return None;
+    }
+    let mut j = i + 3;
+    let mut params = [0u32; 3];
+    let mut param_idx = 0;
+    while j < data.len() {
+        match data[j] {
+            b'0'..=b'9' => {
+                params[param_idx] = params[param_idx].saturating_mul(10) + (data[j] - b'0') as u32;
+            }
+            b';' => {
+                param_idx += 1;
+                if param_idx >= 3 {
+                    return None;
+                }
+            }
+            b'M' | b'm' => {
+                if param_idx == 2 {
+                    return Some((params[0], j + 1 - i));
+                }
+                return None;
+            }
+            _ => return None,
+        }
+        j += 1;
+    }
+    None // incomplete sequence
+}
+
 impl InputState {
     pub fn new() -> Self {
         Self {
@@ -314,6 +352,28 @@ impl InputState {
             let b = data[i];
 
             if self.scrollback_mode {
+                // SGR mouse scroll in scrollback mode
+                if let Some((btn, consumed)) = parse_sgr_mouse(data, i) {
+                    match btn {
+                        64 => {
+                            if self.scroll_offset < max_scrollback {
+                                self.scroll_offset += 3;
+                                self.scroll_offset = self.scroll_offset.min(max_scrollback);
+                            }
+                            actions.push(InputAction::Redraw);
+                        }
+                        65 => {
+                            self.scroll_offset = self.scroll_offset.saturating_sub(3);
+                            if self.scroll_offset == 0 {
+                                self.scrollback_mode = false;
+                            }
+                            actions.push(InputAction::Redraw);
+                        }
+                        _ => {} // ignore other mouse events in scrollback
+                    }
+                    i += consumed;
+                    continue;
+                }
                 if b == 0x1b && i + 2 < data.len() && data[i + 1] == b'[' {
                     match data[i + 2] {
                         b'A' => {
@@ -415,10 +475,26 @@ impl InputState {
                 continue;
             }
 
-            // Auto-enter scrollback mode on scroll wheel up (Up arrow from ?1007h).
-            // The terminal converts wheel events to \x1b[A / \x1b[B via alternate
-            // scroll mode.  We intercept Up here so the user doesn't have to press
-            // Ctrl+P [ first.
+            // SGR mouse: intercept scroll wheel, forward other events to PTY.
+            if let Some((btn, consumed)) = parse_sgr_mouse(data, i) {
+                match btn {
+                    64 if max_scrollback > 0 => {
+                        // Scroll wheel up — enter scrollback mode
+                        self.scrollback_mode = true;
+                        self.scroll_offset = 3;
+                        actions.push(InputAction::Redraw);
+                    }
+                    65 => {} // Scroll wheel down at bottom — ignore
+                    _ => {
+                        // Forward other mouse events (click, drag) to PTY
+                        actions.push(InputAction::Forward(data[i..i + consumed].to_vec()));
+                    }
+                }
+                i += consumed;
+                continue;
+            }
+
+            // Fallback: auto-enter scrollback on Up arrow (?1007h alternate scroll).
             if b == 0x1b
                 && i + 2 < data.len()
                 && data[i + 1] == b'['
@@ -475,7 +551,7 @@ pub fn install_panic_hook() {
             .write(true)
             .open("/dev/tty")
         {
-            let _ = tty.write_all(b"\x1b[?1007l\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
             use std::os::unix::io::FromRawFd;
             let _ = std::process::Command::new("stty")
