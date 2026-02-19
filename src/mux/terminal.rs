@@ -338,11 +338,13 @@ impl InputState {
             if self.prefix_active {
                 self.prefix_active = false;
                 match b {
-                    b'q' | b'Q' => {
+                    b'q' | b'Q' | 0x11 => {
+                        // q, Q, or Ctrl+Q
                         actions.push(InputAction::Detach);
                         return actions;
                     }
-                    b'x' | b'X' => {
+                    b'x' | b'X' | 0x18 => {
+                        // x, X, or Ctrl+X
                         actions.push(InputAction::Kill);
                         i += 1;
                         continue;
