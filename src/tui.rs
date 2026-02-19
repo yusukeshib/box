@@ -173,6 +173,7 @@ where
     let mut footer_msg = String::new();
     let mut new_name = String::new();
     let mut new_image: Option<String> = None;
+    let mut new_local = false;
 
     loop {
         terminal.draw(|f| {
@@ -394,13 +395,12 @@ where
                             .map(|v| v == "local")
                             .unwrap_or(false)
                         {
-                            clear_viewport(&mut terminal, viewport_height)?;
-                            return Ok(TuiAction::New {
-                                name,
-                                image: None,
-                                command: None,
-                                local: true,
-                            });
+                            new_name = name;
+                            new_image = None;
+                            new_local = true;
+                            let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
+                            input = TextInput::with_text(default_cmd);
+                            mode = Mode::InputCommand;
                         } else {
                             new_name = name;
                             let default_image = std::env::var("BOX_DEFAULT_IMAGE")
@@ -456,7 +456,7 @@ where
                             name: new_name,
                             image: new_image,
                             command,
-                            local: false,
+                            local: new_local,
                         });
                     }
                     KeyCode::Esc => {
