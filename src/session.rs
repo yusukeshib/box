@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crate::config;
@@ -42,9 +44,10 @@ pub struct SessionSummary {
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
-    Ok(PathBuf::from(config::home_dir()?)
+    let dir = PathBuf::from(config::home_dir()?)
         .join(".box")
-        .join("sessions"))
+        .join("sessions");
+    Ok(dir)
 }
 
 const RESERVED_NAMES: &[&str] = &[
@@ -80,6 +83,11 @@ pub fn session_exists(name: &str) -> Result<bool> {
 pub fn save(session: &Session) -> Result<()> {
     let dir = sessions_dir()?.join(&session.name);
     fs::create_dir_all(&dir).context("Failed to create session directory")?;
+    // Restrict session directory to owner-only access (0o700) to prevent
+    // other local users from connecting to the Unix socket or tampering
+    // with PID files.
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
 
     fs::write(dir.join("project_dir"), &session.project_dir)?;
     fs::write(dir.join("image"), &session.image)?;

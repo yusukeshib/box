@@ -71,6 +71,16 @@ pub fn run(session_name: &str) -> Result<()> {
         .join("workspaces")
         .join(session_name);
 
+    // Ensure session directory has restricted permissions before creating socket
+    let sess_dir = session::sessions_dir()?.join(session_name);
+    if sess_dir.is_dir() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&sess_dir, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
     // Create Unix socket
     let socket_path = session::socket_path(session_name)?;
     // Remove stale socket if it exists

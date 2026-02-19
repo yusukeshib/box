@@ -13,6 +13,26 @@ use crate::session;
 
 use terminal::{InputAction, InputState, RawModeGuard};
 
+/// Acquire an exclusive lock on a session-specific lockfile.
+/// Returns the lock file (must be kept alive for the duration of the lock).
+fn acquire_session_lock(session_name: &str) -> Result<std::fs::File> {
+    let dir = session::sessions_dir()?.join(session_name);
+    std::fs::create_dir_all(&dir)?;
+    let lock_path = dir.join("lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .context("Failed to open session lock file")?;
+    let fd = lock_file.as_raw_fd();
+    let ret = unsafe { libc::flock(fd, libc::LOCK_EX) };
+    if ret != 0 {
+        anyhow::bail!("Failed to acquire session lock");
+    }
+    Ok(lock_file)
+}
+
 /// Maximum lines of scrollback history kept per terminal.
 const SCROLLBACK_LINES: usize = 10_000;
 
@@ -27,7 +47,17 @@ pub struct MuxConfig {
 pub fn run(session_name: &str) -> Result<i32> {
     let socket_path = session::socket_path(session_name)?;
 
-    // Try connecting to existing server
+    // Try connecting to existing server (fast path, no lock needed)
+    if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
+        return client::run(session_name, &socket_path);
+    }
+
+    // Acquire exclusive lock to prevent two concurrent callers from both
+    // spawning a server for the same session (TOCTOU race).
+    let _lock = acquire_session_lock(session_name)?;
+
+    // Re-check under the lock — another caller may have started the server
+    // while we were waiting for the lock.
     if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
         return client::run(session_name, &socket_path);
     }
@@ -43,6 +73,7 @@ pub fn run(session_name: &str) -> Result<i32> {
     spawn_server(session_name)?;
 
     // Poll for socket (up to 3s), then connect as client
+    // Lock is released here (dropped at end of scope) once server is ready.
     wait_for_socket(session_name, &socket_path)?;
     client::run(session_name, &socket_path)
 }
@@ -177,6 +208,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     let mut input_state = InputState::new();
     let mut dirty = true;
     let mut child_exited = false;
+    let mut mouse_tracking_on = false;
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
@@ -237,8 +269,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 // Flush any buffered incomplete escape sequence
                 // (e.g. bare ESC that wasn't followed by more bytes).
                 let max_scrollback = parser.screen().scrollback();
-                let pending_actions =
-                    input_state.flush_pending(current_inner_rows, max_scrollback);
+                let pending_actions = input_state.flush_pending(current_inner_rows, max_scrollback);
                 for action in pending_actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -271,6 +302,12 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         input_state.scroll_offset = 0;
                         dirty = true;
                     }
+                }
+
+                // Toggle mouse tracking when scrollback mode changes
+                if input_state.scrollback_mode != mouse_tracking_on {
+                    mouse_tracking_on = input_state.scrollback_mode;
+                    terminal::set_mouse_tracking(tty_fd, mouse_tracking_on);
                 }
 
                 // Draw only when the event queue is quiet, so rapid bursts
@@ -357,12 +394,23 @@ fn spawn_server(session_name: &str) -> Result<()> {
             .stdout(Stdio::null())
             .stderr(Stdio::from(log_file))
             .pre_exec(|| {
-                // Put server in its own process group so it doesn't receive
-                // signals from the caller's terminal. We avoid setsid() because
-                // being a session leader causes macOS to auto-assign the PTY
-                // slave as our controlling terminal when opened, which then
-                // prevents the child from claiming it via TIOCSCTTY.
-                libc::setpgid(0, 0);
+                // On Linux, use setsid() to create a new session so the child
+                // PTY process can properly claim a controlling terminal, which
+                // is required for job control (Ctrl+C, Ctrl+Z).
+                //
+                // On macOS, we avoid setsid() because being a session leader
+                // causes macOS to auto-assign the PTY slave as the server's
+                // controlling terminal when opened, which then prevents the
+                // child from claiming it via TIOCSCTTY. Instead, use setpgid()
+                // to detach from the caller's process group.
+                #[cfg(target_os = "linux")]
+                {
+                    libc::setsid();
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    libc::setpgid(0, 0);
+                }
                 // Ignore SIGHUP so the server survives terminal close.
                 // This is set before exec() so it persists into the new process.
                 libc::signal(libc::SIGHUP, libc::SIG_IGN);
@@ -402,15 +450,52 @@ fn kill_stale_server(session_name: &str) {
         let pid_path = dir.join(session_name).join("pid");
         if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
+                if pid > 0 && is_box_mux_server(pid) {
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                    // Brief wait for the process to be reaped
+                    std::thread::sleep(Duration::from_millis(100));
                 }
-                // Brief wait for the process to be reaped
-                std::thread::sleep(Duration::from_millis(100));
             }
         }
         // Remove stale PID file
         let _ = std::fs::remove_file(&pid_path);
+    }
+}
+
+/// Check whether the given PID belongs to a box mux server process.
+/// Returns false if the PID doesn't exist or belongs to an unrelated process,
+/// preventing accidental kills of recycled PIDs.
+fn is_box_mux_server(pid: i32) -> bool {
+    // First check if the process is alive at all
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return false;
+    }
+
+    // On macOS, use `ps` to verify the process command contains our binary name.
+    // On Linux, check /proc/<pid>/cmdline.
+    #[cfg(target_os = "linux")]
+    {
+        let cmdline_path = format!("/proc/{}/cmdline", pid);
+        if let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) {
+            return cmdline.contains("box") && cmdline.contains("__BOX_MUX_SERVER");
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        // On macOS/BSD, check /proc is unavailable; use `ps` to verify.
+        // Look for the __BOX_MUX_SERVER env marker in the process environment
+        // via `ps eww` which shows environment variables on macOS.
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+        {
+            let cmd = String::from_utf8_lossy(&output.stdout);
+            return cmd.contains("box");
+        }
+        false
     }
 }
 

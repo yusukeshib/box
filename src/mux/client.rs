@@ -58,14 +58,19 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
         },
     )?;
 
-    // Wait for Resized from server to know the PTY dimensions
+    // Wait for Resized from server to know the PTY dimensions.
+    // Use a timeout so we don't block forever in raw mode if the server hangs.
     let mut sock_reader = sock
         .try_clone()
         .context("Failed to clone socket for reader")?;
-    let (pty_cols, pty_rows) = match protocol::read_server_msg(&mut sock_reader)? {
-        ServerMsg::Resized { cols, rows } => (cols, rows),
-        ServerMsg::Exited(code) => return Ok(code),
-        _ => (term_cols, inner_rows),
+    sock_reader
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .context("Failed to set handshake read timeout")?;
+    let (pty_cols, pty_rows) = match protocol::read_server_msg(&mut sock_reader) {
+        Ok(ServerMsg::Resized { cols, rows }) => (cols, rows),
+        Ok(ServerMsg::Exited(code)) => return Ok(code),
+        Ok(_) => (term_cols, inner_rows),
+        Err(_) => anyhow::bail!("Timed out waiting for server handshake"),
     };
 
     // Create local parser with server's PTY dimensions
@@ -80,6 +85,9 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
         Ok(_) => {}
         Err(_) => return Ok(1),
     }
+
+    // Clear timeout for normal operation (reader thread handles its own blocking)
+    sock_reader.set_read_timeout(None)?;
 
     // Create ratatui terminal
     let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
@@ -130,6 +138,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     let project_name = super::project_name_for_session(session_name);
     let mut input_state = InputState::new();
     let mut dirty = true;
+    let mut mouse_tracking_on = false;
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
@@ -191,8 +200,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Flush any buffered incomplete escape sequence
                 let max_scrollback = parser.screen().scrollback();
-                let pending_actions =
-                    input_state.flush_pending(current_inner_rows, max_scrollback);
+                let pending_actions = input_state.flush_pending(current_inner_rows, max_scrollback);
                 for action in pending_actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -229,6 +237,12 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                         input_state.scroll_offset = 0;
                         dirty = true;
                     }
+                }
+
+                // Toggle mouse tracking when scrollback mode changes
+                if input_state.scrollback_mode != mouse_tracking_on {
+                    mouse_tracking_on = input_state.scrollback_mode;
+                    terminal::set_mouse_tracking(tty_fd, mouse_tracking_on);
                 }
 
                 if dirty {

@@ -30,12 +30,11 @@ impl RawModeGuard {
             anyhow::bail!("Failed to set raw mode: {}", io::Error::last_os_error());
         }
 
-        // Enter alternate screen, hide cursor, enable SGR mouse tracking.
-        // ?1000h = basic mouse tracking, ?1006h = SGR encoding.
-        // We intercept scroll wheel (buttons 64/65) for scrollback and
-        // silently consume all other mouse events.
-        // Hold Shift for native text selection (standard terminal behavior).
-        tty.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h")?;
+        // Enter alternate screen, hide cursor.
+        // Mouse tracking (?1000h/?1006h) is NOT enabled here so that native
+        // text selection works by default.  It is toggled on/off dynamically
+        // when entering/leaving scrollback mode via `set_mouse_tracking()`.
+        tty.write_all(b"\x1b[?1049h\x1b[?25l")?;
         tty.flush()?;
 
         Ok(RawModeGuard {
@@ -528,69 +527,32 @@ impl InputState {
                 continue;
             }
 
-            // SGR mouse: intercept scroll wheel, consume all other mouse events.
-            if let Some((btn, consumed)) = parse_sgr_mouse(data, i) {
-                match btn {
-                    64 => {
-                        // Scroll wheel up — enter scrollback mode
-                        if max_scrollback > 0 {
-                            self.scrollback_mode = true;
-                            self.scroll_offset = 3;
-                            actions.push(InputAction::Redraw);
-                        }
-                    }
-                    65 => {} // Scroll wheel down at bottom — ignore
-                    _ => {}  // Consume clicks/drags silently
-                }
-                i += consumed;
-                continue;
-            }
-
-            // Fallback: auto-enter scrollback on Up arrow.
-            if b == 0x1b
-                && i + 2 < data.len()
-                && data[i + 1] == b'['
-                && data[i + 2] == b'A'
-                && max_scrollback > 0
-            {
-                self.scrollback_mode = true;
-                self.scroll_offset = 1;
-                actions.push(InputAction::Redraw);
-                i += 3;
-                continue;
-            }
-
             // Normal input — find the next Ctrl+P (if any) and forward
-            // everything before it in one write.  Also stop before any ESC
-            // that could be a scroll-wheel Up sequence so the check above
-            // can evaluate it on the next iteration.
+            // everything before it in one write.
             let start = i;
-            while i < data.len() && data[i] != 0x10 && data[i] != 0x1b {
+            while i < data.len() && data[i] != 0x10 {
                 i += 1;
             }
-            // Forward ESC sequences that are NOT scroll-wheel up.
-            if i == start && i < data.len() && data[i] == 0x1b {
-                let seq_start = i;
-                // Consume the ESC and any CSI sequence bytes
-                i += 1;
-                if i < data.len() && data[i] == b'[' {
-                    i += 1;
-                    // Skip parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
-                    while i < data.len() && data[i] >= 0x20 && data[i] < 0x40 {
-                        i += 1;
-                    }
-                    // Skip final byte
-                    if i < data.len() {
-                        i += 1;
-                    }
-                }
-                actions.push(InputAction::Forward(data[seq_start..i].to_vec()));
-            } else if i > start {
+            if i > start {
                 actions.push(InputAction::Forward(data[start..i].to_vec()));
             }
         }
 
         actions
+    }
+}
+
+/// Enable or disable SGR mouse tracking on the terminal.
+/// Called when entering/leaving scrollback mode so that text selection
+/// works in normal mode while scroll wheel works in scrollback mode.
+pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
+    let seq: &[u8] = if enable {
+        b"\x1b[?1000h\x1b[?1006h"
+    } else {
+        b"\x1b[?1006l\x1b[?1000l"
+    };
+    unsafe {
+        libc::write(tty_fd, seq.as_ptr() as *const libc::c_void, seq.len());
     }
 }
 
