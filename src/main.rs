@@ -4,7 +4,7 @@ mod git;
 mod session;
 mod tui;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::fs;
@@ -223,6 +223,16 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn run_local_command(workspace: &str, command: &[String]) -> Result<i32> {
+    let mut child = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .current_dir(workspace)
+        .spawn()
+        .with_context(|| format!("Failed to run command: {}", shell_words::join(command)))?;
+    let status = child.wait()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn output_cd_path(path: &str) {
@@ -481,6 +491,9 @@ fn cmd_create(
     if local {
         eprintln!("\x1b[2msession:\x1b[0m {}", cfg.name);
         eprintln!("\x1b[2mmode:\x1b[0m local");
+        if !cfg.command.is_empty() {
+            eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
+        }
         eprintln!();
 
         let sess = session::Session::from(cfg);
@@ -489,6 +502,10 @@ fn cmd_create(
         let home = config::home_dir()?;
         let workspace = docker::ensure_workspace(&home, name, &sess.project_dir)?;
         output_cd_path(&workspace);
+
+        if !sess.command.is_empty() {
+            return run_local_command(&workspace, &sess.command);
+        }
         return Ok(0);
     }
 
@@ -543,6 +560,10 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
         let home = config::home_dir()?;
         let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
         output_cd_path(&workspace.to_string_lossy());
+
+        if !sess.command.is_empty() {
+            return run_local_command(&workspace.to_string_lossy(), &sess.command);
+        }
         return Ok(0);
     }
 
