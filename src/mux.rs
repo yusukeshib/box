@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Widget};
+use ratatui::{TerminalOptions, Viewport};
 use std::io::{self, Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::mpsc;
@@ -204,7 +205,8 @@ pub fn run(config: MuxConfig) -> Result<i32> {
 
     // Open PTY and resize
     let pty = pty_process::blocking::Pty::new().context("Failed to open PTY")?;
-    pty.resize(pty_process::Size::new(inner_rows, term_cols))?;
+    pty.resize(pty_process::Size::new(inner_rows, term_cols))
+        .context("Failed to resize PTY")?;
 
     // Build command
     let mut cmd = pty_process::blocking::Command::new(&config.command[0]);
@@ -213,9 +215,8 @@ pub fn run(config: MuxConfig) -> Result<i32> {
         cmd.current_dir(dir);
     }
 
-    let mut child = cmd
-        .spawn(&pty.pts()?)
-        .context("Failed to spawn command in PTY")?;
+    let pts = pty.pts().context("Failed to get PTY slave")?;
+    let mut child = cmd.spawn(&pts).context("Failed to spawn command in PTY")?;
 
     // Create vt100 parser with scrollback
     let mut parser = vt100::Parser::new(inner_rows, term_cols, 10_000);
@@ -249,7 +250,15 @@ pub fn run(config: MuxConfig) -> Result<i32> {
     }
     let tty_writer = unsafe { std::fs::File::from_raw_fd(tty_write_fd) };
     let backend = CrosstermBackend::new(tty_writer);
-    let mut terminal = Terminal::new(backend)?;
+    // Use Viewport::Fixed to avoid crossterm::terminal::size() calls, which can
+    // fail with ENOTTY. We already know the size from our own ioctl on /dev/tty.
+    let mut terminal = Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, term_cols, term_rows)),
+        },
+    )
+    .context("Failed to create terminal")?;
 
     // Channel for events
     let (tx, rx) = mpsc::channel::<MuxEvent>();
@@ -324,51 +333,53 @@ pub fn run(config: MuxConfig) -> Result<i32> {
             let session_name = config.session_name.clone();
             let screen = parser.screen();
             let is_scrollback = scrollback_mode;
-            terminal.draw(|f| {
-                let area = f.area();
+            terminal
+                .draw(|f| {
+                    let area = f.area();
 
-                // Header bar (1 row)
-                let header_area = Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: area.width,
-                    height: 1,
-                };
+                    // Header bar (1 row)
+                    let header_area = Rect {
+                        x: area.x,
+                        y: area.y,
+                        width: area.width,
+                        height: 1,
+                    };
 
-                // Terminal grid (remaining rows)
-                let grid_area = Rect {
-                    x: area.x,
-                    y: area.y + 1,
-                    width: area.width,
-                    height: area.height.saturating_sub(1),
-                };
+                    // Terminal grid (remaining rows)
+                    let grid_area = Rect {
+                        x: area.x,
+                        y: area.y + 1,
+                        width: area.width,
+                        height: area.height.saturating_sub(1),
+                    };
 
-                // Build header
-                let header_style = Style::default().bg(Color::White).fg(Color::Black);
-                let left = format!(" {} ", session_name);
-                let right = if show_help {
-                    " Ctrl+B d:detach  x:stop  [:scroll  ?:help "
-                } else if is_scrollback {
-                    " SCROLL: Up/Down PgUp/PgDn  q:exit "
-                } else {
-                    " Ctrl+B ? for help "
-                };
+                    // Build header
+                    let header_style = Style::default().bg(Color::White).fg(Color::Black);
+                    let left = format!(" {} ", session_name);
+                    let right = if show_help {
+                        " Ctrl+B d:detach  x:stop  [:scroll  ?:help "
+                    } else if is_scrollback {
+                        " SCROLL: Up/Down PgUp/PgDn  q:exit "
+                    } else {
+                        " Ctrl+B ? for help "
+                    };
 
-                let pad = (area.width as usize)
-                    .saturating_sub(left.len())
-                    .saturating_sub(right.len());
+                    let pad = (area.width as usize)
+                        .saturating_sub(left.len())
+                        .saturating_sub(right.len());
 
-                let header_text = format!("{}{}{}", left, " ".repeat(pad), right);
-                let header = Paragraph::new(header_text).style(header_style);
-                f.render_widget(header, header_area);
+                    let header_text = format!("{}{}{}", left, " ".repeat(pad), right);
+                    let header = Paragraph::new(header_text).style(header_style);
+                    f.render_widget(header, header_area);
 
-                // Render terminal grid
-                let widget = TerminalWidget {
-                    screen,
-                    show_cursor: !is_scrollback,
-                };
-                f.render_widget(widget, grid_area);
-            })?;
+                    // Render terminal grid
+                    let widget = TerminalWidget {
+                        screen,
+                        show_cursor: !is_scrollback,
+                    };
+                    f.render_widget(widget, grid_area);
+                })
+                .context("Failed to draw terminal frame")?;
             // Reset scrollback offset so parser.process() works normally
             parser.set_scrollback(0);
             dirty = false;
@@ -529,6 +540,8 @@ pub fn run(config: MuxConfig) -> Result<i32> {
                         if new_inner > 0 && cols > 0 {
                             let _ = pty.resize(pty_process::Size::new(new_inner, cols));
                             parser.set_size(new_inner, cols);
+                            // Update ratatui's fixed viewport area
+                            let _ = terminal.resize(Rect::new(0, 0, cols, rows));
                         }
                         dirty = true;
                     }
