@@ -183,29 +183,15 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     let mut current_inner_rows = inner_rows;
 
     loop {
-        if dirty {
-            parser.set_scrollback(input_state.scroll_offset);
-            let session_name = config.session_name.clone();
-            let project_name = project_name.clone();
-            let screen = parser.screen();
-            let show_help = input_state.show_help;
-            let is_scrollback = input_state.scrollback_mode;
-            term.draw(|f| {
-                terminal::draw_frame(
-                    f,
-                    screen,
-                    &session_name,
-                    &project_name,
-                    show_help,
-                    is_scrollback,
-                );
-            })
-            .context("Failed to draw terminal frame")?;
-            parser.set_scrollback(0);
-            dirty = false;
-        }
-
-        let event = rx.recv_timeout(Duration::from_millis(50));
+        // When dirty, use a short timeout to coalesce rapid output bursts
+        // (e.g. a TUI app's multi-chunk SIGWINCH redraw) into a single
+        // draw, instead of rendering every intermediate frame.
+        let timeout = if dirty {
+            Duration::from_millis(2)
+        } else {
+            Duration::from_millis(50)
+        };
+        let event = rx.recv_timeout(timeout);
         match event {
             Ok(StandaloneEvent::PtyOutput(data)) => {
                 parser.process(&data);
@@ -248,6 +234,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 break;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Check for terminal resize
                 if let Ok((cols, rows)) = terminal::get_term_size(tty_fd) {
                     if cols != last_cols || rows != last_rows {
                         last_cols = cols;
@@ -257,15 +244,41 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             current_inner_rows = new_inner;
                             let _ = terminal::set_pty_size(&pty, new_inner, cols);
                             parser.set_size(new_inner, cols);
+                            // Clear parser screen — set_size() rewraps old
+                            // content which looks garbled for TUI apps.
+                            // The child will send a fresh redraw via SIGWINCH.
+                            parser.process(b"\x1b[H\x1b[2J");
                             term = terminal::create_terminal(tty_fd, cols, rows)?;
                         }
-                        // Exit scrollback on resize (offset may be invalid now)
                         input_state.scrollback_mode = false;
                         input_state.scroll_offset = 0;
                         dirty = true;
                     }
                 }
-                continue;
+
+                // Draw only when the event queue is quiet, so rapid bursts
+                // of output are coalesced into a single frame.
+                if dirty {
+                    parser.set_scrollback(input_state.scroll_offset);
+                    let session_name = config.session_name.clone();
+                    let project_name = project_name.clone();
+                    let screen = parser.screen();
+                    let show_help = input_state.show_help;
+                    let is_scrollback = input_state.scrollback_mode;
+                    term.draw(|f| {
+                        terminal::draw_frame(
+                            f,
+                            screen,
+                            &session_name,
+                            &project_name,
+                            show_help,
+                            is_scrollback,
+                        );
+                    })
+                    .context("Failed to draw terminal frame")?;
+                    parser.set_scrollback(0);
+                    dirty = false;
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 break;

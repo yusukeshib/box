@@ -136,28 +136,12 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     let mut current_inner_rows = inner_rows;
 
     loop {
-        if dirty {
-            parser.set_scrollback(input_state.scroll_offset);
-            let session_name = session_name.to_string();
-            let project_name = project_name.clone();
-            let screen = parser.screen();
-            terminal
-                .draw(|f| {
-                    terminal::draw_frame(
-                        f,
-                        screen,
-                        &session_name,
-                        &project_name,
-                        input_state.show_help,
-                        input_state.scrollback_mode,
-                    );
-                })
-                .context("Failed to draw terminal frame")?;
-            parser.set_scrollback(0);
-            dirty = false;
-        }
-
-        let event = rx.recv_timeout(Duration::from_millis(50));
+        let timeout = if dirty {
+            Duration::from_millis(2)
+        } else {
+            Duration::from_millis(50)
+        };
+        let event = rx.recv_timeout(timeout);
         match event {
             Ok(ClientEvent::ServerMsg(msg)) => match msg {
                 ServerMsg::Output(data) => {
@@ -169,6 +153,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                 }
                 ServerMsg::Resized { cols, rows } => {
                     parser.set_size(rows, cols);
+                    parser.process(b"\x1b[H\x1b[2J");
                     input_state.scrollback_mode = false;
                     input_state.scroll_offset = 0;
                     dirty = true;
@@ -226,7 +211,27 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                         dirty = true;
                     }
                 }
-                continue;
+
+                if dirty {
+                    parser.set_scrollback(input_state.scroll_offset);
+                    let session_name = session_name.to_string();
+                    let project_name = project_name.clone();
+                    let screen = parser.screen();
+                    terminal
+                        .draw(|f| {
+                            terminal::draw_frame(
+                                f,
+                                screen,
+                                &session_name,
+                                &project_name,
+                                input_state.show_help,
+                                input_state.scrollback_mode,
+                            );
+                        })
+                        .context("Failed to draw terminal frame")?;
+                    parser.set_scrollback(0);
+                    dirty = false;
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 break;
