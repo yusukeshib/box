@@ -97,6 +97,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     // Build command
     let mut cmd = pty_process::blocking::Command::new(&config.command[0]);
     cmd.args(&config.command[1..]);
+    cmd.env("BOX_SESSION", &config.session_name);
     if let Some(ref dir) = config.working_dir {
         cmd.current_dir(dir);
     }

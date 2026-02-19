@@ -169,6 +169,13 @@ fn main() {
 
     let result = match cli.command {
         Some(Commands::Create(args)) => {
+            if std::env::var_os("BOX_SESSION").is_some() {
+                eprintln!(
+                    "Error: cannot nest box sessions (already inside session {:?})",
+                    std::env::var("BOX_SESSION").unwrap_or_default()
+                );
+                std::process::exit(1);
+            }
             let local = args.local || is_local_mode();
             let docker_args = args
                 .docker_args
@@ -189,6 +196,13 @@ fn main() {
             )
         }
         Some(Commands::Resume(args)) => {
+            if std::env::var_os("BOX_SESSION").is_some() {
+                eprintln!(
+                    "Error: cannot nest box sessions (already inside session {:?})",
+                    std::env::var("BOX_SESSION").unwrap_or_default()
+                );
+                std::process::exit(1);
+            }
             let docker_args = args
                 .docker_args
                 .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
@@ -208,6 +222,15 @@ fn main() {
             ConfigShell::Bash => cmd_config_bash(),
         },
         Some(Commands::External(args)) => {
+            // Prevent infinite recursion: if we're already inside a mux PTY,
+            // don't create or resume sessions.
+            if std::env::var_os("BOX_SESSION").is_some() {
+                eprintln!(
+                    "Error: cannot nest box sessions (already inside session {:?})",
+                    std::env::var("BOX_SESSION").unwrap_or_default()
+                );
+                std::process::exit(1);
+            }
             let name = args[0].to_string_lossy().to_string();
             let local = args[1..].iter().any(|a| a == "--local") || is_local_mode();
             let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();

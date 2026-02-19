@@ -389,13 +389,49 @@ impl InputState {
                 continue;
             }
 
+            // Auto-enter scrollback mode on scroll wheel up (Up arrow from ?1007h).
+            // The terminal converts wheel events to \x1b[A / \x1b[B via alternate
+            // scroll mode.  We intercept Up here so the user doesn't have to press
+            // Ctrl+P [ first.
+            if b == 0x1b
+                && i + 2 < data.len()
+                && data[i + 1] == b'['
+                && data[i + 2] == b'A'
+                && max_scrollback > 0
+            {
+                self.scrollback_mode = true;
+                self.scroll_offset = 1;
+                actions.push(InputAction::Redraw);
+                i += 3;
+                continue;
+            }
+
             // Normal input — find the next Ctrl+P (if any) and forward
-            // everything before it in one write.
+            // everything before it in one write.  Also stop before any ESC
+            // that could be a scroll-wheel Up sequence so the check above
+            // can evaluate it on the next iteration.
             let start = i;
-            while i < data.len() && data[i] != 0x10 {
+            while i < data.len() && data[i] != 0x10 && data[i] != 0x1b {
                 i += 1;
             }
-            if i > start {
+            // Forward ESC sequences that are NOT scroll-wheel up.
+            if i == start && i < data.len() && data[i] == 0x1b {
+                let seq_start = i;
+                // Consume the ESC and any CSI sequence bytes
+                i += 1;
+                if i < data.len() && data[i] == b'[' {
+                    i += 1;
+                    // Skip parameter bytes (0x30-0x3F) and intermediate bytes (0x20-0x2F)
+                    while i < data.len() && data[i] >= 0x20 && data[i] < 0x40 {
+                        i += 1;
+                    }
+                    // Skip final byte
+                    if i < data.len() {
+                        i += 1;
+                    }
+                }
+                actions.push(InputAction::Forward(data[seq_start..i].to_vec()));
+            } else if i > start {
                 actions.push(InputAction::Forward(data[start..i].to_vec()));
             }
         }

@@ -96,6 +96,7 @@ pub fn run(session_name: &str) -> Result<()> {
     // Spawn child
     let mut cmd = pty_process::blocking::Command::new(&sess.command[0]);
     cmd.args(&sess.command[1..]);
+    cmd.env("BOX_SESSION", session_name);
     if workspace.is_dir() {
         cmd.current_dir(&workspace);
     }
