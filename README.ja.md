@@ -119,6 +119,7 @@ box list [options]                                セッション一覧を表示
 box remove <name>                                 セッションを削除
 box cd <name>                                     ホストのプロジェクトディレクトリを表示
 box path <name>                                   ワークスペースパスを表示
+box origin                                        ワークスペースから元のプロジェクトディレクトリにcd
 box config zsh|bash                               シェル補完を出力
 box upgrade                                       最新版にアップグレード
 ```
@@ -134,11 +135,12 @@ box upgrade                                       最新版にアップグレー
   local-exp      /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
   test           /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
 
- [Enter] Resume  [c] Cd  [d] Delete  [q] Quit
+ [Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit
 ```
 
 - **Enter** でセッションを再開、または「New box...」で新規作成
-- **c** でセッションのホストプロジェクトディレクトリにcd
+- **c** でセッションのワークスペースディレクトリにcd
+- **o** でセッションの元のプロジェクトディレクトリにcd
 - **d** でハイライト中のセッションを削除（確認あり）
 - **q** / **Esc** で終了
 
@@ -216,6 +218,13 @@ box cd my-feature
 
 # シェル補完を有効にしている場合、プロジェクトディレクトリにcd
 cd "$(box cd my-feature)"
+```
+
+### 元のプロジェクトに移動
+
+```bash
+# ワークスペース内から、元のプロジェクトディレクトリにcd
+box origin
 ```
 
 ### 停止と削除
