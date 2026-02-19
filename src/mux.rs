@@ -203,10 +203,13 @@ pub fn run(config: MuxConfig) -> Result<i32> {
         anyhow::bail!("Terminal too small");
     }
 
-    // Open PTY and resize
+    // Open PTY
     let pty = pty_process::blocking::Pty::new().context("Failed to open PTY")?;
-    pty.resize(pty_process::Size::new(inner_rows, term_cols))
-        .context("Failed to resize PTY")?;
+
+    // On macOS, TIOCSWINSZ on the PTY master only works after the slave side
+    // has been opened. Open the slave first, then resize.
+    let pts = pty.pts().context("Failed to get PTY slave")?;
+    set_pty_size(&pty, inner_rows, term_cols)?;
 
     // Build command
     let mut cmd = pty_process::blocking::Command::new(&config.command[0]);
@@ -215,7 +218,6 @@ pub fn run(config: MuxConfig) -> Result<i32> {
         cmd.current_dir(dir);
     }
 
-    let pts = pty.pts().context("Failed to get PTY slave")?;
     let mut child = cmd.spawn(&pts).context("Failed to spawn command in PTY")?;
 
     // Create vt100 parser with scrollback
@@ -538,7 +540,7 @@ pub fn run(config: MuxConfig) -> Result<i32> {
                         last_rows = rows;
                         let new_inner = rows.saturating_sub(1);
                         if new_inner > 0 && cols > 0 {
-                            let _ = pty.resize(pty_process::Size::new(new_inner, cols));
+                            let _ = set_pty_size(&pty, new_inner, cols);
                             parser.set_size(new_inner, cols);
                             // Update ratatui's fixed viewport area
                             let _ = terminal.resize(Rect::new(0, 0, cols, rows));
@@ -586,6 +588,23 @@ fn run_fallback(config: &MuxConfig) -> Result<i32> {
         .with_context(|| format!("Failed to run command: {}", config.command.join(" ")))?;
     let status = child.wait()?;
     Ok(status.code().unwrap_or(1))
+}
+
+/// Set PTY size via direct ioctl, bypassing pty-process's set_term_size.
+fn set_pty_size(pty: &pty_process::blocking::Pty, rows: u16, cols: u16) -> Result<()> {
+    let fd = pty.as_raw_fd();
+    let size = libc::winsize {
+        ws_row: rows,
+        ws_col: cols,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    let ret = unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) };
+    if ret == -1 {
+        let err = io::Error::last_os_error();
+        anyhow::bail!("ioctl TIOCSWINSZ on fd {}: {}", fd, err);
+    }
+    Ok(())
 }
 
 fn write_bytes_to_pty(pty: &pty_process::blocking::Pty, data: &[u8]) -> Result<()> {
