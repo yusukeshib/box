@@ -189,6 +189,25 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                 return Ok(0);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Flush any buffered incomplete escape sequence
+                let max_scrollback = parser.screen().scrollback();
+                let pending_actions =
+                    input_state.flush_pending(current_inner_rows, max_scrollback);
+                for action in pending_actions {
+                    match action {
+                        InputAction::Forward(bytes) => {
+                            let _ = protocol::write_client_msg(
+                                &mut sock_writer,
+                                &ClientMsg::Input(bytes),
+                            );
+                        }
+                        InputAction::Redraw => {
+                            dirty = true;
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Check for terminal resize
                 if let Ok((cols, rows)) = terminal::get_term_size(tty_fd) {
                     if cols != last_cols || rows != last_rows {

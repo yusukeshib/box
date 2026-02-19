@@ -278,6 +278,9 @@ pub struct InputState {
     pub scroll_offset: usize,
     pub scrollback_mode: bool,
     pub show_help: bool,
+    /// Bytes from an incomplete escape sequence carried over from the
+    /// previous read.  Combined with the next input in `process()`.
+    pending: Vec<u8>,
 }
 
 pub enum InputAction {
@@ -333,7 +336,24 @@ impl InputState {
             scroll_offset: 0,
             scrollback_mode: false,
             show_help: false,
+            pending: Vec::new(),
         }
+    }
+
+    /// Flush any buffered bytes that didn't form a complete escape
+    /// sequence within the timeout window.  Called from the main loop's
+    /// Timeout branch so a bare ESC isn't held indefinitely.
+    pub fn flush_pending(
+        &mut self,
+        current_inner_rows: u16,
+        max_scrollback: usize,
+    ) -> Vec<InputAction> {
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let data = std::mem::take(&mut self.pending);
+        // Process without buffering — treat whatever we have as final.
+        self.process_inner(&data, current_inner_rows, max_scrollback, false)
     }
 
     /// Process raw input bytes, returning actions to perform.
@@ -341,15 +361,53 @@ impl InputState {
     /// `max_scrollback` is from `parser.screen().scrollback()`.
     pub fn process(
         &mut self,
+        new_data: &[u8],
+        current_inner_rows: u16,
+        max_scrollback: usize,
+    ) -> Vec<InputAction> {
+        // Combine any pending bytes from a previous incomplete sequence.
+        let combined;
+        let data: &[u8] = if self.pending.is_empty() {
+            new_data
+        } else {
+            let mut buf = std::mem::take(&mut self.pending);
+            buf.extend_from_slice(new_data);
+            combined = buf;
+            &combined
+        };
+        self.process_inner(data, current_inner_rows, max_scrollback, true)
+    }
+
+    fn process_inner(
+        &mut self,
         data: &[u8],
         current_inner_rows: u16,
         max_scrollback: usize,
+        allow_buffer: bool,
     ) -> Vec<InputAction> {
         let mut actions = Vec::new();
         let mut i = 0;
 
         while i < data.len() {
             let b = data[i];
+
+            // Buffer incomplete escape sequences for the next call.
+            // Terminal reads often split \x1b from the rest of a CSI
+            // sequence (e.g. SGR mouse \x1b[<64;44;51M).
+            if allow_buffer && b == 0x1b {
+                let incomplete = if i + 1 >= data.len() {
+                    true // lone ESC
+                } else if data[i + 1] == b'[' {
+                    // CSI — complete when a byte >= 0x40 appears after \x1b[
+                    !data[i + 2..].iter().any(|&c| c >= 0x40)
+                } else {
+                    false // \x1b + non-'[' is a complete 2-byte sequence
+                };
+                if incomplete {
+                    self.pending = data[i..].to_vec();
+                    break;
+                }
+            }
 
             if self.scrollback_mode {
                 // SGR mouse scroll in scrollback mode

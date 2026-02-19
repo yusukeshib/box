@@ -234,6 +234,23 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 break;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Flush any buffered incomplete escape sequence
+                // (e.g. bare ESC that wasn't followed by more bytes).
+                let max_scrollback = parser.screen().scrollback();
+                let pending_actions =
+                    input_state.flush_pending(current_inner_rows, max_scrollback);
+                for action in pending_actions {
+                    match action {
+                        InputAction::Forward(bytes) => {
+                            let _ = terminal::write_bytes_to_pty(&pty, &bytes);
+                        }
+                        InputAction::Redraw => {
+                            dirty = true;
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Check for terminal resize
                 if let Ok((cols, rows)) = terminal::get_term_size(tty_fd) {
                     if cols != last_cols || rows != last_rows {
