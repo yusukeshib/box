@@ -228,6 +228,9 @@ pub fn run(session_name: &str) -> Result<()> {
             }
             Ok(ServerEvent::ClientMsg { id, msg }) => match msg {
                 ClientMsg::Resize { cols, rows } => {
+                    if cols == 0 || rows == 0 {
+                        continue;
+                    }
                     if let Some(client) = clients.get_mut(&id) {
                         let first_resize = !client.has_resized;
                         client.cols = cols;
@@ -268,6 +271,7 @@ pub fn run(session_name: &str) -> Result<()> {
                 }
                 ClientMsg::Kill => {
                     let _ = child.kill();
+                    let _ = child.wait();
                 }
             },
             Ok(ServerEvent::ClientDisconnected(id)) => {

@@ -29,8 +29,10 @@ impl RawModeGuard {
             anyhow::bail!("Failed to set raw mode: {}", io::Error::last_os_error());
         }
 
-        // Enter alternate screen, hide cursor
-        tty.write_all(b"\x1b[?1049h\x1b[?25l")?;
+        // Enter alternate screen, hide cursor, enable alternate scroll mode
+        // ?1007h converts scroll wheel to Up/Down arrows in alternate screen
+        // without capturing mouse buttons (so text selection keeps working)
+        tty.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1007h")?;
         tty.flush()?;
 
         Ok(RawModeGuard {
@@ -47,8 +49,8 @@ impl Drop for RawModeGuard {
             .write(true)
             .open("/dev/tty")
         {
-            // Show cursor, leave alternate screen, reset attributes
-            let _ = tty.write_all(b"\x1b[?25h\x1b[?1049l\x1b[0m");
+            // Disable alternate scroll, show cursor, leave alternate screen, reset attributes
+            let _ = tty.write_all(b"\x1b[?1007l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
         }
         unsafe {
@@ -411,7 +413,7 @@ pub fn install_panic_hook() {
             .write(true)
             .open("/dev/tty")
         {
-            let _ = tty.write_all(b"\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?1007l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
             use std::os::unix::io::FromRawFd;
             let _ = std::process::Command::new("stty")

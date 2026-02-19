@@ -200,7 +200,14 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
             let show_help = input_state.show_help;
             let is_scrollback = input_state.scrollback_mode;
             term.draw(|f| {
-                terminal::draw_frame(f, screen, &session_name, &project_name, show_help, is_scrollback);
+                terminal::draw_frame(
+                    f,
+                    screen,
+                    &session_name,
+                    &project_name,
+                    show_help,
+                    is_scrollback,
+                );
             })
             .context("Failed to draw terminal frame")?;
             parser.set_scrollback(0);
@@ -225,6 +232,10 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             let _ = terminal::write_bytes_to_pty(&pty, &bytes);
                         }
                         InputAction::Detach => {
+                            // In standalone mode there's no server to keep the
+                            // session alive, so kill the child to avoid orphans/zombies.
+                            let _ = child.kill();
+                            let _ = child.wait();
                             return Ok(0);
                         }
                         InputAction::Kill => {
@@ -268,11 +279,12 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         }
     }
 
-    let status = if child_exited {
-        child.wait().ok()
-    } else {
-        None
-    };
+    // Always reap the child to avoid zombies.
+    // If it's still running (e.g. channel disconnected), kill it first.
+    if !child_exited {
+        let _ = child.kill();
+    }
+    let status = child.wait().ok();
 
     let exit_code = status.and_then(|s| s.code()).unwrap_or(0);
     Ok(exit_code)
