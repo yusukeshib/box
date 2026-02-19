@@ -41,6 +41,9 @@ fn write_frame(w: &mut impl Write, tag: u8, payload: &[u8]) -> io::Result<()> {
     w.flush()
 }
 
+/// Maximum payload size (16 MB) to prevent OOM on corrupted frames.
+const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
+
 fn read_frame(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
     let mut tag_buf = [0u8; 1];
     r.read_exact(&mut tag_buf)?;
@@ -49,6 +52,13 @@ fn read_frame(r: &mut impl Read) -> io::Result<(u8, Vec<u8>)> {
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
+
+    if len > MAX_PAYLOAD {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("payload too large: {} bytes (max {})", len, MAX_PAYLOAD),
+        ));
+    }
 
     let mut payload = vec![0u8; len];
     if len > 0 {

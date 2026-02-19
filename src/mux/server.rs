@@ -1,15 +1,24 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::io::{self, Read, Write};
+use std::io::Read;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::time::Duration;
 
 use crate::config;
 use crate::session;
 
 use super::protocol::{self, ClientMsg, ServerMsg};
+use super::terminal;
+
+static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_sigterm(_: libc::c_int) {
+    SHUTDOWN.store(true, Ordering::Relaxed);
+}
 
 enum ServerEvent {
     PtyOutput(Vec<u8>),
@@ -38,34 +47,12 @@ impl Drop for CleanupGuard {
     }
 }
 
-/// Set PTY size via direct ioctl.
-fn set_pty_size(pty: &pty_process::blocking::Pty, rows: u16, cols: u16) -> Result<()> {
-    let fd = pty.as_raw_fd();
-    let size = libc::winsize {
-        ws_row: rows,
-        ws_col: cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    let ret = unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) };
-    if ret == -1 {
-        let err = io::Error::last_os_error();
-        anyhow::bail!("ioctl TIOCSWINSZ on fd {}: {}", fd, err);
-    }
-    Ok(())
-}
-
-fn write_bytes_to_pty(pty: &pty_process::blocking::Pty, data: &[u8]) -> Result<()> {
-    use std::os::unix::io::AsFd;
-    let fd = pty.as_fd();
-    let raw_fd = fd.as_raw_fd();
-    let mut file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
-    let result = file.write_all(data);
-    std::mem::forget(file);
-    result.map_err(Into::into)
-}
-
 pub fn run(session_name: &str) -> Result<()> {
+    // Install SIGTERM handler for graceful shutdown
+    unsafe {
+        libc::signal(libc::SIGTERM, handle_sigterm as libc::sighandler_t);
+    }
+
     // Load session metadata
     let sess = session::load(session_name)?;
     if sess.command.is_empty() {
@@ -99,7 +86,7 @@ pub fn run(session_name: &str) -> Result<()> {
     let default_rows: u16 = 24;
     let pty = pty_process::blocking::Pty::new().context("Failed to open PTY")?;
     let pts = pty.pts().context("Failed to get PTY slave")?;
-    set_pty_size(&pty, default_rows, default_cols)?;
+    terminal::set_pty_size(&pty, default_rows, default_cols)?;
 
     // Spawn child
     let mut cmd = pty_process::blocking::Command::new(&sess.command[0]);
@@ -164,7 +151,7 @@ pub fn run(session_name: &str) -> Result<()> {
 
     // Main event loop
     loop {
-        let event = rx.recv();
+        let event = rx.recv_timeout(Duration::from_millis(100));
         match event {
             Ok(ServerEvent::PtyOutput(data)) => {
                 parser.process(&data);
@@ -181,7 +168,13 @@ pub fn run(session_name: &str) -> Result<()> {
                 }
                 // Recalculate size after disconnects
                 if !clients.is_empty() {
-                    recalc_size(&clients, &pty, &mut parser, &mut pty_cols, &mut pty_rows);
+                    recalc_size(
+                        &mut clients,
+                        &pty,
+                        &mut parser,
+                        &mut pty_cols,
+                        &mut pty_rows,
+                    );
                 }
             }
             Ok(ServerEvent::NewClient(stream)) => {
@@ -251,7 +244,7 @@ pub fn run(session_name: &str) -> Result<()> {
                         }
 
                         // Recalculate effective size
-                        recalc_size_and_broadcast(
+                        recalc_size(
                             &mut clients,
                             &pty,
                             &mut parser,
@@ -261,7 +254,7 @@ pub fn run(session_name: &str) -> Result<()> {
                     }
                 }
                 ClientMsg::Input(data) => {
-                    let _ = write_bytes_to_pty(&pty, &data);
+                    let _ = terminal::write_bytes_to_pty(&pty, &data);
                 }
                 ClientMsg::Kill => {
                     let _ = child.kill();
@@ -270,7 +263,7 @@ pub fn run(session_name: &str) -> Result<()> {
             Ok(ServerEvent::ClientDisconnected(id)) => {
                 clients.remove(&id);
                 if !clients.is_empty() {
-                    recalc_size_and_broadcast(
+                    recalc_size(
                         &mut clients,
                         &pty,
                         &mut parser,
@@ -302,7 +295,22 @@ pub fn run(session_name: &str) -> Result<()> {
                 // Cleanup happens via CleanupGuard on drop
                 break;
             }
-            Err(_) => {
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Check for SIGTERM
+                if SHUTDOWN.load(Ordering::Relaxed) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+
+                    // Broadcast Exited to all clients
+                    let exit_msg = ServerMsg::Exited(0);
+                    for client in clients.values_mut() {
+                        let _ = protocol::write_server_msg(&mut client.writer, &exit_msg);
+                    }
+                    break;
+                }
+                continue;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
                 // All senders dropped
                 break;
             }
@@ -313,32 +321,9 @@ pub fn run(session_name: &str) -> Result<()> {
 }
 
 /// Recalculate effective PTY size = min(cols), min(rows) across all connected clients
-/// that have sent at least one Resize. Resize PTY + parser if changed.
+/// that have sent at least one Resize. Resize PTY + parser if changed, and broadcast
+/// the new size to all clients.
 fn recalc_size(
-    clients: &HashMap<u64, ClientEntry>,
-    pty: &pty_process::blocking::Pty,
-    parser: &mut vt100::Parser,
-    pty_cols: &mut u16,
-    pty_rows: &mut u16,
-) {
-    let resized_clients: Vec<&ClientEntry> = clients.values().filter(|c| c.has_resized).collect();
-    if resized_clients.is_empty() {
-        return;
-    }
-
-    let new_cols = resized_clients.iter().map(|c| c.cols).min().unwrap_or(80);
-    let new_rows = resized_clients.iter().map(|c| c.rows).min().unwrap_or(24);
-
-    if new_cols != *pty_cols || new_rows != *pty_rows {
-        *pty_cols = new_cols;
-        *pty_rows = new_rows;
-        let _ = set_pty_size(pty, new_rows, new_cols);
-        parser.set_size(new_rows, new_cols);
-    }
-}
-
-/// Recalculate effective size and broadcast Resized to all clients if changed.
-fn recalc_size_and_broadcast(
     clients: &mut HashMap<u64, ClientEntry>,
     pty: &pty_process::blocking::Pty,
     parser: &mut vt100::Parser,
@@ -356,7 +341,7 @@ fn recalc_size_and_broadcast(
     if new_cols != *pty_cols || new_rows != *pty_rows {
         *pty_cols = new_cols;
         *pty_rows = new_rows;
-        let _ = set_pty_size(pty, new_rows, new_cols);
+        let _ = terminal::set_pty_size(pty, new_rows, new_cols);
         parser.set_size(new_rows, new_cols);
 
         // Broadcast Resized to all clients
