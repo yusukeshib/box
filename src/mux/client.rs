@@ -141,6 +141,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
         }
     });
 
+    let project_name = super::project_name_for_session(session_name);
     let mut input_state = InputState::new();
     let mut dirty = true;
 
@@ -152,6 +153,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
         if dirty {
             parser.set_scrollback(input_state.scroll_offset);
             let session_name = session_name.to_string();
+            let project_name = project_name.clone();
             let screen = parser.screen();
             terminal
                 .draw(|f| {
@@ -159,6 +161,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                         f,
                         screen,
                         &session_name,
+                        &project_name,
                         input_state.show_help,
                         input_state.scrollback_mode,
                     );

@@ -192,6 +192,7 @@ pub fn draw_frame(
     f: &mut ratatui::Frame,
     screen: &vt100::Screen,
     session_name: &str,
+    project_name: &str,
     show_help: bool,
     is_scrollback: bool,
 ) {
@@ -212,7 +213,11 @@ pub fn draw_frame(
     };
 
     let header_style = Style::default().bg(Color::White).fg(Color::Black);
-    let left = format!(" {} ", session_name);
+    let left = if project_name.is_empty() {
+        format!(" {} ", session_name)
+    } else {
+        format!(" {} > {} ", project_name, session_name)
+    };
     let right = if show_help {
         " Ctrl+P,Q:detach  ,X:stop  ,[:scroll  ,?:help "
     } else if is_scrollback {

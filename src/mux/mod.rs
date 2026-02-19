@@ -46,6 +46,17 @@ pub fn run(session_name: &str) -> Result<i32> {
     client::run(session_name, &socket_path)
 }
 
+fn project_name_for_session(session_name: &str) -> String {
+    session::load(session_name)
+        .ok()
+        .and_then(|s| {
+            std::path::Path::new(&s.project_dir)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+        })
+        .unwrap_or_default()
+}
+
 /// Single-process mode (current behavior). For cmd_exec and Docker.
 pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     // Try to open /dev/tty for direct terminal access
@@ -171,6 +182,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         }
     });
 
+    let project_name = project_name_for_session(&config.session_name);
     let mut input_state = InputState::new();
     let mut dirty = true;
     let mut child_exited = false;
@@ -183,11 +195,12 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         if dirty {
             parser.set_scrollback(input_state.scroll_offset);
             let session_name = config.session_name.clone();
+            let project_name = project_name.clone();
             let screen = parser.screen();
             let show_help = input_state.show_help;
             let is_scrollback = input_state.scrollback_mode;
             term.draw(|f| {
-                terminal::draw_frame(f, screen, &session_name, show_help, is_scrollback);
+                terminal::draw_frame(f, screen, &session_name, &project_name, show_help, is_scrollback);
             })
             .context("Failed to draw terminal frame")?;
             parser.set_scrollback(0);
