@@ -15,6 +15,9 @@ use crate::session;
 
 use terminal::{InputAction, InputState, RawModeGuard};
 
+/// Maximum lines of scrollback history kept per terminal.
+const SCROLLBACK_LINES: usize = 10_000;
+
 pub struct MuxConfig {
     pub session_name: String,
     pub command: Vec<String>,
@@ -109,7 +112,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     drop(pts);
 
     // Create vt100 parser with scrollback
-    let mut parser = vt100::Parser::new(inner_rows, term_cols, 10_000);
+    let mut parser = vt100::Parser::new(inner_rows, term_cols, SCROLLBACK_LINES);
 
     // Install panic hook
     terminal::install_panic_hook();
@@ -269,7 +272,13 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             let _ = terminal::set_pty_size(&pty, new_inner, cols);
                             parser.set_size(new_inner, cols);
                             let _ = term.resize(Rect::new(0, 0, cols, rows));
+                            // Force full redraw — ratatui's back buffer is stale
+                            // after resize so diff rendering produces garbage.
+                            let _ = term.clear();
                         }
+                        // Exit scrollback on resize (offset may be invalid now)
+                        input_state.scrollback_mode = false;
+                        input_state.scroll_offset = 0;
                         dirty = true;
                     }
                 }

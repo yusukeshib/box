@@ -108,7 +108,7 @@ pub fn run(session_name: &str) -> Result<()> {
     drop(pts);
 
     // Create vt100 parser for screen state
-    let mut parser = vt100::Parser::new(default_rows, default_cols, 10_000);
+    let mut parser = vt100::Parser::new(default_rows, default_cols, super::SCROLLBACK_LINES);
 
     let mut pty_cols = default_cols;
     let mut pty_rows = default_rows;

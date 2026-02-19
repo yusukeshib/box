@@ -71,7 +71,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     };
 
     // Create local parser with server's PTY dimensions
-    let mut parser = vt100::Parser::new(pty_rows, pty_cols, 10_000);
+    let mut parser = vt100::Parser::new(pty_rows, pty_cols, super::SCROLLBACK_LINES);
 
     // Process the screen dump that follows
     match protocol::read_server_msg(&mut sock_reader) {
@@ -183,6 +183,9 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                 }
                 ServerMsg::Resized { cols, rows } => {
                     parser.set_size(rows, cols);
+                    let _ = terminal.clear();
+                    input_state.scrollback_mode = false;
+                    input_state.scroll_offset = 0;
                     dirty = true;
                 }
                 ServerMsg::Exited(code) => {
@@ -232,7 +235,10 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                                 },
                             );
                             let _ = terminal.resize(Rect::new(0, 0, cols, rows));
+                            let _ = terminal.clear();
                         }
+                        input_state.scrollback_mode = false;
+                        input_state.scroll_offset = 0;
                         dirty = true;
                     }
                 }
