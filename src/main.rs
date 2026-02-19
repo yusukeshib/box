@@ -1,10 +1,11 @@
 mod config;
 mod docker;
 mod git;
+mod mux;
 mod session;
 mod tui;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::fs;
@@ -228,14 +229,12 @@ fn main() {
     }
 }
 
-fn run_local_command(workspace: &str, command: &[String]) -> Result<i32> {
-    let mut child = std::process::Command::new(&command[0])
-        .args(&command[1..])
-        .current_dir(workspace)
-        .spawn()
-        .with_context(|| format!("Failed to run command: {}", shell_words::join(command)))?;
-    let status = child.wait()?;
-    Ok(status.code().unwrap_or(1))
+fn run_local_command(session_name: &str, workspace: &str, command: &[String]) -> Result<i32> {
+    mux::run(mux::MuxConfig {
+        session_name: session_name.to_string(),
+        command: command.to_vec(),
+        working_dir: Some(workspace.to_string()),
+    })
 }
 
 fn output_cd_path(path: &str) {
@@ -512,7 +511,7 @@ fn cmd_create(
         output_cd_path(&workspace);
 
         if !sess.command.is_empty() {
-            return run_local_command(&workspace, &sess.command);
+            return run_local_command(&sess.name, &workspace, &sess.command);
         }
         return Ok(0);
     }
@@ -570,7 +569,7 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
         output_cd_path(&workspace.to_string_lossy());
 
         if !sess.command.is_empty() {
-            return run_local_command(&workspace.to_string_lossy(), &sess.command);
+            return run_local_command(name, &workspace.to_string_lossy(), &sess.command);
         }
         return Ok(0);
     }
@@ -690,14 +689,11 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     if sess.local {
         let home = config::home_dir()?;
         let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
-        let status = std::process::Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .current_dir(&workspace)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()?;
-        return Ok(status.code().unwrap_or(1));
+        return mux::run(mux::MuxConfig {
+            session_name: name.to_string(),
+            command: cmd.to_vec(),
+            working_dir: Some(workspace.to_string_lossy().to_string()),
+        });
     }
 
     docker::check()?;

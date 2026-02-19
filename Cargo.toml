@@ -18,6 +18,8 @@ shell-words = "1"
 libc = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
+pty-process = "0.4"
+vt100 = "0.15"
 self_update = { version = "0.42", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
