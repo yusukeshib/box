@@ -1,9 +1,9 @@
 use anyhow::{bail, Result};
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
 use crate::config;
-use crate::mux;
 
 /// Create a workspace directory on the host for the session.
 /// On first run, clones the project repo via `git clone --local`.
@@ -85,6 +85,13 @@ pub fn check() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Restore terminal state after an interactive Docker session.
+/// Writes show-cursor and attribute-reset escape sequences. Best-effort; errors ignored.
+fn restore_terminal() {
+    let _ = std::io::stdout().write_all(b"\x1b[?25h\x1b[0m");
+    let _ = std::io::stdout().flush();
 }
 
 pub struct DockerRunConfig<'a> {
@@ -170,13 +177,14 @@ pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
         println!("Run `box {}` to attach.", cfg.name);
         Ok(0)
     } else {
-        let mut docker_cmd = vec!["docker".to_string()];
-        docker_cmd.extend(args);
-        mux::run_standalone(mux::MuxConfig {
-            session_name: cfg.name.to_string(),
-            command: docker_cmd,
-            working_dir: None,
-        })
+        let status = Command::new("docker")
+            .args(&args)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()?;
+        restore_terminal();
+        Ok(status.code().unwrap_or(1))
     }
 }
 
@@ -241,31 +249,52 @@ pub fn start_container(name: &str) -> Result<i32> {
 }
 
 pub fn attach_container(name: &str) -> Result<i32> {
-    mux::run_standalone(mux::MuxConfig {
-        session_name: name.to_string(),
-        command: vec![
-            "docker".to_string(),
-            "attach".to_string(),
-            format!("box-{}", name),
-        ],
-        working_dir: None,
-    })
+    let mut child = Command::new("docker")
+        .args(["attach", &format!("box-{}", name)])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()?;
+
+    // After attaching, the container's PTY may retain stale dimensions from a
+    // previous session. Send SIGWINCH to the docker-attach process after a
+    // short delay so Docker re-reads the current terminal size and pushes a
+    // resize event to the container. This eliminates the need for a manual
+    // pane resize to recover rendering.
+    #[cfg(unix)]
+    {
+        let pid = child.id();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGWINCH);
+            }
+        });
+    }
+
+    let status = child.wait()?;
+    restore_terminal();
+
+    Ok(status.code().unwrap_or(1))
 }
 
 pub fn exec_container(name: &str, cmd: &[String]) -> Result<i32> {
-    let mut docker_cmd = vec![
-        "docker".to_string(),
+    let mut args = vec![
         "exec".to_string(),
         "-it".to_string(),
         format!("box-{}", name),
     ];
-    docker_cmd.extend(cmd.iter().cloned());
+    args.extend(cmd.iter().cloned());
 
-    mux::run_standalone(mux::MuxConfig {
-        session_name: name.to_string(),
-        command: docker_cmd,
-        working_dir: None,
-    })
+    let status = Command::new("docker")
+        .args(&args)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()?;
+    restore_terminal();
+
+    Ok(status.code().unwrap_or(1))
 }
 
 pub fn start_container_detached(name: &str) -> Result<i32> {

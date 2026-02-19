@@ -1,11 +1,10 @@
 mod config;
 mod docker;
 mod git;
-mod mux;
 mod session;
 mod tui;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::fs;
@@ -157,14 +156,6 @@ fn is_local_mode() -> bool {
 }
 
 fn main() {
-    // Server mode: if __BOX_MUX_SERVER is set, run as mux server daemon
-    if let Ok(session_name) = std::env::var("__BOX_MUX_SERVER") {
-        if let Err(e) = mux::server::run(&session_name) {
-            eprintln!("mux server: {:#}", e);
-        }
-        std::process::exit(0);
-    }
-
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -237,8 +228,14 @@ fn main() {
     }
 }
 
-fn run_local_command(session_name: &str) -> Result<i32> {
-    mux::run(session_name)
+fn run_local_command(workspace: &str, command: &[String]) -> Result<i32> {
+    let mut child = std::process::Command::new(&command[0])
+        .args(&command[1..])
+        .current_dir(workspace)
+        .spawn()
+        .with_context(|| format!("Failed to run command: {}", shell_words::join(command)))?;
+    let status = child.wait()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn output_cd_path(path: &str) {
@@ -338,11 +335,6 @@ fn cmd_list() -> Result<i32> {
             }
         }
     }
-    for s in &mut sessions {
-        if s.local {
-            s.running = session::is_local_running(&s.name);
-        }
-    }
 
     let delete_fn = |name: &str| -> Result<()> {
         let sess = session::load(name)?;
@@ -385,11 +377,6 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
             if !s.local {
                 s.running = running.contains(&s.name);
             }
-        }
-    }
-    for s in &mut sessions {
-        if s.local {
-            s.running = session::is_local_running(&s.name);
         }
     }
 
@@ -525,7 +512,7 @@ fn cmd_create(
         output_cd_path(&workspace);
 
         if !sess.command.is_empty() {
-            return run_local_command(&sess.name);
+            return run_local_command(&workspace, &sess.command);
         }
         return Ok(0);
     }
@@ -583,7 +570,7 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
         output_cd_path(&workspace.to_string_lossy());
 
         if !sess.command.is_empty() {
-            return run_local_command(name);
+            return run_local_command(&workspace.to_string_lossy(), &sess.command);
         }
         return Ok(0);
     }
@@ -640,13 +627,6 @@ fn cmd_remove(name: &str) -> Result<i32> {
     let sess = session::load(name)?;
 
     if sess.local {
-        if session::is_local_running(name) {
-            bail!(
-                "Session '{}' is still running. Stop it first with `box stop {}`.",
-                name,
-                name
-            );
-        }
         docker::remove_workspace(name);
         session::remove_dir(name)?;
         output_cd_path(&sess.project_dir);
@@ -683,12 +663,10 @@ fn cmd_stop(name: &str) -> Result<i32> {
     let sess = session::load(name)?;
 
     if sess.local {
-        if !session::is_local_running(name) {
-            bail!("Session '{}' is not running.", name);
-        }
-        mux::send_kill(name)?;
-        println!("Session '{}' stopped.", name);
-        return Ok(0);
+        bail!(
+            "Session '{}' is a local session (not a Docker container).",
+            name
+        );
     }
 
     docker::check()?;
@@ -712,11 +690,14 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     if sess.local {
         let home = config::home_dir()?;
         let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
-        return mux::run_standalone(mux::MuxConfig {
-            session_name: name.to_string(),
-            command: cmd.to_vec(),
-            working_dir: Some(workspace.to_string_lossy().to_string()),
-        });
+        let status = std::process::Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .current_dir(&workspace)
+            .stdin(std::process::Stdio::inherit())
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status()?;
+        return Ok(status.code().unwrap_or(1));
     }
 
     docker::check()?;
