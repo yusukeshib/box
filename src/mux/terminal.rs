@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use ratatui::prelude::*;
 use ratatui::widgets::{Paragraph, Widget};
+use ratatui::{TerminalOptions, Viewport};
 use std::io::{self, Write};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 
 /// RAII guard that restores terminal state on drop (including panics).
 /// Uses /dev/tty so cleanup works even when stdin/stdout are redirected.
@@ -166,6 +167,31 @@ pub fn set_pty_size(pty: &pty_process::blocking::Pty, rows: u16, cols: u16) -> R
         anyhow::bail!("ioctl TIOCSWINSZ on fd {}: {}", fd, err);
     }
     Ok(())
+}
+
+/// Create a ratatui Terminal backed by a dup'd tty fd with a Fixed viewport.
+///
+/// Unlike `Terminal::resize()` (which sends a clear-screen escape), this
+/// creates fresh internal buffers without writing anything to the terminal,
+/// so the next `draw()` does a full diff-write with zero flicker.
+pub fn create_terminal(
+    tty_fd: i32,
+    cols: u16,
+    rows: u16,
+) -> Result<Terminal<CrosstermBackend<std::fs::File>>> {
+    let fd = unsafe { libc::dup(tty_fd) };
+    if fd < 0 {
+        anyhow::bail!("Failed to dup tty fd: {}", io::Error::last_os_error());
+    }
+    let writer = unsafe { std::fs::File::from_raw_fd(fd) };
+    let backend = CrosstermBackend::new(writer);
+    Terminal::with_options(
+        backend,
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, cols, rows)),
+        },
+    )
+    .context("Failed to create terminal")
 }
 
 /// Write bytes to PTY using raw libc::write to avoid panic-safety issues

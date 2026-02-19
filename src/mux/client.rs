@@ -1,6 +1,4 @@
 use anyhow::{Context, Result};
-use ratatui::prelude::*;
-use ratatui::{TerminalOptions, Viewport};
 use std::io::Read;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
@@ -84,19 +82,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     }
 
     // Create ratatui terminal
-    let tty_write_fd = unsafe { libc::dup(tty_fd) };
-    if tty_write_fd < 0 {
-        anyhow::bail!("Failed to dup tty fd: {}", std::io::Error::last_os_error());
-    }
-    let tty_writer = unsafe { std::fs::File::from_raw_fd(tty_write_fd) };
-    let backend = CrosstermBackend::new(tty_writer);
-    let mut terminal = Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Fixed(Rect::new(0, 0, term_cols, term_rows)),
-        },
-    )
-    .context("Failed to create terminal")?;
+    let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
 
     // Channel for events
     let (tx, rx) = mpsc::channel::<ClientEvent>();
@@ -183,7 +169,6 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                 }
                 ServerMsg::Resized { cols, rows } => {
                     parser.set_size(rows, cols);
-                    let _ = terminal.clear();
                     input_state.scrollback_mode = false;
                     input_state.scroll_offset = 0;
                     dirty = true;
@@ -234,8 +219,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                                     rows: new_inner,
                                 },
                             );
-                            let _ = terminal.resize(Rect::new(0, 0, cols, rows));
-                            let _ = terminal.clear();
+                            terminal = terminal::create_terminal(tty_fd, cols, rows)?;
                         }
                         input_state.scrollback_mode = false;
                         input_state.scroll_offset = 0;

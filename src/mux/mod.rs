@@ -4,8 +4,6 @@ pub mod server;
 mod terminal;
 
 use anyhow::{Context, Result};
-use ratatui::prelude::*;
-use ratatui::{TerminalOptions, Viewport};
 use std::io::Read;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::mpsc;
@@ -120,19 +118,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     // Enter raw mode
     let _guard = RawModeGuard::activate(&mut tty)?;
 
-    let tty_write_fd = unsafe { libc::dup(tty_fd) };
-    if tty_write_fd < 0 {
-        anyhow::bail!("Failed to dup tty fd: {}", std::io::Error::last_os_error());
-    }
-    let tty_writer = unsafe { std::fs::File::from_raw_fd(tty_write_fd) };
-    let backend = CrosstermBackend::new(tty_writer);
-    let mut term = Terminal::with_options(
-        backend,
-        TerminalOptions {
-            viewport: Viewport::Fixed(Rect::new(0, 0, term_cols, term_rows)),
-        },
-    )
-    .context("Failed to create terminal")?;
+    let mut term = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
 
     let (tx, rx) = mpsc::channel::<StandaloneEvent>();
 
@@ -271,10 +257,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             current_inner_rows = new_inner;
                             let _ = terminal::set_pty_size(&pty, new_inner, cols);
                             parser.set_size(new_inner, cols);
-                            let _ = term.resize(Rect::new(0, 0, cols, rows));
-                            // Force full redraw — ratatui's back buffer is stale
-                            // after resize so diff rendering produces garbage.
-                            let _ = term.clear();
+                            term = terminal::create_terminal(tty_fd, cols, rows)?;
                         }
                         // Exit scrollback on resize (offset may be invalid now)
                         input_state.scrollback_mode = false;
