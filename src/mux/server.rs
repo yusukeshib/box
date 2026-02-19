@@ -48,9 +48,11 @@ impl Drop for CleanupGuard {
 }
 
 pub fn run(session_name: &str) -> Result<()> {
-    // Install SIGTERM handler for graceful shutdown
+    // Install signal handlers
     unsafe {
         libc::signal(libc::SIGTERM, handle_sigterm as libc::sighandler_t);
+        // Ignore SIGHUP so the server survives when the spawning terminal closes
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
     }
 
     // Load session metadata

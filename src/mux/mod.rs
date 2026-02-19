@@ -31,6 +31,10 @@ pub fn run(session_name: &str) -> Result<i32> {
         return client::run(session_name, &socket_path);
     }
 
+    // Kill any stale server process (e.g. one that survived SIGHUP but
+    // whose socket was already cleaned up by a previous run).
+    kill_stale_server(session_name);
+
     // Clean stale socket
     let _ = std::fs::remove_file(&socket_path);
 
@@ -302,6 +306,9 @@ fn spawn_server(session_name: &str) -> Result<()> {
                 // slave as our controlling terminal when opened, which then
                 // prevents the child from claiming it via TIOCSCTTY.
                 libc::setpgid(0, 0);
+                // Ignore SIGHUP so the server survives terminal close.
+                // This is set before exec() so it persists into the new process.
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
                 Ok(())
             })
             .spawn()
@@ -328,6 +335,26 @@ fn wait_for_socket(session_name: &str, socket_path: &std::path::Path) -> Result<
         }
     }
     anyhow::bail!("Timed out waiting for mux server to start")
+}
+
+/// Kill a stale server process for this session (if any) via its PID file.
+/// This prevents orphaned server processes when a server dies from a signal
+/// but its PID file was not cleaned up.
+fn kill_stale_server(session_name: &str) {
+    if let Ok(dir) = session::sessions_dir() {
+        let pid_path = dir.join(session_name).join("pid");
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                unsafe {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+                // Brief wait for the process to be reaped
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        // Remove stale PID file
+        let _ = std::fs::remove_file(&pid_path);
+    }
 }
 
 enum StandaloneEvent {

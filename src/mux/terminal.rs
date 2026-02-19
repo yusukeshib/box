@@ -29,8 +29,8 @@ impl RawModeGuard {
             anyhow::bail!("Failed to set raw mode: {}", io::Error::last_os_error());
         }
 
-        // Enter alternate screen, hide cursor, enable mouse (normal tracking + SGR format)
-        tty.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h")?;
+        // Enter alternate screen, hide cursor
+        tty.write_all(b"\x1b[?1049h\x1b[?25l")?;
         tty.flush()?;
 
         Ok(RawModeGuard {
@@ -47,8 +47,8 @@ impl Drop for RawModeGuard {
             .write(true)
             .open("/dev/tty")
         {
-            // Disable mouse, show cursor, leave alternate screen, reset attributes
-            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
+            // Show cursor, leave alternate screen, reset attributes
+            let _ = tty.write_all(b"\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
         }
         unsafe {
@@ -216,7 +216,7 @@ pub fn draw_frame(
     let right = if show_help {
         " Ctrl+P,Q:detach  ,X:stop  ,[:scroll  ,?:help "
     } else if is_scrollback {
-        " SCROLL: Up/Down PgUp/PgDn Mouse  q:exit "
+        " SCROLL: Up/Down PgUp/PgDn  q:exit "
     } else {
         " Ctrl+P,? for help "
     };
@@ -255,9 +255,6 @@ pub enum InputAction {
     Redraw,
 }
 
-/// Lines to scroll per mouse wheel tick.
-const MOUSE_SCROLL_LINES: usize = 3;
-
 impl InputState {
     pub fn new() -> Self {
         Self {
@@ -282,62 +279,6 @@ impl InputState {
 
         while i < data.len() {
             let b = data[i];
-
-            // Mouse events — handle before everything else so wheel works in
-            // both normal and scrollback modes.
-            if b == 0x1b && i + 2 < data.len() && data[i + 1] == b'[' {
-                // SGR mouse: \x1b[<Cb;Cx;CyM  or  \x1b[<Cb;Cx;Cym
-                if data[i + 2] == b'<' {
-                    let mut end = i + 3;
-                    while end < data.len() && data[end] != b'M' && data[end] != b'm' {
-                        end += 1;
-                    }
-                    if end < data.len() {
-                        let button = parse_sgr_button(&data[i + 3..end]);
-                        if button == Some(64) {
-                            // Wheel up
-                            if !self.scrollback_mode {
-                                self.scrollback_mode = true;
-                            }
-                            self.scroll_offset =
-                                (self.scroll_offset + MOUSE_SCROLL_LINES).min(max_scrollback);
-                            actions.push(InputAction::Redraw);
-                        } else if button == Some(65) {
-                            // Wheel down
-                            self.scroll_offset =
-                                self.scroll_offset.saturating_sub(MOUSE_SCROLL_LINES);
-                            if self.scroll_offset == 0 {
-                                self.scrollback_mode = false;
-                            }
-                            actions.push(InputAction::Redraw);
-                        }
-                        // All mouse events consumed (non-wheel clicks ignored)
-                        i = end + 1;
-                        continue;
-                    }
-                }
-
-                // Legacy mouse: \x1b[M + 3 bytes (button+32, x+32, y+32)
-                if data[i + 2] == b'M' && i + 6 <= data.len() {
-                    let button = data[i + 3].wrapping_sub(32);
-                    if button == 64 {
-                        if !self.scrollback_mode {
-                            self.scrollback_mode = true;
-                        }
-                        self.scroll_offset =
-                            (self.scroll_offset + MOUSE_SCROLL_LINES).min(max_scrollback);
-                        actions.push(InputAction::Redraw);
-                    } else if button == 65 {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(MOUSE_SCROLL_LINES);
-                        if self.scroll_offset == 0 {
-                            self.scrollback_mode = false;
-                        }
-                        actions.push(InputAction::Redraw);
-                    }
-                    i += 6;
-                    continue;
-                }
-            }
 
             if self.scrollback_mode {
                 if b == 0x1b && i + 2 < data.len() && data[i + 1] == b'[' {
@@ -442,31 +383,18 @@ impl InputState {
             }
 
             // Normal input — find the next Ctrl+P (if any) and forward
-            // everything before it in one write.  Also stop at ESC so the
-            // next iteration can check for mouse sequences.
+            // everything before it in one write.
             let start = i;
-            while i < data.len() && data[i] != 0x10 && data[i] != 0x1b {
+            while i < data.len() && data[i] != 0x10 {
                 i += 1;
             }
             if i > start {
                 actions.push(InputAction::Forward(data[start..i].to_vec()));
-            } else if b == 0x1b {
-                // Lone ESC or start of an unrecognised escape sequence —
-                // forward one byte and let the next iteration re-evaluate.
-                actions.push(InputAction::Forward(vec![0x1b]));
-                i += 1;
             }
         }
 
         actions
     }
-}
-
-/// Parse the button number (first parameter) from an SGR mouse param string
-/// like b"64;10;5".  Returns None if unparseable.
-fn parse_sgr_button(params: &[u8]) -> Option<u32> {
-    let semi = params.iter().position(|&b| b == b';')?;
-    std::str::from_utf8(&params[..semi]).ok()?.parse().ok()
 }
 
 /// Install a panic hook that restores terminal state.
@@ -478,7 +406,7 @@ pub fn install_panic_hook() {
             .write(true)
             .open("/dev/tty")
         {
-            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
             use std::os::unix::io::FromRawFd;
             let _ = std::process::Command::new("stty")
