@@ -91,6 +91,9 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     }
 
     let mut child = cmd.spawn(&pts).context("Failed to spawn command in PTY")?;
+    // Drop pts so the parent doesn't hold the slave side open.
+    // Without this, the master never gets EOF when the child exits.
+    drop(pts);
 
     // Create vt100 parser with scrollback
     let mut parser = vt100::Parser::new(inner_rows, term_cols, 10_000);
@@ -133,7 +136,12 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                     break;
                 }
                 Ok(n) => {
-                    let _ = tx_pty.send(StandaloneEvent::PtyOutput(buf[..n].to_vec()));
+                    if tx_pty
+                        .send(StandaloneEvent::PtyOutput(buf[..n].to_vec()))
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         }

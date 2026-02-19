@@ -130,7 +130,12 @@ pub fn run(session_name: &str) -> Result<()> {
                     break;
                 }
                 Ok(n) => {
-                    let _ = tx_pty.send(ServerEvent::PtyOutput(buf[..n].to_vec()));
+                    if tx_pty
+                        .send(ServerEvent::PtyOutput(buf[..n].to_vec()))
+                        .is_err()
+                    {
+                        break;
+                    }
                 }
             }
         }
