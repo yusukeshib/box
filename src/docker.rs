@@ -172,7 +172,7 @@ pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
     } else {
         let mut docker_cmd = vec!["docker".to_string()];
         docker_cmd.extend(args);
-        mux::run(mux::MuxConfig {
+        mux::run_standalone(mux::MuxConfig {
             session_name: cfg.name.to_string(),
             command: docker_cmd,
             working_dir: None,
@@ -241,7 +241,7 @@ pub fn start_container(name: &str) -> Result<i32> {
 }
 
 pub fn attach_container(name: &str) -> Result<i32> {
-    mux::run(mux::MuxConfig {
+    mux::run_standalone(mux::MuxConfig {
         session_name: name.to_string(),
         command: vec![
             "docker".to_string(),
@@ -261,7 +261,7 @@ pub fn exec_container(name: &str, cmd: &[String]) -> Result<i32> {
     ];
     docker_cmd.extend(cmd.iter().cloned());
 
-    mux::run(mux::MuxConfig {
+    mux::run_standalone(mux::MuxConfig {
         session_name: name.to_string(),
         command: docker_cmd,
         working_dir: None,

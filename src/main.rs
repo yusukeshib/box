@@ -157,6 +157,14 @@ fn is_local_mode() -> bool {
 }
 
 fn main() {
+    // Server mode: if __BOX_MUX_SERVER is set, run as mux server daemon
+    if let Ok(session_name) = std::env::var("__BOX_MUX_SERVER") {
+        if let Err(e) = mux::server::run(&session_name) {
+            eprintln!("mux server: {}", e);
+        }
+        std::process::exit(0);
+    }
+
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -229,12 +237,8 @@ fn main() {
     }
 }
 
-fn run_local_command(session_name: &str, workspace: &str, command: &[String]) -> Result<i32> {
-    mux::run(mux::MuxConfig {
-        session_name: session_name.to_string(),
-        command: command.to_vec(),
-        working_dir: Some(workspace.to_string()),
-    })
+fn run_local_command(session_name: &str) -> Result<i32> {
+    mux::run(session_name)
 }
 
 fn output_cd_path(path: &str) {
@@ -334,6 +338,11 @@ fn cmd_list() -> Result<i32> {
             }
         }
     }
+    for s in &mut sessions {
+        if s.local {
+            s.running = session::is_local_running(&s.name);
+        }
+    }
 
     let delete_fn = |name: &str| -> Result<()> {
         let sess = session::load(name)?;
@@ -376,6 +385,11 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
             if !s.local {
                 s.running = running.contains(&s.name);
             }
+        }
+    }
+    for s in &mut sessions {
+        if s.local {
+            s.running = session::is_local_running(&s.name);
         }
     }
 
@@ -511,7 +525,7 @@ fn cmd_create(
         output_cd_path(&workspace);
 
         if !sess.command.is_empty() {
-            return run_local_command(&sess.name, &workspace, &sess.command);
+            return run_local_command(&sess.name);
         }
         return Ok(0);
     }
@@ -569,7 +583,7 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
         output_cd_path(&workspace.to_string_lossy());
 
         if !sess.command.is_empty() {
-            return run_local_command(name, &workspace.to_string_lossy(), &sess.command);
+            return run_local_command(name);
         }
         return Ok(0);
     }
@@ -626,6 +640,13 @@ fn cmd_remove(name: &str) -> Result<i32> {
     let sess = session::load(name)?;
 
     if sess.local {
+        if session::is_local_running(name) {
+            bail!(
+                "Session '{}' is still running. Stop it first with `box stop {}`.",
+                name,
+                name
+            );
+        }
         docker::remove_workspace(name);
         session::remove_dir(name)?;
         output_cd_path(&sess.project_dir);
@@ -662,10 +683,12 @@ fn cmd_stop(name: &str) -> Result<i32> {
     let sess = session::load(name)?;
 
     if sess.local {
-        bail!(
-            "Session '{}' is a local session (not a Docker container).",
-            name
-        );
+        if !session::is_local_running(name) {
+            bail!("Session '{}' is not running.", name);
+        }
+        mux::send_kill(name)?;
+        println!("Session '{}' stopped.", name);
+        return Ok(0);
     }
 
     docker::check()?;
@@ -689,7 +712,7 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     if sess.local {
         let home = config::home_dir()?;
         let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
-        return mux::run(mux::MuxConfig {
+        return mux::run_standalone(mux::MuxConfig {
             session_name: name.to_string(),
             command: cmd.to_vec(),
             working_dir: Some(workspace.to_string_lossy().to_string()),
