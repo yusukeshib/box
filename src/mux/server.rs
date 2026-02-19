@@ -107,7 +107,9 @@ pub fn run(session_name: &str) -> Result<()> {
     if workspace.is_dir() {
         cmd.current_dir(&workspace);
     }
-    let mut child = cmd.spawn(&pts).context("Failed to spawn command in PTY")?;
+    let mut child = cmd
+        .spawn(&pts)
+        .with_context(|| format!("Failed to spawn {:?} in PTY", &sess.command))?;
     // Drop pts so the server doesn't hold the slave side open
     drop(pts);
 

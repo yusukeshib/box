@@ -160,7 +160,7 @@ fn main() {
     // Server mode: if __BOX_MUX_SERVER is set, run as mux server daemon
     if let Ok(session_name) = std::env::var("__BOX_MUX_SERVER") {
         if let Err(e) = mux::server::run(&session_name) {
-            eprintln!("mux server: {}", e);
+            eprintln!("mux server: {:#}", e);
         }
         std::process::exit(0);
     }

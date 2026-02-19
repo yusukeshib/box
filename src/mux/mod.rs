@@ -36,7 +36,7 @@ pub fn run(session_name: &str) -> Result<i32> {
     spawn_server(session_name)?;
 
     // Poll for socket (up to 3s), then connect as client
-    wait_for_socket(&socket_path)?;
+    wait_for_socket(session_name, &socket_path)?;
     client::run(session_name, &socket_path)
 }
 
@@ -412,14 +412,26 @@ fn spawn_server(session_name: &str) -> Result<()> {
 
     let exe = std::env::current_exe().context("Failed to get current executable path")?;
 
+    // Redirect server stderr to a log file for debugging
+    let log_path = session::sessions_dir()?
+        .join(session_name)
+        .join("server.log");
+    let log_file = std::fs::File::create(&log_path)
+        .with_context(|| format!("Failed to create server log: {}", log_path.display()))?;
+
     unsafe {
         Command::new(exe)
             .env("__BOX_MUX_SERVER", session_name)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(log_file))
             .pre_exec(|| {
-                libc::setsid();
+                // Put server in its own process group so it doesn't receive
+                // signals from the caller's terminal. We avoid setsid() because
+                // being a session leader causes macOS to auto-assign the PTY
+                // slave as our controlling terminal when opened, which then
+                // prevents the child from claiming it via TIOCSCTTY.
+                libc::setpgid(0, 0);
                 Ok(())
             })
             .spawn()
@@ -429,15 +441,21 @@ fn spawn_server(session_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn wait_for_socket(socket_path: &std::path::Path) -> Result<()> {
+fn wait_for_socket(session_name: &str, socket_path: &std::path::Path) -> Result<()> {
     for _ in 0..60 {
-        if socket_path.exists() {
-            // Also check we can actually connect
-            if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
-                return Ok(());
-            }
+        if socket_path.exists() && std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+            return Ok(());
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+    // Print server log for debugging
+    if let Ok(dir) = session::sessions_dir() {
+        let log_path = dir.join(session_name).join("server.log");
+        if let Ok(log) = std::fs::read_to_string(&log_path) {
+            if !log.is_empty() {
+                eprintln!("Server log:\n{}", log);
+            }
+        }
     }
     anyhow::bail!("Timed out waiting for mux server to start")
 }
