@@ -169,18 +169,34 @@ fn get_term_size(fd: i32) -> Result<(u16, u16)> {
 }
 
 pub fn run(config: MuxConfig) -> Result<i32> {
-    // Open /dev/tty for direct terminal access — this works regardless of
-    // whether stdout/stdin have been redirected (e.g. by the shell wrapper
-    // that captures cd paths via BOX_CD_FILE, or when run via cargo).
-    let mut tty = std::fs::OpenOptions::new()
+    // Try to open /dev/tty for direct terminal access. If that fails (e.g. no
+    // controlling terminal, inside CI, piped context), fall back to plain exec.
+    let tty_result = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/tty")
-        .context("Failed to open /dev/tty — no controlling terminal")?;
+        .open("/dev/tty");
+
+    let mut tty = match tty_result {
+        Ok(f) => f,
+        Err(_) => return run_fallback(&config),
+    };
     let tty_fd = tty.as_raw_fd();
 
-    // Get terminal size from the tty fd
-    let (term_cols, term_rows) = get_term_size(tty_fd)?;
+    // Get terminal size from the tty fd — if this fails the tty isn't usable.
+    let (term_cols, term_rows) = match get_term_size(tty_fd) {
+        Ok(size) => size,
+        Err(_) => return run_fallback(&config),
+    };
+
+    // Verify we can get termios (i.e. this is a real terminal device).
+    // If not, fall back to plain exec before we spawn anything.
+    {
+        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(tty_fd, &mut termios) } != 0 {
+            return run_fallback(&config);
+        }
+    }
+
     let inner_rows = term_rows.saturating_sub(1); // reserve 1 row for header
     if inner_rows == 0 || term_cols == 0 {
         anyhow::bail!("Terminal too small");
@@ -542,6 +558,21 @@ pub fn run(config: MuxConfig) -> Result<i32> {
 /// detach from normal exit if needed.
 fn detach_exit_code() -> i32 {
     0
+}
+
+/// Fallback: run command with inherited stdio (no mux chrome).
+/// Used when /dev/tty is unavailable or not a real terminal.
+fn run_fallback(config: &MuxConfig) -> Result<i32> {
+    let mut child = std::process::Command::new(&config.command[0])
+        .args(&config.command[1..])
+        .current_dir(config.working_dir.as_deref().unwrap_or("."))
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("Failed to run command: {}", config.command.join(" ")))?;
+    let status = child.wait()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn write_bytes_to_pty(pty: &pty_process::blocking::Pty, data: &[u8]) -> Result<()> {
