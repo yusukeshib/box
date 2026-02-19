@@ -307,8 +307,12 @@ where
                                     input = TextInput::new();
                                     mode = Mode::InputName;
                                 } else {
-                                    let name = items[i - 1].name.clone();
+                                    let s = &items[i - 1];
+                                    let name = s.name.clone();
                                     clear_viewport(&mut terminal, viewport_height)?;
+                                    if s.local {
+                                        return Ok(TuiAction::Cd(name));
+                                    }
                                     return Ok(TuiAction::Resume(name));
                                 }
                             }
@@ -359,14 +363,7 @@ where
                                     std::panic::catch_unwind(docker::running_sessions)
                                 {
                                     for s in &mut refreshed {
-                                        if !s.local {
-                                            s.running = running.contains(&s.name);
-                                        }
-                                    }
-                                }
-                                for s in &mut refreshed {
-                                    if s.local {
-                                        s.running = session::is_local_running(&s.name);
+                                        s.running = running.contains(&s.name);
                                     }
                                 }
                                 items = refreshed;
