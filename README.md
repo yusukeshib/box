@@ -119,6 +119,7 @@ box list [options]                                List sessions (alias: ls)
 box remove <name>                                 Remove a session
 box cd <name>                                     Print host project directory
 box path <name>                                   Print workspace path
+box origin                                        Cd back to origin project from workspace
 box config zsh|bash                               Output shell completions
 box upgrade                                       Upgrade to latest version
 ```
@@ -134,11 +135,12 @@ Running `box` with no arguments opens an interactive TUI:
   local-exp      /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
   test           /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
 
- [Enter] Resume  [c] Cd  [d] Delete  [q] Quit
+ [Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit
 ```
 
 - **Enter** on a session to resume it, or on "New box..." to create a new one
-- **c** to cd to the session's host project directory
+- **c** to cd to the session's workspace directory
+- **o** to cd to the session's origin project directory
 - **d** to delete the highlighted session (with confirmation)
 - **q** / **Esc** to quit
 
@@ -216,6 +218,13 @@ box cd my-feature
 
 # With shell completions enabled, cd to the project directory
 cd "$(box cd my-feature)"
+```
+
+### Navigate to origin project
+
+```bash
+# From inside a workspace, cd back to the origin project directory
+box origin
 ```
 
 ### Stop and remove

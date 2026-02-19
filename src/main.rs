@@ -15,7 +15,7 @@ use std::path::Path;
 #[command(
     name = "box",
     about = "Sandboxed Docker environments for git repos (supports --local mode)",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box my-feature                               # shortcut for `box create my-feature`\n  box create my-feature                        # create a new session\n  box create my-feature --image ubuntu -- bash # create with options\n  box create my-feature --local                # create a local session (no Docker)\n  box resume my-feature                        # resume a session\n  box resume my-feature -d                     # resume in background\n  box stop my-feature                          # stop a running session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box list -q --running                        # names of running sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box my-feature                               # shortcut for `box create my-feature`\n  box create my-feature                        # create a new session\n  box create my-feature --image ubuntu -- bash # create with options\n  box create my-feature --local                # create a local session (no Docker)\n  box resume my-feature                        # resume a session\n  box resume my-feature -d                     # resume in background\n  box stop my-feature                          # stop a running session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box list -q --running                        # names of running sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -47,6 +47,8 @@ enum Commands {
         /// Session name
         name: String,
     },
+    /// Navigate back to the original project directory from a workspace
+    Origin,
     /// Self-update to the latest version
     Upgrade,
     /// Output shell configuration (e.g. eval "$(box config zsh)")
@@ -190,6 +192,7 @@ fn main() {
         Some(Commands::List(args)) => cmd_list_sessions(&args),
         Some(Commands::Cd { name }) => cmd_cd(&name),
         Some(Commands::Path { name }) => cmd_path(&name),
+        Some(Commands::Origin) => cmd_origin(),
         Some(Commands::Upgrade) => cmd_upgrade(),
         Some(Commands::Config { shell }) => match shell {
             ConfigShell::Zsh => cmd_config_zsh(),
@@ -354,6 +357,11 @@ fn cmd_list() -> Result<i32> {
             local,
         } => cmd_create(&name, image, &docker_args, command, false, local),
         tui::TuiAction::Cd(name) => cmd_cd(&name),
+        tui::TuiAction::Origin(name) => {
+            let sess = session::load(&name)?;
+            output_cd_path(&sess.project_dir);
+            Ok(0)
+        }
         tui::TuiAction::Quit => Ok(0),
     }
 }
@@ -621,6 +629,7 @@ fn cmd_remove(name: &str) -> Result<i32> {
     if sess.local {
         docker::remove_workspace(name);
         session::remove_dir(name)?;
+        output_cd_path(&sess.project_dir);
         println!("Session '{}' removed.", name);
         return Ok(0);
     }
@@ -639,6 +648,7 @@ fn cmd_remove(name: &str) -> Result<i32> {
     docker::remove_workspace(name);
     session::remove_dir(name)?;
 
+    output_cd_path(&sess.project_dir);
     println!("Session '{}' removed.", name);
     Ok(0)
 }
@@ -718,6 +728,33 @@ fn cmd_path(name: &str) -> Result<i32> {
     let home = config::home_dir()?;
     let path = Path::new(&home).join(".box").join("workspaces").join(name);
     println!("{}", path.display());
+    Ok(0)
+}
+
+fn cmd_origin() -> Result<i32> {
+    let cwd = std::env::current_dir()?;
+    let home = config::home_dir()?;
+    let workspaces = Path::new(&home).join(".box").join("workspaces");
+    let workspaces = std::fs::canonicalize(&workspaces).unwrap_or(workspaces);
+    let cwd_canon = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+
+    let name = cwd_canon
+        .strip_prefix(&workspaces)
+        .ok()
+        .and_then(|rel| rel.components().next())
+        .map(|c| c.as_os_str().to_string_lossy().to_string());
+
+    let name = match name {
+        Some(n) => n,
+        None => bail!("Not inside a box workspace."),
+    };
+
+    if !session::session_exists(&name)? {
+        bail!("Session '{}' not found.", name);
+    }
+
+    let sess = session::load(&name)?;
+    output_cd_path(&sess.project_dir);
     Ok(0)
 }
 
@@ -827,7 +864,7 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="create resume remove stop exec list cd path upgrade config"
+    local subcommands="create resume remove stop exec list cd path origin upgrade config"
     local session_cmds="resume remove stop exec cd path"
 
     if [[ $cword -eq 1 ]]; then
