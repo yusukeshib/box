@@ -97,6 +97,7 @@ pub fn run(session_name: &str) -> Result<()> {
     let mut cmd = pty_process::blocking::Command::new(&sess.command[0]);
     cmd.args(&sess.command[1..]);
     cmd.env("BOX_SESSION", session_name);
+    cmd.env_remove("__BOX_MUX_SERVER");
     if workspace.is_dir() {
         cmd.current_dir(&workspace);
     }
