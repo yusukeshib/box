@@ -227,13 +227,13 @@ where
                 }
 
                 let widths = [
-                    Constraint::Length(15),
+                    Constraint::Fill(1),
                     Constraint::Length(30),
                     Constraint::Length(8),
                     Constraint::Length(10),
                     Constraint::Length(15),
                     Constraint::Length(20),
-                    Constraint::Min(22),
+                    Constraint::Length(22),
                 ];
 
                 let table = Table::new(rows, widths)
