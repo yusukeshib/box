@@ -7,7 +7,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::protocol::{self, ClientMsg, ServerMsg};
-use super::terminal::{self, scrollback_line_count, InputAction, InputState, RawModeGuard, ScrollState};
+use super::terminal::{
+    self, scrollback_line_count, InputAction, InputState, RawModeGuard, ScrollState,
+};
 
 enum ClientEvent {
     ServerMsg(ServerMsg),
@@ -173,7 +175,8 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
             },
             Ok(ClientEvent::InputBytes(data)) => {
                 let max_scrollback = scrollback_line_count(&mut parser);
-                let actions = input_state.process(&data, current_inner_rows, last_cols, max_scrollback);
+                let actions =
+                    input_state.process(&data, current_inner_rows, last_cols, max_scrollback);
                 for action in actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -200,7 +203,8 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Flush any buffered incomplete escape sequence
                 let max_scrollback = scrollback_line_count(&mut parser);
-                let pending_actions = input_state.flush_pending(current_inner_rows, last_cols, max_scrollback);
+                let pending_actions =
+                    input_state.flush_pending(current_inner_rows, last_cols, max_scrollback);
                 for action in pending_actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -262,13 +266,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                     };
                     terminal
                         .draw(|f| {
-                            terminal::draw_frame(
-                                f,
-                                screen,
-                                &session_name,
-                                &project_name,
-                                &scroll,
-                            );
+                            terminal::draw_frame(f, screen, &session_name, &project_name, &scroll);
                         })
                         .context("Failed to draw terminal frame")?;
                     parser.set_scrollback(0);

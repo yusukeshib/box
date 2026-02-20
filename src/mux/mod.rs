@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::session;
 
-use terminal::{InputAction, InputState, RawModeGuard, ScrollState, scrollback_line_count};
+use terminal::{scrollback_line_count, InputAction, InputState, RawModeGuard, ScrollState};
 
 /// Acquire an exclusive lock on a session-specific lockfile.
 /// Returns the lock file (must be kept alive for the duration of the lock).
@@ -231,7 +231,8 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
             }
             Ok(StandaloneEvent::InputBytes(data)) => {
                 let max_scrollback = scrollback_line_count(&mut parser);
-                let actions = input_state.process(&data, current_inner_rows, last_cols, max_scrollback);
+                let actions =
+                    input_state.process(&data, current_inner_rows, last_cols, max_scrollback);
                 for action in actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -266,7 +267,8 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 // Flush any buffered incomplete escape sequence
                 // (e.g. bare ESC that wasn't followed by more bytes).
                 let max_scrollback = scrollback_line_count(&mut parser);
-                let pending_actions = input_state.flush_pending(current_inner_rows, last_cols, max_scrollback);
+                let pending_actions =
+                    input_state.flush_pending(current_inner_rows, last_cols, max_scrollback);
                 for action in pending_actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -325,13 +327,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         max: max_scrollback,
                     };
                     term.draw(|f| {
-                        terminal::draw_frame(
-                            f,
-                            screen,
-                            &session_name,
-                            &project_name,
-                            &scroll,
-                        );
+                        terminal::draw_frame(f, screen, &session_name, &project_name, &scroll);
                     })
                     .context("Failed to draw terminal frame")?;
                     parser.set_scrollback(0);

@@ -84,6 +84,10 @@ struct CreateArgs {
     #[arg(long)]
     local: bool,
 
+    /// Create a Docker session (container isolation)
+    #[arg(long)]
+    docker: bool,
+
     /// Command to run in container (default: $BOX_DEFAULT_CMD if set)
     #[arg(last = true)]
     cmd: Vec<String>,
@@ -152,8 +156,8 @@ enum ConfigShell {
 
 fn is_local_mode() -> bool {
     std::env::var("BOX_MODE")
-        .map(|v| v == "local")
-        .unwrap_or(false)
+        .map(|v| v != "docker")
+        .unwrap_or(true)
 }
 
 fn main() {
@@ -176,7 +180,7 @@ fn main() {
                 );
                 std::process::exit(1);
             }
-            let local = args.local || is_local_mode();
+            let local = if args.docker { false } else { args.local || is_local_mode() };
             let docker_args = args
                 .docker_args
                 .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
@@ -232,14 +236,16 @@ fn main() {
                 std::process::exit(1);
             }
             let name = args[0].to_string_lossy().to_string();
-            let local = args[1..].iter().any(|a| a == "--local") || is_local_mode();
+            let has_docker = args[1..].iter().any(|a| a == "--docker");
+            let has_local = args[1..].iter().any(|a| a == "--local");
+            let local = if has_docker { false } else { has_local || is_local_mode() };
             let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
             if session::session_exists(&name).unwrap_or(false) {
                 cmd_resume(&name, &docker_args, false)
             } else {
                 let cmd: Vec<String> = args[1..]
                     .iter()
-                    .filter(|a| *a != "--local")
+                    .filter(|a| *a != "--local" && *a != "--docker")
                     .skip_while(|a| *a != "--")
                     .skip(1)
                     .map(|a| a.to_string_lossy().to_string())
@@ -835,10 +841,11 @@ _box() {{
             case $words[1] in
                 create)
                     _arguments \
-                        '-d[Run container in the background]' \
+                        '-d[Run in the background]' \
                         '--image=[Docker image to use]:image' \
                         '--docker-args=[Extra Docker flags]:args' \
-                        '--local[Create a local session (no Docker)]' \
+                        '--local[Create a local session (default)]' \
+                        '--docker[Create a Docker session]' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -924,7 +931,7 @@ fn cmd_config_bash() -> Result<i32> {
         create)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "-d --image --docker-args --local" -- "$cur"))
+                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker" -- "$cur"))
                     ;;
             esac
             ;;

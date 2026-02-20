@@ -268,10 +268,7 @@ pub fn draw_frame(
         format!(" {} > {} ", project_name, session_name)
     };
     let right = if scrolled_up {
-        format!(
-            " [{}/{}] q:exit scroll ",
-            scroll_offset, max_scrollback
-        )
+        format!(" [{}/{}] q:exit scroll ", scroll_offset, max_scrollback)
     } else {
         " Ctrl+P,Q:detach  Ctrl+P,X:stop ".to_string()
     };
@@ -504,9 +501,8 @@ impl InputState {
                         let grid_row = (mouse.row - 2) as usize;
                         let track_height = current_inner_rows as usize;
                         if grid_row < track_height && track_height > 1 {
-                            self.scroll_offset = max_scrollback
-                                * (track_height - 1 - grid_row)
-                                / (track_height - 1);
+                            self.scroll_offset =
+                                max_scrollback * (track_height - 1 - grid_row) / (track_height - 1);
                             self.dragging_scrollbar = true;
                             actions.push(InputAction::Redraw);
                         }
@@ -517,9 +513,8 @@ impl InputState {
                         if track_height > 1 {
                             let grid_row =
                                 (mouse.row.saturating_sub(2) as usize).min(track_height - 1);
-                            self.scroll_offset = max_scrollback
-                                * (track_height - 1 - grid_row)
-                                / (track_height - 1);
+                            self.scroll_offset =
+                                max_scrollback * (track_height - 1 - grid_row) / (track_height - 1);
                             actions.push(InputAction::Redraw);
                         }
                     }
@@ -569,8 +564,7 @@ impl InputState {
                     match data[i + 2] {
                         b'A' => {
                             // Up arrow
-                            self.scroll_offset =
-                                (self.scroll_offset + 1).min(max_scrollback);
+                            self.scroll_offset = (self.scroll_offset + 1).min(max_scrollback);
                             actions.push(InputAction::Redraw);
                             i += 3;
                             continue;
@@ -585,8 +579,7 @@ impl InputState {
                         b'5' if i + 3 < data.len() && data[i + 3] == b'~' => {
                             // PgUp
                             let half = (current_inner_rows / 2) as usize;
-                            self.scroll_offset =
-                                (self.scroll_offset + half).min(max_scrollback);
+                            self.scroll_offset = (self.scroll_offset + half).min(max_scrollback);
                             actions.push(InputAction::Redraw);
                             i += 4;
                             continue;
@@ -594,8 +587,7 @@ impl InputState {
                         b'6' if i + 3 < data.len() && data[i + 3] == b'~' => {
                             // PgDn
                             let half = (current_inner_rows / 2) as usize;
-                            self.scroll_offset =
-                                self.scroll_offset.saturating_sub(half);
+                            self.scroll_offset = self.scroll_offset.saturating_sub(half);
                             actions.push(InputAction::Redraw);
                             i += 4;
                             continue;
@@ -604,9 +596,7 @@ impl InputState {
                     }
                 }
                 // q or bare Esc snaps back to bottom
-                if b == b'q'
-                    || (b == 0x1b && (i + 1 >= data.len() || data[i + 1] != b'['))
-                {
+                if b == b'q' || (b == 0x1b && (i + 1 >= data.len() || data[i + 1] != b'[')) {
                     self.scroll_offset = 0;
                     actions.push(InputAction::Redraw);
                     i += 1;

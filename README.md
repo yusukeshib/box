@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-Safe, disposable dev environments for AI coding agents — powered by Docker and git. Supports `--local` mode for Docker-free git workspace sessions.
+Safe, disposable dev environments for AI coding agents — powered by git. Docker optional for full container isolation.
 
 ![demo](./demo.gif)
 
@@ -18,13 +18,12 @@ AI coding agents (Claude Code, Cursor, Copilot) are powerful — but letting the
 - **AI agents can experiment freely** — commit, branch, rewrite, break things — your working tree is untouched
 - **Persistent sessions** — exit and resume where you left off, files are preserved
 - **Named sessions** — run multiple experiments in parallel
-- **Bring your own toolchain** — works with any Docker image
-- **Local mode** — use `--local` for Docker-free git workspace sessions
+- **Docker mode** — use `BOX_MODE=docker` for full container isolation with any Docker image
 
 ## Requirements
 
 - [Git](https://git-scm.com/)
-- [Docker](https://www.docker.com/) (or [OrbStack](https://orbstack.dev/) on macOS) — optional when using `--local` mode
+- [Docker](https://www.docker.com/) (or [OrbStack](https://orbstack.dev/) on macOS) — only required for `BOX_MODE=docker`
 
 ## Install
 
@@ -61,32 +60,35 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 ```bash
 box my-feature
 # Shortcut for `box create my-feature` — creates a new isolated session
-
-box my-feature --local
-# Creates a local session (git workspace only, no Docker)
 ```
 
 Box must be run inside a git repository — it clones the current repo into the workspace.
 
 For a zero-flags workflow, see [Custom Image Setup](#custom-image-setup) below.
 
-## Custom Image Setup
+## Docker Mode Setup
 
-The recommended way to use box: build your image once, set a couple of env vars, and never pass flags again.
+To use Docker-based container isolation, set `BOX_MODE=docker` and optionally configure a custom image.
 
-**1. Create a Dockerfile with your toolchain**
+**1. Enable Docker mode**
+
+Add to your `.zshrc` or `.bashrc`:
+
+```bash
+export BOX_MODE=docker
+```
+
+**2. (Optional) Create a Dockerfile with your toolchain**
 
 Include whatever tools your workflow needs (languages, runtimes, CLI tools, etc.).
 
-**2. Build the image**
+**3. (Optional) Build and configure the image**
 
 ```bash
 docker build -t mydev .
 ```
 
-**3. Set environment variables**
-
-Add these to your `.zshrc` or `.bashrc`:
+Add to your `.zshrc` or `.bashrc`:
 
 ```bash
 export BOX_DEFAULT_IMAGE=mydev              # your custom image
@@ -96,10 +98,7 @@ export BOX_DEFAULT_CMD="bash"               # default command for new sessions
 
 **4. Done — just use box**
 
-With those env vars set, every session uses your custom image with zero flags:
-
 ```bash
-# That's it. From now on:
 box create feature-1
 box create bugfix-auth
 box create experiment-v2
@@ -110,8 +109,8 @@ box create experiment-v2
 
 ```bash
 box                                               Session manager (TUI)
-box <name> [--local]                              Shortcut for `box create <name>`
-box create <name> [--local] [options] [-- cmd...] Create a new session
+box <name> [--local] [--docker]                   Shortcut for `box create <name>`
+box create <name> [--local] [--docker] [options] [-- cmd...] Create a new session
 box resume <name> [-d] [--docker-args <args>]     Resume an existing session
 box stop <name>                                   Stop a running session
 box exec <name> -- <cmd...>                       Run a command in a running session
@@ -153,17 +152,14 @@ box my-feature
 # Equivalent explicit form
 box create my-feature
 
-# Custom image with bash
-box create my-feature --image ubuntu:latest -- bash
+# Create a Docker session
+box create my-feature --docker --image ubuntu:latest -- bash
 
 # Extra Docker flags (env vars, volumes, network, etc.)
-box create my-feature --docker-args "-e KEY=VALUE -v /host:/container --network host"
+box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container --network host"
 
 # Create in detached mode (background)
 box create my-feature -d -- claude -p "do something"
-
-# Create a local session (no Docker required)
-box create my-feature --local
 ```
 
 ### Resume a session
@@ -243,11 +239,12 @@ box remove my-feature
 
 | Option | Description |
 |--------|-------------|
-| `-d` | Run container in the background (detached) |
-| `--local` | Create a local session (git workspace only, no Docker) |
+| `-d` | Run in the background (detached) |
+| `--local` | Create a local session (default) |
+| `--docker` | Create a Docker session (requires Docker) |
 | `--image <image>` | Docker image to use (default: `alpine:latest`) |
 | `--docker-args <args>` | Extra Docker flags (e.g. `-e KEY=VALUE`, `-v /host:/container`). Overrides `$BOX_DOCKER_ARGS` |
-| `-- cmd...` | Command to run in container (default: `$BOX_DEFAULT_CMD` if set) |
+| `-- cmd...` | Command to run (default: `$BOX_DEFAULT_CMD` if set) |
 
 ### `box list`
 
@@ -273,7 +270,7 @@ These let you configure defaults so you can skip CLI flags entirely. Set them in
 | `BOX_DEFAULT_IMAGE` | Default Docker image for new sessions (default: `alpine:latest`) |
 | `BOX_DOCKER_ARGS` | Default extra Docker flags, used when `--docker-args` is not provided |
 | `BOX_DEFAULT_CMD` | Default command for new sessions, used when no `-- cmd` is provided |
-| `BOX_MODE` | Set to `local` to create all sessions in local mode by default |
+| `BOX_MODE` | Session mode: `local` (default) or `docker` |
 
 ```bash
 # Set default Docker flags for all sessions
@@ -356,19 +353,25 @@ The `--docker-args` flag and `BOX_DOCKER_ARGS` environment variable pass argumen
 
 ## Claude Code Integration
 
-Box is the ideal companion for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Run Claude Code inside a box session and let it make risky changes, experiment with branches, and run tests — all fully isolated from your host.
+Box is the ideal companion for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Run Claude Code inside a box session and let it make risky changes, experiment with branches, and run tests — all in an isolated git workspace.
 
 ```bash
-box create ai-experiment --image node:20 -- claude
+box create ai-experiment -- claude
 ```
 
 Run in the background with detach mode:
 
 ```bash
-box create ai-experiment -d --image node:20 -- claude -p "refactor the auth module"
+box create ai-experiment -d -- claude -p "refactor the auth module"
 ```
 
-Everything the agent does stays inside the container. When you're done, delete the session and it's gone.
+For full container isolation with Docker:
+
+```bash
+box create ai-experiment --docker --image node:20 -- claude
+```
+
+Everything the agent does stays in the workspace. When you're done, delete the session and it's gone.
 
 ## License
 

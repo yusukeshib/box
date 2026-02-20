@@ -395,8 +395,8 @@ where
                             mode = Mode::Normal;
                             input = TextInput::new();
                         } else if std::env::var("BOX_MODE")
-                            .map(|v| v == "local")
-                            .unwrap_or(false)
+                            .map(|v| v != "docker")
+                            .unwrap_or(true)
                         {
                             new_name = name;
                             new_image = None;
