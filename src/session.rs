@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use chrono::{Local, NaiveDateTime, Utc};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -192,12 +192,24 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
         let created_at = fs::read_to_string(session_path.join("created_at"))
-            .map(|s| s.trim().to_string())
+            .map(|s| {
+                let trimmed = s.trim();
+                if let Some(naive_str) = trimmed.strip_suffix(" UTC") {
+                    if let Ok(naive) = NaiveDateTime::parse_from_str(naive_str, "%Y-%m-%d %H:%M:%S")
+                    {
+                        let utc_dt = naive.and_utc();
+                        let local_dt = utc_dt.with_timezone(&Local);
+                        return local_dt.format("%Y-%m-%d %H:%M:%S %Z").to_string();
+                    }
+                }
+                trimmed.to_string()
+            })
             .unwrap_or_default();
         let command = fs::read_to_string(session_path.join("command"))
             .map(|s| {
                 s.split('\0')
                     .filter(|l| !l.is_empty())
+                    .filter(|l| *l != "--allow-dangerously-skip-permissions")
                     .collect::<Vec<_>>()
                     .join(" ")
             })
