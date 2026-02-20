@@ -533,59 +533,8 @@ impl InputState {
                 continue;
             }
 
-            // When scrolled up, intercept keyboard for scroll navigation
-            if self.scroll_offset > 0 {
-                if b == 0x1b && i + 2 < data.len() && data[i + 1] == b'[' {
-                    match data[i + 2] {
-                        b'A' => {
-                            // Up arrow
-                            self.scroll_offset = (self.scroll_offset + 1).min(max_scrollback);
-                            actions.push(InputAction::Redraw);
-                            i += 3;
-                            continue;
-                        }
-                        b'B' => {
-                            // Down arrow
-                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                            actions.push(InputAction::Redraw);
-                            i += 3;
-                            continue;
-                        }
-                        b'5' if i + 3 < data.len() && data[i + 3] == b'~' => {
-                            // PgUp
-                            let half = (current_inner_rows / 2) as usize;
-                            self.scroll_offset = (self.scroll_offset + half).min(max_scrollback);
-                            actions.push(InputAction::Redraw);
-                            i += 4;
-                            continue;
-                        }
-                        b'6' if i + 3 < data.len() && data[i + 3] == b'~' => {
-                            // PgDn
-                            let half = (current_inner_rows / 2) as usize;
-                            self.scroll_offset = self.scroll_offset.saturating_sub(half);
-                            actions.push(InputAction::Redraw);
-                            i += 4;
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-                // q or bare Esc snaps back to bottom
-                if b == b'q' || (b == 0x1b && (i + 1 >= data.len() || data[i + 1] != b'[')) {
-                    self.scroll_offset = 0;
-                    actions.push(InputAction::Redraw);
-                    i += 1;
-                    continue;
-                }
-                // Let Ctrl+P fall through to the prefix handler so
-                // Ctrl+P,Q (detach) and Ctrl+P,X (stop) work while scrolled.
-                if b != 0x10 {
-                    // Consume all other input while scrolled up
-                    i += 1;
-                    continue;
-                }
-            }
-
+            // Handle Ctrl+P prefix commands before scroll interception so
+            // Ctrl+P,Q (detach) and Ctrl+P,X (stop) work while scrolled.
             if self.prefix_active {
                 self.prefix_active = false;
                 match b {
@@ -609,6 +558,67 @@ impl InputState {
                         actions.push(InputAction::Forward(vec![0x10, b]));
                     }
                 }
+                i += 1;
+                continue;
+            }
+
+            // When scrolled up, intercept keyboard for scroll navigation.
+            // (Placed after prefix_active so Ctrl+P chords still work.)
+            if self.scroll_offset > 0 {
+                if b == 0x1b && i + 2 < data.len() && data[i + 1] == b'[' {
+                    match data[i + 2] {
+                        b'A' => {
+                            // Up arrow
+                            self.scroll_offset =
+                                (self.scroll_offset + 1).min(max_scrollback);
+                            actions.push(InputAction::Redraw);
+                            i += 3;
+                            continue;
+                        }
+                        b'B' => {
+                            // Down arrow
+                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                            actions.push(InputAction::Redraw);
+                            i += 3;
+                            continue;
+                        }
+                        b'5' if i + 3 < data.len() && data[i + 3] == b'~' => {
+                            // PgUp
+                            let half = (current_inner_rows / 2) as usize;
+                            self.scroll_offset =
+                                (self.scroll_offset + half).min(max_scrollback);
+                            actions.push(InputAction::Redraw);
+                            i += 4;
+                            continue;
+                        }
+                        b'6' if i + 3 < data.len() && data[i + 3] == b'~' => {
+                            // PgDn
+                            let half = (current_inner_rows / 2) as usize;
+                            self.scroll_offset =
+                                self.scroll_offset.saturating_sub(half);
+                            actions.push(InputAction::Redraw);
+                            i += 4;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                // q or bare Esc snaps back to bottom
+                if b == b'q'
+                    || (b == 0x1b && (i + 1 >= data.len() || data[i + 1] != b'['))
+                {
+                    self.scroll_offset = 0;
+                    actions.push(InputAction::Redraw);
+                    i += 1;
+                    continue;
+                }
+                // Ctrl+P starts a prefix chord (handled next iteration)
+                if b == 0x10 {
+                    self.prefix_active = true;
+                    i += 1;
+                    continue;
+                }
+                // Consume all other input while scrolled up
                 i += 1;
                 continue;
             }
