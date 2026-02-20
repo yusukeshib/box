@@ -572,6 +572,22 @@ impl InputState {
             }
             if i > start {
                 actions.push(InputAction::Forward(data[start..i].to_vec()));
+            } else if i < data.len() && data[i] == 0x1b {
+                // ESC byte not consumed by any special handler above.
+                // Forward it along with any CSI sequence that follows,
+                // so escape sequences like \x1b[A aren't split across writes.
+                let esc_start = i;
+                i += 1;
+                if i < data.len() && data[i] == b'[' {
+                    i += 1; // skip '['
+                    while i < data.len() && data[i] >= 0x20 && data[i] < 0x40 {
+                        i += 1; // skip parameter/intermediate bytes
+                    }
+                    if i < data.len() && data[i] >= 0x40 {
+                        i += 1; // include final byte
+                    }
+                }
+                actions.push(InputAction::Forward(data[esc_start..i].to_vec()));
             }
         }
 
