@@ -30,9 +30,10 @@ impl RawModeGuard {
             anyhow::bail!("Failed to set raw mode: {}", io::Error::last_os_error());
         }
 
-        // Enter alternate screen, hide cursor, enable SGR mouse tracking
-        // for scroll wheel support.  Hold Shift to bypass for text selection.
-        tty.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h")?;
+        // Enter alternate screen, hide cursor.
+        // Mouse tracking is enabled dynamically when scrollback content
+        // exists, so native text selection works when there's nothing to scroll.
+        tty.write_all(b"\x1b[?1049h\x1b[?25l")?;
         tty.flush()?;
 
         Ok(RawModeGuard {
@@ -583,6 +584,21 @@ impl InputState {
         }
 
         actions
+    }
+}
+
+/// Enable or disable SGR mouse tracking on the terminal.
+/// Toggled dynamically based on whether scrollback content exists:
+/// off when scrollback is empty (native text selection works),
+/// on when there's content to scroll through.
+pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
+    let seq: &[u8] = if enable {
+        b"\x1b[?1000h\x1b[?1006h"
+    } else {
+        b"\x1b[?1006l\x1b[?1000l"
+    };
+    unsafe {
+        libc::write(tty_fd, seq.as_ptr() as *const libc::c_void, seq.len());
     }
 }
 

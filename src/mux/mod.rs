@@ -208,6 +208,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     let mut input_state = InputState::new();
     let mut dirty = true;
     let mut child_exited = false;
+    let mut mouse_tracking_on = false;
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
@@ -303,6 +304,14 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 // of output are coalesced into a single frame.
                 if dirty {
                     let max_scrollback = scrollback_line_count(&mut parser);
+
+                    // Enable mouse tracking only when there's scrollback content
+                    let want_mouse = max_scrollback > 0;
+                    if want_mouse != mouse_tracking_on {
+                        mouse_tracking_on = want_mouse;
+                        terminal::set_mouse_tracking(tty_fd, mouse_tracking_on);
+                    }
+
                     parser.set_scrollback(input_state.scroll_offset);
                     let session_name = config.session_name.clone();
                     let project_name = project_name.clone();
