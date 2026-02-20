@@ -9,9 +9,13 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use ratatui::style::Color;
+
 use crate::session;
 
-use terminal::{scrollback_line_count, InputAction, InputState, RawModeGuard, ScrollState};
+use terminal::{
+    scrollback_line_count, DrawFrameParams, InputAction, InputState, RawModeGuard, ScrollState,
+};
 
 /// Acquire an exclusive lock on a session-specific lockfile.
 /// Returns the lock file (must be kept alive for the duration of the lock).
@@ -88,6 +92,61 @@ fn project_name_for_session(session_name: &str) -> String {
                 .map(|n| n.to_string_lossy().to_string())
         })
         .unwrap_or_default()
+}
+
+fn color_for_session(session_name: &str) -> Option<Color> {
+    let dir = session::sessions_dir().ok()?.join(session_name);
+    let s = std::fs::read_to_string(dir.join("color")).ok()?;
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    parse_color(s)
+}
+
+/// Parse a color string into a ratatui Color.
+///
+/// Supported formats:
+/// - Named: red, green, blue, yellow, cyan, magenta, white, black, darkgray/dark-gray
+/// - Hex: #rrggbb (e.g. #ff0000)
+/// - ANSI 256: a bare number (e.g. 123)
+fn parse_color(s: &str) -> Option<Color> {
+    let s = s.trim().to_lowercase();
+    // Named colors
+    match s.as_str() {
+        "red" => return Some(Color::Red),
+        "green" => return Some(Color::Green),
+        "blue" => return Some(Color::Blue),
+        "yellow" => return Some(Color::Yellow),
+        "cyan" => return Some(Color::Cyan),
+        "magenta" => return Some(Color::Magenta),
+        "white" => return Some(Color::White),
+        "black" => return Some(Color::Black),
+        "darkgray" | "dark-gray" => return Some(Color::DarkGray),
+        "lightred" | "light-red" => return Some(Color::LightRed),
+        "lightgreen" | "light-green" => return Some(Color::LightGreen),
+        "lightblue" | "light-blue" => return Some(Color::LightBlue),
+        "lightyellow" | "light-yellow" => return Some(Color::LightYellow),
+        "lightcyan" | "light-cyan" => return Some(Color::LightCyan),
+        "lightmagenta" | "light-magenta" => return Some(Color::LightMagenta),
+        "gray" => return Some(Color::Gray),
+        _ => {}
+    }
+    // Hex color: #rrggbb
+    if let Some(hex) = s.strip_prefix('#') {
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            return Some(Color::Rgb(r, g, b));
+        }
+        return None;
+    }
+    // ANSI 256: bare number
+    if let Ok(n) = s.parse::<u8>() {
+        return Some(Color::Indexed(n));
+    }
+    None
 }
 
 /// Single-process mode (current behavior). For cmd_exec and Docker.
@@ -206,6 +265,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     });
 
     let project_name = project_name_for_session(&config.session_name);
+    let header_color = color_for_session(&config.session_name);
     let mut input_state = InputState::new(config.prefix_key);
     let mut dirty = true;
     let mut child_exited = false;
@@ -318,25 +378,22 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                     }
 
                     parser.set_scrollback(input_state.scroll_offset);
-                    let session_name = config.session_name.clone();
-                    let project_name = project_name.clone();
                     let screen = parser.screen();
                     let scroll = ScrollState {
                         offset: input_state.scroll_offset,
                         max: max_scrollback,
                     };
-                    let cmd_mode = input_state.command_mode;
-                    let hover_close = input_state.hover_close;
+                    let params = DrawFrameParams {
+                        screen,
+                        session_name: &config.session_name,
+                        project_name: &project_name,
+                        scroll: &scroll,
+                        command_mode: input_state.command_mode,
+                        hover_close: input_state.hover_close,
+                        header_color,
+                    };
                     term.draw(|f| {
-                        terminal::draw_frame(
-                            f,
-                            screen,
-                            &session_name,
-                            &project_name,
-                            &scroll,
-                            cmd_mode,
-                            hover_close,
-                        );
+                        terminal::draw_frame(f, &params);
                     })
                     .context("Failed to draw terminal frame")?;
                     parser.set_scrollback(0);

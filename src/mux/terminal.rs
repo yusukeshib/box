@@ -234,19 +234,53 @@ pub struct ScrollState {
     pub max: usize,
 }
 
+/// Parameters for rendering the mux frame.
+pub struct DrawFrameParams<'a> {
+    pub screen: &'a vt100::Screen,
+    pub session_name: &'a str,
+    pub project_name: &'a str,
+    pub scroll: &'a ScrollState,
+    pub command_mode: bool,
+    pub hover_close: bool,
+    pub header_color: Option<Color>,
+}
+
+/// Pick white or black foreground based on perceived brightness of the background.
+fn auto_fg(bg: Color) -> Color {
+    let (r, g, b) = match bg {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::Black => (0, 0, 0),
+        Color::Red | Color::LightRed => (205, 49, 49),
+        Color::Green | Color::LightGreen => (13, 188, 121),
+        Color::Yellow | Color::LightYellow => (229, 229, 16),
+        Color::Blue | Color::LightBlue => (36, 114, 200),
+        Color::Magenta | Color::LightMagenta => (188, 63, 188),
+        Color::Cyan | Color::LightCyan => (17, 168, 205),
+        Color::White => (229, 229, 229),
+        Color::Gray => (128, 128, 128),
+        Color::DarkGray => (102, 102, 102),
+        _ => return Color::Black, // indexed / reset — assume light
+    };
+    // Relative luminance (ITU-R BT.601)
+    let lum = 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
+    if lum > 128.0 {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
 /// Render the mux frame: header bar + terminal grid.
-pub fn draw_frame(
-    f: &mut ratatui::Frame,
-    screen: &vt100::Screen,
-    session_name: &str,
-    project_name: &str,
-    scroll: &ScrollState,
-    command_mode: bool,
-    hover_close: bool,
-) {
-    let scrolled_up = scroll.offset > 0;
-    let scroll_offset = scroll.offset;
-    let max_scrollback = scroll.max;
+pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams) {
+    let screen = params.screen;
+    let session_name = params.session_name;
+    let project_name = params.project_name;
+    let command_mode = params.command_mode;
+    let hover_close = params.hover_close;
+    let header_color = params.header_color;
+    let scrolled_up = params.scroll.offset > 0;
+    let scroll_offset = params.scroll.offset;
+    let max_scrollback = params.scroll.max;
     let area = f.area();
 
     let header_area = Rect {
@@ -265,6 +299,8 @@ pub fn draw_frame(
 
     let header_style = if command_mode {
         Style::default().bg(Color::DarkGray).fg(Color::White)
+    } else if let Some(bg) = header_color {
+        Style::default().bg(bg).fg(auto_fg(bg))
     } else {
         Style::default().bg(Color::White).fg(Color::Black)
     };

@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use super::protocol::{self, ClientMsg, ServerMsg};
 use super::terminal::{
-    self, scrollback_line_count, InputAction, InputState, RawModeGuard, ScrollState,
+    self, scrollback_line_count, DrawFrameParams, InputAction, InputState, RawModeGuard,
+    ScrollState,
 };
 
 enum ClientEvent {
@@ -142,6 +143,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     });
 
     let project_name = super::project_name_for_session(session_name);
+    let header_color = super::color_for_session(session_name);
     let prefix_key = crate::config::load_mux_prefix_key();
     let mut input_state = InputState::new(prefix_key);
     let mut dirty = true;
@@ -256,26 +258,23 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                     }
 
                     parser.set_scrollback(input_state.scroll_offset);
-                    let session_name = session_name.to_string();
-                    let project_name = project_name.clone();
                     let screen = parser.screen();
                     let scroll = ScrollState {
                         offset: input_state.scroll_offset,
                         max: max_scrollback,
                     };
-                    let cmd_mode = input_state.command_mode;
-                    let hover_close = input_state.hover_close;
+                    let params = DrawFrameParams {
+                        screen,
+                        session_name,
+                        project_name: &project_name,
+                        scroll: &scroll,
+                        command_mode: input_state.command_mode,
+                        hover_close: input_state.hover_close,
+                        header_color,
+                    };
                     terminal
                         .draw(|f| {
-                            terminal::draw_frame(
-                                f,
-                                screen,
-                                &session_name,
-                                &project_name,
-                                &scroll,
-                                cmd_mode,
-                                hover_close,
-                            );
+                            terminal::draw_frame(f, &params);
                         })
                         .context("Failed to draw terminal frame")?;
                     parser.set_scrollback(0);

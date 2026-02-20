@@ -21,6 +21,7 @@ pub struct BoxConfig {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub local: bool,
+    pub color: Option<String>,
 }
 
 pub struct BoxConfigInput {
@@ -31,6 +32,7 @@ pub struct BoxConfigInput {
     pub command: Option<Vec<String>>,
     pub env: Vec<String>,
     pub local: bool,
+    pub color: Option<String>,
 }
 
 fn resolve_command(command: Option<Vec<String>>) -> Result<Vec<String>> {
@@ -56,6 +58,7 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
             command,
             env: vec![],
             local: true,
+            color: input.color,
         });
     }
 
@@ -74,6 +77,7 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
         command,
         env: input.env,
         local: false,
+        color: input.color,
     })
 }
 
@@ -196,6 +200,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
 
@@ -209,6 +214,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
+                color: None,
             }
         );
 
@@ -232,6 +238,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
 
@@ -250,6 +257,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
 
@@ -270,6 +278,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
         assert_eq!(config.image, "ubuntu:latest");
@@ -293,6 +302,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
         assert_eq!(config.image, "python:3.11");
@@ -353,6 +363,7 @@ mod tests {
             command: Some(vec!["python".to_string(), "main.py".to_string()]),
             env: vec!["FOO=bar".to_string()],
             local: false,
+            color: None,
         })
         .unwrap();
 
@@ -366,6 +377,7 @@ mod tests {
                 command: vec!["python".to_string(), "main.py".to_string()],
                 env: vec!["FOO=bar".to_string()],
                 local: false,
+                color: None,
             }
         );
     }
@@ -383,6 +395,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
         assert_eq!(config.command, vec!["bash".to_string()]);
@@ -405,6 +418,7 @@ mod tests {
             command: Some(vec!["sh".to_string()]),
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
         assert_eq!(config.command, vec!["sh".to_string()]);
@@ -427,6 +441,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
         assert_eq!(
@@ -456,6 +471,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
@@ -478,6 +494,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("BOX_DEFAULT_CMD"));
@@ -500,6 +517,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
@@ -521,6 +539,7 @@ mod tests {
             command: None,
             env: vec![],
             local: true,
+            color: None,
         })
         .unwrap();
         assert_eq!(config.command, vec!["bash".to_string()]);
@@ -544,6 +563,7 @@ mod tests {
             command: Some(vec![]),
             env: vec![],
             local: false,
+            color: None,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());

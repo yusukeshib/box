@@ -88,6 +88,10 @@ struct CreateArgs {
     #[arg(long)]
     docker: bool,
 
+    /// Header background color (e.g. red, #ff0000, 123)
+    #[arg(long)]
+    color: Option<String>,
+
     /// Command to run in container (default: $BOX_DEFAULT_CMD if set)
     #[arg(last = true)]
     cmd: Vec<String>,
@@ -201,6 +205,7 @@ fn main() {
                 cmd,
                 args.detach,
                 local,
+                args.color,
             )
         }
         Some(Commands::Resume(args)) => {
@@ -247,19 +252,52 @@ fn main() {
             } else {
                 has_local || is_local_mode()
             };
+            let color = args[1..]
+                .iter()
+                .find_map(|a| {
+                    a.to_string_lossy()
+                        .strip_prefix("--color=")
+                        .map(|v| v.to_string())
+                })
+                .or_else(|| {
+                    let mut it = args[1..].iter();
+                    while let Some(a) = it.next() {
+                        if a == "--color" {
+                            return it.next().map(|v| v.to_string_lossy().to_string());
+                        }
+                    }
+                    None
+                });
             let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
             if session::session_exists(&name).unwrap_or(false) {
                 cmd_resume(&name, &docker_args, false)
             } else {
-                let cmd: Vec<String> = args[1..]
+                // Filter known flags and their values, then extract command after "--"
+                let mut filtered = Vec::new();
+                let mut skip_next = false;
+                for a in &args[1..] {
+                    if skip_next {
+                        skip_next = false;
+                        continue;
+                    }
+                    let s = a.to_string_lossy();
+                    if s == "--local" || s == "--docker" || s.starts_with("--color=") {
+                        continue;
+                    }
+                    if s == "--color" {
+                        skip_next = true;
+                        continue;
+                    }
+                    filtered.push(a);
+                }
+                let cmd: Vec<String> = filtered
                     .iter()
-                    .filter(|a| *a != "--local" && *a != "--docker")
-                    .skip_while(|a| *a != "--")
+                    .skip_while(|a| **a != "--")
                     .skip(1)
                     .map(|a| a.to_string_lossy().to_string())
                     .collect();
                 let cmd = if cmd.is_empty() { None } else { Some(cmd) };
-                cmd_create(&name, None, &docker_args, cmd, false, local)
+                cmd_create(&name, None, &docker_args, cmd, false, local, color)
             }
         }
         None => cmd_list(),
@@ -400,7 +438,7 @@ fn cmd_list() -> Result<i32> {
             image,
             command,
             local,
-        } => cmd_create(&name, image, &docker_args, command, false, local),
+        } => cmd_create(&name, image, &docker_args, command, false, local, None),
         tui::TuiAction::Cd(name) => cmd_cd(&name),
         tui::TuiAction::Origin(name) => {
             let sess = session::load(&name)?;
@@ -517,6 +555,7 @@ fn cmd_create(
     cmd: Option<Vec<String>>,
     detach: bool,
     local: bool,
+    color: Option<String>,
 ) -> Result<i32> {
     session::validate_name(name)?;
 
@@ -544,6 +583,7 @@ fn cmd_create(
         command: cmd,
         env: vec![],
         local,
+        color,
     })?;
 
     if local {
@@ -855,6 +895,7 @@ _box() {{
                         '--docker-args=[Extra Docker flags]:args' \
                         '--local[Create a local session (default)]' \
                         '--docker[Create a Docker session]' \
+                        '--color=[Header background color]:color' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -940,7 +981,7 @@ fn cmd_config_bash() -> Result<i32> {
         create)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker" -- "$cur"))
+                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker --color" -- "$cur"))
                     ;;
             esac
             ;;
