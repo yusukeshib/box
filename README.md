@@ -6,19 +6,36 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-Safe, disposable dev environments for AI coding agents — powered by git. Docker optional for full container isolation.
+Isolated git workspaces with a built-in terminal multiplexer. Clone, branch, break things — your repo stays untouched.
 
 ![demo](./demo.gif)
 
 ## Why box?
 
-AI coding agents (Claude Code, Cursor, Copilot) are powerful — but letting them loose on your actual working tree is risky. Box gives them a **safe, isolated sandbox** where they can go wild without consequences.
+Box gives you **isolated** git workspaces with **persistent** terminal sessions — two core ideas:
 
-- **Your code stays safe** — an independent clone is used, host files are never modified
-- **AI agents can experiment freely** — commit, branch, rewrite, break things — your working tree is untouched
-- **Persistent sessions** — exit and resume where you left off, files are preserved
-- **Named sessions** — run multiple experiments in parallel
-- **Docker mode** — use `BOX_MODE=docker` for full container isolation with any Docker image
+**1. `git clone --local` for instant isolation**
+
+Each session gets its own independent git repo — a full clone with all history and branches, created via hardlinks so it's fast even for large repos. Nothing you do in a box session can affect your original repository.
+
+**2. Built-in terminal multiplexer for persistent sessions**
+
+Every session runs inside a terminal multiplexer with scrollback, mouse support, and a persistent connection. Detach and reattach freely — your process keeps running in the background.
+
+```
+ COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
+$ make test
+...
+```
+
+## Features
+
+- **Isolated git workspaces** — `git clone --local` creates an independent repo per session; host files are never modified
+- **Persistent sessions** — detach with `Ctrl+P` → `Ctrl+Q`, reattach with `box resume`; processes keep running
+- **Terminal multiplexer** — scrollback history, mouse scroll, scrollbar, COMMAND mode for navigation
+- **Named sessions** — run multiple experiments in parallel, each with its own workspace
+- **Session manager TUI** — interactive dashboard to create, resume, and manage sessions
+- **Docker mode** — optional full container isolation with any Docker image (`BOX_MODE=docker`)
 
 ## Requirements
 
@@ -59,51 +76,82 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 
 ```bash
 box my-feature
-# Shortcut for `box create my-feature` — creates a new isolated session
+# Creates an isolated git workspace and opens a shell inside it
 ```
 
-Box must be run inside a git repository — it clones the current repo into the workspace.
-
-For a zero-flags workflow, see [Custom Image Setup](#custom-image-setup) below.
-
-## Docker Mode Setup
-
-To use Docker-based container isolation, set `BOX_MODE=docker` and optionally configure a custom image.
-
-**1. Enable Docker mode**
-
-Add to your `.zshrc` or `.bashrc`:
+Box must be run inside a git repository. It clones the current repo into `~/.box/workspaces/<name>/`.
 
 ```bash
-export BOX_MODE=docker
+# Work in the isolated workspace...
+$ git checkout -b experiment
+$ make test  # break things freely
+
+# Detach (Ctrl+P enters COMMAND mode, then Ctrl+Q)
+# Your process keeps running in the background
+
+# Reattach later
+box resume my-feature
+
+# Done? Clean up
+box remove my-feature
 ```
 
-**2. (Optional) Create a Dockerfile with your toolchain**
+## Terminal Multiplexer
 
-Include whatever tools your workflow needs (languages, runtimes, CLI tools, etc.).
+Every box session runs inside a built-in terminal multiplexer. This gives you session persistence, scrollback, and keyboard-driven navigation.
 
-**3. (Optional) Build and configure the image**
+### COMMAND mode
 
-```bash
-docker build -t mydev .
+Press `Ctrl+P` (configurable) to enter COMMAND mode. The header bar turns dark gray and shows available keys:
+
+```
+ COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
 ```
 
-Add to your `.zshrc` or `.bashrc`:
+| Key | Action |
+|-----|--------|
+| `Ctrl+P` | Scroll up 1 line |
+| `Ctrl+N` | Scroll down 1 line |
+| `Ctrl+U` | Scroll up half page |
+| `Ctrl+D` | Scroll down half page |
+| `Arrow keys` | Scroll up/down |
+| `PgUp` / `PgDn` | Scroll by half page |
+| `Ctrl+Q` | Detach from session (process keeps running) |
+| `Ctrl+X` | Stop/kill the session |
+| `Esc` | Exit COMMAND mode (snap to bottom) |
 
-```bash
-export BOX_DEFAULT_IMAGE=mydev              # your custom image
-export BOX_DOCKER_ARGS="--network host"     # any extra Docker flags you always want
-export BOX_DEFAULT_CMD="bash"               # default command for new sessions
+Mouse scroll works in both normal and COMMAND mode. A scrollbar appears when there is scrollback content.
+
+### Configuring the prefix key
+
+The key that enters COMMAND mode can be changed via `~/.config/box/config.toml`:
+
+```toml
+[mux]
+prefix_key = "Ctrl+B"   # default: "Ctrl+P"
 ```
 
-**4. Done — just use box**
+Supports `Ctrl+A` through `Ctrl+Z`.
 
-```bash
-box create feature-1
-box create bugfix-auth
-box create experiment-v2
-# Each gets an isolated sandbox with your full toolchain.
+## Session Manager
+
+Running `box` with no arguments opens an interactive TUI:
+
 ```
+ NAME            PROJECT      MODE    STATUS   CMD      IMAGE            CREATED
+  New box...
+> my-feature     /U/y/p/app   local   running  bash                      2026-02-07 12:00:00 UTC
+  experiment     /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
+  docker-test    /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
+
+ [Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit
+```
+
+- **Enter** — resume a session, or create a new one on "New box..."
+- **c** — cd to the session's workspace directory
+- **o** — cd to the session's origin project directory
+- **d** — delete the highlighted session (with confirmation)
+- **q** / **Esc** — quit
 
 ## Usage
 
@@ -123,114 +171,68 @@ box config zsh|bash                               Output shell completions
 box upgrade                                       Upgrade to latest version
 ```
 
-### Session manager
-
-Running `box` with no arguments opens an interactive TUI:
-
-```
- NAME            PROJECT      MODE    STATUS   CMD      IMAGE            CREATED
-  New box...
-> my-feature     /U/y/p/app   docker  running  claude   alpine:latest    2026-02-07 12:00:00 UTC
-  local-exp      /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
-  test           /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
-
- [Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit
-```
-
-- **Enter** on a session to resume it, or on "New box..." to create a new one
-- **c** to cd to the session's workspace directory
-- **o** to cd to the session's origin project directory
-- **d** to delete the highlighted session (with confirmation)
-- **q** / **Esc** to quit
-
 ### Create a session
 
 ```bash
 # Shortcut: just pass a name
 box my-feature
 
-# Equivalent explicit form
-box create my-feature
-
-# Create a Docker session
-box create my-feature --docker --image ubuntu:latest -- bash
-
-# Extra Docker flags (env vars, volumes, network, etc.)
-box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container --network host"
+# With a specific command
+box create my-feature -- make test
 
 # Create in detached mode (background)
-box create my-feature -d -- claude -p "do something"
+box create my-feature -d -- long-running-task
 ```
 
 ### Resume a session
 
 ```bash
-# Resume an existing session
 box resume my-feature
 
 # Resume in detached mode
 box resume my-feature -d
-
-# Detach without stopping: Ctrl+P, Ctrl+Q
 ```
 
-### Run a command in a session
+### List and manage sessions
 
 ```bash
-# Run a command in a running session
-box exec my-feature -- ls -la
-
-# Open a shell in a running session
-box exec my-feature -- bash
+box list                        # List all sessions
+box ls                          # Alias
+box list --running              # Only running sessions
+box list -q --running           # Names only (for scripting)
+box stop my-feature             # Stop a session
+box remove my-feature           # Remove session, workspace, and data
+box stop $(box list -q --running)  # Stop all running sessions
 ```
 
-### List sessions
+### Navigate between workspaces
 
 ```bash
-# List all sessions
-box list
-
-# Alias
-box ls
-
-# Show only running sessions
-box list --running
-
-# Show only stopped sessions
-box list --stopped
-
-# Quiet mode — names only (useful for scripting)
-box list -q --running
-
-# Example: stop all running sessions
-box stop $(box list -q --running)
+box cd my-feature               # Print the host project directory
+cd "$(box path my-feature)"    # cd to the workspace
+box origin                      # From workspace, cd back to origin
 ```
 
-### Cd to project directory
+## Docker Mode
+
+For full container isolation, set `BOX_MODE=docker`. Each session runs inside a Docker container with the workspace bind-mounted.
 
 ```bash
-# Print the host project directory for a session
-box cd my-feature
-
-# With shell completions enabled, cd to the project directory
-cd "$(box cd my-feature)"
+export BOX_MODE=docker
 ```
 
-### Navigate to origin project
+Optionally configure a custom image and defaults:
 
 ```bash
-# From inside a workspace, cd back to the origin project directory
-box origin
+export BOX_DEFAULT_IMAGE=mydev              # your custom image
+export BOX_DOCKER_ARGS="--network host"     # extra Docker flags
+export BOX_DEFAULT_CMD="bash"               # default command
 ```
 
-### Stop and remove
-
 ```bash
-# Stop a running session
-box stop my-feature
-
-# Remove a stopped session (container, workspace, and session data)
-box remove my-feature
+# Docker sessions with explicit options
+box create my-feature --docker --image ubuntu:latest -- bash
+box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 ```
 
 ## Options
@@ -263,8 +265,6 @@ box remove my-feature
 
 ## Environment Variables
 
-These let you configure defaults so you can skip CLI flags entirely. Set them in your `.zshrc` or `.bashrc` and every `box <name>` invocation uses them automatically.
-
 | Variable | Description |
 |----------|-------------|
 | `BOX_DEFAULT_IMAGE` | Default Docker image for new sessions (default: `alpine:latest`) |
@@ -272,18 +272,7 @@ These let you configure defaults so you can skip CLI flags entirely. Set them in
 | `BOX_DEFAULT_CMD` | Default command for new sessions, used when no `-- cmd` is provided |
 | `BOX_MODE` | Session mode: `local` (default) or `docker` |
 
-```bash
-# Set default Docker flags for all sessions
-export BOX_DOCKER_ARGS="--network host -v /data:/data:ro"
-box create my-session
-
-# Override with --docker-args for a specific session
-box create my-session --docker-args "-e DEBUG=1"
-```
-
 ## Shell Completions
-
-Add one of these to your shell config to enable tab completion for session names and subcommands:
 
 ```bash
 # Zsh (~/.zshrc)
@@ -293,85 +282,84 @@ eval "$(box config zsh)"
 eval "$(box config bash)"
 ```
 
-After reloading your shell, `box [tab]` will show available sessions and subcommands.
-
 ## How It Works
 
-On first run, `git clone --local` creates an independent copy of your repo in the workspace directory. The container gets a fully self-contained git repo — no special mounts or entrypoint scripts needed. Your host working directory is never modified.
+```
+your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
+  .git/        ──── git clone --local ────>         .git/  (independent)
+  src/                                              src/   (hardlinked)
+  ...                                               ...
+```
 
-- **Independent clone** — Each session gets its own complete git repo via `git clone --local`
-- **Persistent workspace** — Files survive `exit` and `box resume <name>` picks up where you left off; cleaned up with `box remove`
-- **Any image, any user** — Works with root and non-root container images
+`git clone --local` creates a fully independent git repo using hardlinks for file objects. The clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace cannot affect your original repository.
 
-| Aspect | Protection |
-|--------|------------|
-| Host working tree | Never modified — workspace is an independent clone |
-| Workspace | Bind-mounted from `~/.box/workspaces/<name>/`, persists across stop/start |
-| Session cleanup | `box remove` deletes container, workspace, and session data |
+The built-in terminal multiplexer wraps each session with:
+- **Session persistence** — the process runs in a background server; detach and reattach without interruption
+- **Scrollback** — 10,000 lines of history with keyboard and mouse navigation
+- **Header bar** — shows session name, scroll position, and COMMAND mode status
+
+| Aspect | Detail |
+|--------|--------|
+| Workspace location | `~/.box/workspaces/<name>/` |
+| Session metadata | `~/.box/sessions/<name>/` |
+| Git isolation | Full — independent `.git`, no shared refs |
+| Session persistence | Multiplexer server keeps process alive across detach/reattach |
+| Cleanup | `box remove` deletes workspace, session data, and container (if Docker) |
 
 ## Design Decisions
 
 <details>
 <summary><strong>Why <code>git clone --local</code>?</strong></summary>
 
-Several git isolation strategies exist — here's why the alternatives fall short:
-
 | Strategy | Problem |
 |----------|---------|
 | **Bind-mount the host repo** | No isolation at all; the agent modifies your actual files |
 | **git worktree** | Shares the `.git` directory with the host; checkout, reset, and rebase can affect host branches and refs |
 | **Bare-git mount** | Still shares state; branch creates/deletes in the container affect the host |
-| **Branch-only isolation** | Nothing stops the agent from checking out other branches or running destructive git commands on shared refs |
+| **Branch-only isolation** | Nothing stops destructive git commands on shared refs |
 | **Full copy (`cp -r`)** | Truly isolated but slow for large repos |
 
-`git clone --local` wins because it's:
+`git clone --local` is fully independent (own `.git`), fast (hardlinks), complete (full history), and simple (no wrapper scripts).
 
-- **Fully independent** — the clone has its own `.git`; nothing in the container can touch the host repo
-- **Fast** — hardlinks file objects on the same filesystem instead of copying
-- **Complete** — full history, all branches, standard git repo
-- **Simple** — no wrapper scripts or special entrypoints needed
+</details>
+
+<details>
+<summary><strong>Why a built-in multiplexer?</strong></summary>
+
+Box needs session persistence — the ability to detach from a running process and reattach later. Rather than requiring tmux or screen as external dependencies, box includes a purpose-built terminal multiplexer that:
+
+- Requires zero configuration — works out of the box
+- Provides a consistent UI across all sessions (header bar, scrollback, COMMAND mode)
+- Handles the client-server architecture for session persistence transparently
+- Supports mouse scroll and a visual scrollbar for navigating output history
 
 </details>
 
 <details>
 <summary><strong>Why plain Docker?</strong></summary>
 
-Some tools (e.g. Claude Code's `--sandbox`) provide built-in Docker sandboxing. Box takes a different approach — using plain Docker directly — which unlocks:
+Some tools provide built-in Docker sandboxing. Box uses plain Docker directly, which gives you:
 
-- **Your own toolchain** — use any Docker image with the exact languages, runtimes, and tools you need
-- **Persistent sessions** — exit and resume where you left off; files and state are preserved
-- **Full Docker control** — custom network, volumes, env vars, and any other `docker run` flags
-- **Works with any agent** — not tied to a specific tool; use Claude Code, Cursor, Copilot, or manual workflows
-
-Plain Docker gives full control while box handles the isolation and lifecycle.
+- **Your own toolchain** — any Docker image with the exact tools you need
+- **Full Docker control** — custom network, volumes, env vars, and any `docker run` flags
+- **Works with any workflow** — not tied to a specific tool or agent
 
 </details>
 
-## Security Note
-
-The `--docker-args` flag and `BOX_DOCKER_ARGS` environment variable pass arguments directly to `docker run`. This means flags like `--privileged`, `--pid=host`, or `-v /:/host` can weaken or bypass container sandboxing. Only use trusted values and be careful when sourcing `BOX_DOCKER_ARGS` from shared or automated environments.
-
 ## Claude Code Integration
 
-Box is the ideal companion for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Run Claude Code inside a box session and let it make risky changes, experiment with branches, and run tests — all in an isolated git workspace.
+Box works well with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for running AI agents in isolated workspaces:
 
 ```bash
 box create ai-experiment -- claude
-```
-
-Run in the background with detach mode:
-
-```bash
 box create ai-experiment -d -- claude -p "refactor the auth module"
 ```
 
-For full container isolation with Docker:
+Everything the agent does stays in the workspace. Delete the session when you're done.
 
-```bash
-box create ai-experiment --docker --image node:20 -- claude
-```
+## Security Note
 
-Everything the agent does stays in the workspace. When you're done, delete the session and it's gone.
+The `--docker-args` flag and `BOX_DOCKER_ARGS` environment variable pass arguments directly to `docker run`. Flags like `--privileged` or `-v /:/host` can weaken container sandboxing. Only use trusted values.
 
 ## License
 

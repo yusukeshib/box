@@ -51,7 +51,7 @@ impl Drop for RawModeGuard {
             .open("/dev/tty")
         {
             // Disable mouse tracking, show cursor, leave alternate screen, reset attributes
-            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
         }
         unsafe {
@@ -241,6 +241,7 @@ pub fn draw_frame(
     session_name: &str,
     project_name: &str,
     scroll: &ScrollState,
+    command_mode: bool,
 ) {
     let scrolled_up = scroll.offset > 0;
     let scroll_offset = scroll.offset;
@@ -261,9 +262,15 @@ pub fn draw_frame(
         height: area.height.saturating_sub(1),
     };
 
-    let header_style = Style::default().bg(Color::White).fg(Color::Black);
+    let header_style = if command_mode {
+        Style::default().bg(Color::DarkGray).fg(Color::White)
+    } else {
+        Style::default().bg(Color::White).fg(Color::Black)
+    };
 
-    let left = if project_name.is_empty() {
+    let left = if command_mode {
+        " COMMAND ".to_string()
+    } else if project_name.is_empty() {
         format!(" {} ", session_name)
     } else {
         format!(" {} > {} ", project_name, session_name)
@@ -275,14 +282,21 @@ pub fn draw_frame(
     } else {
         String::new()
     };
+
+    let help_hint = if command_mode {
+        " ^P/^N scroll  ^Q detach  ^X stop  Esc exit "
+    } else {
+        ""
+    };
+
     // Close button: "x " = 2 chars
-    let right_len = scroll_text.len() + 2;
+    let right_len = scroll_text.len() + help_hint.len() + 2;
 
     let pad = (area.width as usize)
         .saturating_sub(left.len())
         .saturating_sub(right_len);
 
-    let header_text = format!("{}{}{}x ", left, " ".repeat(pad), scroll_text);
+    let header_text = format!("{}{}{}{}x ", left, " ".repeat(pad), help_hint, scroll_text);
     let header = Paragraph::new(header_text).style(header_style);
     f.render_widget(header, header_area);
 
@@ -329,10 +343,12 @@ pub fn draw_frame(
     }
 }
 
-/// Input processing state machine for the Ctrl+P prefix and scroll.
+/// Input processing state machine for COMMAND mode and scroll.
 pub struct InputState {
-    pub prefix_active: bool,
+    pub command_mode: bool,
     pub scroll_offset: usize,
+    /// The control byte that enters COMMAND mode (default 0x10 = Ctrl+P).
+    prefix_key: u8,
     /// True while the user is click-dragging the scrollbar thumb.
     dragging_scrollbar: bool,
     /// Bytes from an incomplete escape sequence carried over from the
@@ -401,10 +417,11 @@ fn parse_sgr_mouse(data: &[u8], i: usize) -> Option<(SgrMouseEvent, usize)> {
 }
 
 impl InputState {
-    pub fn new() -> Self {
+    pub fn new(prefix_key: u8) -> Self {
         Self {
-            prefix_active: false,
+            command_mode: false,
             scroll_offset: 0,
+            prefix_key,
             dragging_scrollbar: false,
             pending: Vec::new(),
         }
@@ -483,7 +500,7 @@ impl InputState {
                 }
             }
 
-            // Always intercept SGR mouse events for scrollback / scrollbar
+            // Gate 1: Always intercept SGR mouse events for scrollback / scrollbar
             if let Some((mouse, consumed)) = parse_sgr_mouse(data, i) {
                 match mouse.button {
                     // Left click on header close button (SGR coords are 1-indexed)
@@ -539,38 +556,58 @@ impl InputState {
                 continue;
             }
 
-            // Handle Ctrl+P prefix commands before scroll interception so
-            // Ctrl+P,Q (detach) and Ctrl+P,X (stop) work while scrolled.
-            if self.prefix_active {
-                self.prefix_active = false;
-                match b {
-                    b'q' | b'Q' | 0x11 => {
-                        // q, Q, or Ctrl+Q
-                        actions.push(InputAction::Detach);
-                        return actions;
-                    }
-                    b'x' | b'X' | 0x18 => {
-                        // x, X, or Ctrl+X
-                        actions.push(InputAction::Kill);
-                        i += 1;
-                        continue;
-                    }
-                    0x10 => {
-                        // Ctrl+P Ctrl+P -> send literal Ctrl+P
-                        actions.push(InputAction::Forward(vec![0x10]));
-                    }
-                    _ => {
-                        // Not a recognized prefix command — send Ctrl+P + the byte
-                        actions.push(InputAction::Forward(vec![0x10, b]));
-                    }
+            // Gate 2: COMMAND mode — intercept keys directly
+            if self.command_mode {
+                // Bare ESC (not part of a CSI sequence) exits COMMAND mode
+                if b == 0x1b && (i + 1 >= data.len() || data[i + 1] != b'[') {
+                    self.command_mode = false;
+                    self.scroll_offset = 0;
+                    actions.push(InputAction::Redraw);
+                    i += 1;
+                    continue;
                 }
-                i += 1;
-                continue;
-            }
-
-            // When scrolled up, intercept keyboard for scroll navigation.
-            // (Placed after prefix_active so Ctrl+P chords still work.)
-            if self.scroll_offset > 0 {
+                // Ctrl+Q — detach
+                if b == 0x11 {
+                    actions.push(InputAction::Detach);
+                    return actions;
+                }
+                // Ctrl+X — kill
+                if b == 0x18 {
+                    actions.push(InputAction::Kill);
+                    i += 1;
+                    continue;
+                }
+                // Ctrl+P — scroll up 1 line
+                if b == 0x10 {
+                    self.scroll_offset = (self.scroll_offset + 1).min(max_scrollback);
+                    actions.push(InputAction::Redraw);
+                    i += 1;
+                    continue;
+                }
+                // Ctrl+N — scroll down 1 line
+                if b == 0x0E {
+                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                    actions.push(InputAction::Redraw);
+                    i += 1;
+                    continue;
+                }
+                // Ctrl+U — half page up
+                if b == 0x15 {
+                    let half = (current_inner_rows / 2) as usize;
+                    self.scroll_offset = (self.scroll_offset + half).min(max_scrollback);
+                    actions.push(InputAction::Redraw);
+                    i += 1;
+                    continue;
+                }
+                // Ctrl+D — half page down
+                if b == 0x04 {
+                    let half = (current_inner_rows / 2) as usize;
+                    self.scroll_offset = self.scroll_offset.saturating_sub(half);
+                    actions.push(InputAction::Redraw);
+                    i += 1;
+                    continue;
+                }
+                // Arrow keys, PgUp/PgDn
                 if b == 0x1b && i + 2 < data.len() && data[i + 1] == b'[' {
                     match data[i + 2] {
                         b'A' => {
@@ -606,34 +643,22 @@ impl InputState {
                         _ => {}
                     }
                 }
-                // q or bare Esc snaps back to bottom
-                if b == b'q' || (b == 0x1b && (i + 1 >= data.len() || data[i + 1] != b'[')) {
-                    self.scroll_offset = 0;
-                    actions.push(InputAction::Redraw);
-                    i += 1;
-                    continue;
-                }
-                // Ctrl+P starts a prefix chord (handled next iteration)
-                if b == 0x10 {
-                    self.prefix_active = true;
-                    i += 1;
-                    continue;
-                }
-                // Consume all other input while scrolled up
+                // Consume all other keys in COMMAND mode (don't forward to PTY)
                 i += 1;
                 continue;
             }
 
-            if b == 0x10 {
-                self.prefix_active = true;
+            // Gate 3: prefix key enters COMMAND mode
+            if b == self.prefix_key {
+                self.command_mode = true;
+                actions.push(InputAction::Redraw);
                 i += 1;
                 continue;
             }
 
-            // Normal input — find the next Ctrl+P or ESC (potential mouse
-            // sequence) and forward everything before it in one write.
+            // Gate 4: Normal input — batch forward until prefix_key or ESC
             let start = i;
-            while i < data.len() && data[i] != 0x10 && data[i] != 0x1b {
+            while i < data.len() && data[i] != self.prefix_key && data[i] != 0x1b {
                 i += 1;
             }
             if i > start {
@@ -665,11 +690,12 @@ impl InputState {
 /// Toggled dynamically based on whether scrollback content exists:
 /// off when scrollback is empty (native text selection works),
 /// on when there's content to scroll through.
+/// Mode 1000 = basic press/release, 1002 = button-event (drag), 1006 = SGR encoding.
 pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
     let seq: &[u8] = if enable {
-        b"\x1b[?1000h\x1b[?1006h"
+        b"\x1b[?1000h\x1b[?1002h\x1b[?1006h"
     } else {
-        b"\x1b[?1006l\x1b[?1000l"
+        b"\x1b[?1006l\x1b[?1002l\x1b[?1000l"
     };
     unsafe {
         libc::write(tty_fd, seq.as_ptr() as *const libc::c_void, seq.len());
@@ -685,7 +711,7 @@ pub fn install_panic_hook() {
             .write(true)
             .open("/dev/tty")
         {
-            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
             use std::os::unix::io::FromRawFd;
             let _ = std::process::Command::new("stty")

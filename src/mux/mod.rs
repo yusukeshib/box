@@ -40,6 +40,7 @@ pub struct MuxConfig {
     pub session_name: String,
     pub command: Vec<String>,
     pub working_dir: Option<String>,
+    pub prefix_key: u8,
 }
 
 /// Client-server mode for local sessions.
@@ -205,7 +206,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     });
 
     let project_name = project_name_for_session(&config.session_name);
-    let mut input_state = InputState::new();
+    let mut input_state = InputState::new(config.prefix_key);
     let mut dirty = true;
     let mut child_exited = false;
     let mut mouse_tracking_on = false;
@@ -326,8 +327,16 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         offset: input_state.scroll_offset,
                         max: max_scrollback,
                     };
+                    let cmd_mode = input_state.command_mode;
                     term.draw(|f| {
-                        terminal::draw_frame(f, screen, &session_name, &project_name, &scroll);
+                        terminal::draw_frame(
+                            f,
+                            screen,
+                            &session_name,
+                            &project_name,
+                            &scroll,
+                            cmd_mode,
+                        );
                     })
                     .context("Failed to draw terminal frame")?;
                     parser.set_scrollback(0);
