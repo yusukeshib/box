@@ -532,7 +532,7 @@ impl InputState {
                     && mouse.col <= term_cols;
                 // Motion events (button 35 = motion with no button pressed,
                 // button 32 = motion with left button held)
-                if mouse.button == 35 || mouse.button == 32 {
+                if mouse.button == 35 || (mouse.button == 32 && !self.dragging_scrollbar) {
                     let was_hover = self.hover_close;
                     self.hover_close = in_close_area;
                     if self.hover_close != was_hover {
