@@ -576,9 +576,13 @@ impl InputState {
                     i += 1;
                     continue;
                 }
-                // Consume all other input while scrolled up
-                i += 1;
-                continue;
+                // Let Ctrl+P fall through to the prefix handler so
+                // Ctrl+P,Q (detach) and Ctrl+P,X (stop) work while scrolled.
+                if b != 0x10 {
+                    // Consume all other input while scrolled up
+                    i += 1;
+                    continue;
+                }
             }
 
             if self.prefix_active {
