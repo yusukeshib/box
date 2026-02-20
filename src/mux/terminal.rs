@@ -290,8 +290,9 @@ pub fn draw_frame(
     };
     f.render_widget(widget, grid_area);
 
-    // Render scrollbar when there is scrollback content
-    if max_scrollback > 0 && grid_area.height > 0 {
+    // Render scrollbar only when actively scrolled up so it doesn't
+    // interfere with normal text selection.
+    if scrolled_up && max_scrollback > 0 && grid_area.height > 0 {
         let track_height = grid_area.height as usize;
         // Thumb size: at least 1 row, proportional to visible / total
         let total_lines = max_scrollback + track_height;
