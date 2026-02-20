@@ -173,7 +173,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
             },
             Ok(ClientEvent::InputBytes(data)) => {
                 let max_scrollback = scrollback_line_count(&mut parser);
-                let actions = input_state.process(&data, current_inner_rows, max_scrollback);
+                let actions = input_state.process(&data, current_inner_rows, last_cols, max_scrollback);
                 for action in actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -200,7 +200,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Flush any buffered incomplete escape sequence
                 let max_scrollback = scrollback_line_count(&mut parser);
-                let pending_actions = input_state.flush_pending(current_inner_rows, max_scrollback);
+                let pending_actions = input_state.flush_pending(current_inner_rows, last_cols, max_scrollback);
                 for action in pending_actions {
                     match action {
                         InputAction::Forward(bytes) => {

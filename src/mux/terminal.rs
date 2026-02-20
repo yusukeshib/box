@@ -331,6 +331,8 @@ pub fn draw_frame(
 pub struct InputState {
     pub prefix_active: bool,
     pub scroll_offset: usize,
+    /// True while the user is click-dragging the scrollbar thumb.
+    dragging_scrollbar: bool,
     /// Bytes from an incomplete escape sequence carried over from the
     /// previous read.  Combined with the next input in `process()`.
     pending: Vec<u8>,
@@ -347,10 +349,17 @@ pub enum InputAction {
     Redraw,
 }
 
+struct SgrMouseEvent {
+    button: u32,
+    col: u16,
+    row: u16,
+    pressed: bool,
+}
+
 /// Try to parse an SGR mouse sequence at data[i..].
 /// Format: \x1b[<Btn;Col;RowM (press) or \x1b[<Btn;Col;Rowm (release).
-/// Returns (button, bytes_consumed) on success, None if not a valid sequence.
-fn parse_sgr_mouse(data: &[u8], i: usize) -> Option<(u32, usize)> {
+/// Returns (event, bytes_consumed) on success, None if not a valid sequence.
+fn parse_sgr_mouse(data: &[u8], i: usize) -> Option<(SgrMouseEvent, usize)> {
     if i + 2 >= data.len() || data[i] != 0x1b || data[i + 1] != b'[' || data[i + 2] != b'<' {
         return None;
     }
@@ -370,7 +379,15 @@ fn parse_sgr_mouse(data: &[u8], i: usize) -> Option<(u32, usize)> {
             }
             b'M' | b'm' => {
                 if param_idx == 2 {
-                    return Some((params[0], j + 1 - i));
+                    return Some((
+                        SgrMouseEvent {
+                            button: params[0],
+                            col: params[1] as u16,
+                            row: params[2] as u16,
+                            pressed: data[j] == b'M',
+                        },
+                        j + 1 - i,
+                    ));
                 }
                 return None;
             }
@@ -386,6 +403,7 @@ impl InputState {
         Self {
             prefix_active: false,
             scroll_offset: 0,
+            dragging_scrollbar: false,
             pending: Vec::new(),
         }
     }
@@ -396,6 +414,7 @@ impl InputState {
     pub fn flush_pending(
         &mut self,
         current_inner_rows: u16,
+        term_cols: u16,
         max_scrollback: usize,
     ) -> Vec<InputAction> {
         if self.pending.is_empty() {
@@ -403,16 +422,18 @@ impl InputState {
         }
         let data = std::mem::take(&mut self.pending);
         // Process without buffering — treat whatever we have as final.
-        self.process_inner(&data, current_inner_rows, max_scrollback, false)
+        self.process_inner(&data, current_inner_rows, term_cols, max_scrollback, false)
     }
 
     /// Process raw input bytes, returning actions to perform.
     /// `current_inner_rows` is used for PgUp/PgDn scroll step.
+    /// `term_cols` is the terminal width (for scrollbar click detection).
     /// `max_scrollback` is from `parser.screen().scrollback()`.
     pub fn process(
         &mut self,
         new_data: &[u8],
         current_inner_rows: u16,
+        term_cols: u16,
         max_scrollback: usize,
     ) -> Vec<InputAction> {
         // Combine any pending bytes from a previous incomplete sequence.
@@ -425,13 +446,14 @@ impl InputState {
             combined = buf;
             &combined
         };
-        self.process_inner(data, current_inner_rows, max_scrollback, true)
+        self.process_inner(data, current_inner_rows, term_cols, max_scrollback, true)
     }
 
     fn process_inner(
         &mut self,
         data: &[u8],
         current_inner_rows: u16,
+        term_cols: u16,
         max_scrollback: usize,
         allow_buffer: bool,
     ) -> Vec<InputAction> {
@@ -459,18 +481,50 @@ impl InputState {
                 }
             }
 
-            // Always intercept SGR mouse scroll events for scrollback
-            if let Some((btn, consumed)) = parse_sgr_mouse(data, i) {
-                match btn {
+            // Always intercept SGR mouse events for scrollback / scrollbar
+            if let Some((mouse, consumed)) = parse_sgr_mouse(data, i) {
+                match mouse.button {
                     64 => {
-                        // Scroll up
+                        // Scroll wheel up
                         self.scroll_offset = (self.scroll_offset + 3).min(max_scrollback);
                         actions.push(InputAction::Redraw);
                     }
                     65 => {
-                        // Scroll down
+                        // Scroll wheel down
                         self.scroll_offset = self.scroll_offset.saturating_sub(3);
                         actions.push(InputAction::Redraw);
+                    }
+                    // Left click on scrollbar column (SGR coords are 1-indexed)
+                    0 if mouse.pressed
+                        && max_scrollback > 0
+                        && mouse.col == term_cols
+                        && mouse.row >= 2 =>
+                    {
+                        let grid_row = (mouse.row - 2) as usize;
+                        let track_height = current_inner_rows as usize;
+                        if grid_row < track_height && track_height > 1 {
+                            self.scroll_offset = max_scrollback
+                                * (track_height - 1 - grid_row)
+                                / (track_height - 1);
+                            self.dragging_scrollbar = true;
+                            actions.push(InputAction::Redraw);
+                        }
+                    }
+                    // Left button drag while scrollbar is held
+                    32 if mouse.pressed && self.dragging_scrollbar && max_scrollback > 0 => {
+                        let track_height = current_inner_rows as usize;
+                        if track_height > 1 {
+                            let grid_row =
+                                (mouse.row.saturating_sub(2) as usize).min(track_height - 1);
+                            self.scroll_offset = max_scrollback
+                                * (track_height - 1 - grid_row)
+                                / (track_height - 1);
+                            actions.push(InputAction::Redraw);
+                        }
+                    }
+                    // Left button release — stop drag
+                    0 if !mouse.pressed => {
+                        self.dragging_scrollbar = false;
                     }
                     _ => {} // consume other mouse events
                 }
