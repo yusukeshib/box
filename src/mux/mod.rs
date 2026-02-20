@@ -294,6 +294,10 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             // The child will send a fresh redraw via SIGWINCH.
                             parser.process(b"\x1b[H\x1b[2J");
                             term = terminal::create_terminal(tty_fd, cols, rows)?;
+                            // Clear stale content left by the terminal emulator's
+                            // resize reflow.  Without this, ratatui's diff skips
+                            // "empty" cells that still show old content on screen.
+                            term.clear()?;
                         }
                         input_state.scroll_offset = 0;
                         dirty = true;

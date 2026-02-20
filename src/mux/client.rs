@@ -232,6 +232,10 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                                 },
                             );
                             terminal = terminal::create_terminal(tty_fd, cols, rows)?;
+                            // Clear stale content left by the terminal emulator's
+                            // resize reflow.  Without this, ratatui's diff skips
+                            // "empty" cells that still show old content on screen.
+                            terminal.clear()?;
                         }
                         input_state.scroll_offset = 0;
                         dirty = true;
