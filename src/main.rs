@@ -180,7 +180,11 @@ fn main() {
                 );
                 std::process::exit(1);
             }
-            let local = if args.docker { false } else { args.local || is_local_mode() };
+            let local = if args.docker {
+                false
+            } else {
+                args.local || is_local_mode()
+            };
             let docker_args = args
                 .docker_args
                 .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
@@ -238,7 +242,11 @@ fn main() {
             let name = args[0].to_string_lossy().to_string();
             let has_docker = args[1..].iter().any(|a| a == "--docker");
             let has_local = args[1..].iter().any(|a| a == "--local");
-            let local = if has_docker { false } else { has_local || is_local_mode() };
+            let local = if has_docker {
+                false
+            } else {
+                has_local || is_local_mode()
+            };
             let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
             if session::session_exists(&name).unwrap_or(false) {
                 cmd_resume(&name, &docker_args, false)

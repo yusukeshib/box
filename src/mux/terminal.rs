@@ -262,22 +262,27 @@ pub fn draw_frame(
     };
 
     let header_style = Style::default().bg(Color::White).fg(Color::Black);
+
     let left = if project_name.is_empty() {
         format!(" {} ", session_name)
     } else {
         format!(" {} > {} ", project_name, session_name)
     };
-    let right = if scrolled_up {
-        format!(" [{}/{}] q:exit scroll ", scroll_offset, max_scrollback)
+
+    // Right side: optional scroll indicator + close button
+    let scroll_text = if scrolled_up {
+        format!(" [{}/{}] ", scroll_offset, max_scrollback)
     } else {
-        " Ctrl+P,Q:detach  Ctrl+P,X:stop ".to_string()
+        String::new()
     };
+    // Close button: "x " = 2 chars
+    let right_len = scroll_text.len() + 2;
 
     let pad = (area.width as usize)
         .saturating_sub(left.len())
-        .saturating_sub(right.len());
+        .saturating_sub(right_len);
 
-    let header_text = format!("{}{}{}", left, " ".repeat(pad), right);
+    let header_text = format!("{}{}{}x ", left, " ".repeat(pad), scroll_text);
     let header = Paragraph::new(header_text).style(header_style);
     f.render_widget(header, header_area);
 
@@ -482,6 +487,13 @@ impl InputState {
             // Always intercept SGR mouse events for scrollback / scrollbar
             if let Some((mouse, consumed)) = parse_sgr_mouse(data, i) {
                 match mouse.button {
+                    // Left click on header close button (SGR coords are 1-indexed)
+                    // "x" at col tc-1
+                    0 if mouse.pressed && mouse.row == 1 && mouse.col == term_cols - 1 => {
+                        // Close (detach) button
+                        actions.push(InputAction::Detach);
+                        return actions;
+                    }
                     64 => {
                         // Scroll wheel up
                         self.scroll_offset = (self.scroll_offset + 3).min(max_scrollback);
