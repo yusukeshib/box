@@ -51,7 +51,7 @@ impl Drop for RawModeGuard {
             .open("/dev/tty")
         {
             // Disable mouse tracking, show cursor, leave alternate screen, reset attributes
-            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
         }
         unsafe {
@@ -690,11 +690,12 @@ impl InputState {
 /// Toggled dynamically based on whether scrollback content exists:
 /// off when scrollback is empty (native text selection works),
 /// on when there's content to scroll through.
+/// Mode 1000 = basic press/release, 1002 = button-event (drag), 1006 = SGR encoding.
 pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
     let seq: &[u8] = if enable {
-        b"\x1b[?1000h\x1b[?1006h"
+        b"\x1b[?1000h\x1b[?1002h\x1b[?1006h"
     } else {
-        b"\x1b[?1006l\x1b[?1000l"
+        b"\x1b[?1006l\x1b[?1002l\x1b[?1000l"
     };
     unsafe {
         libc::write(tty_fd, seq.as_ptr() as *const libc::c_void, seq.len());
@@ -710,7 +711,7 @@ pub fn install_panic_hook() {
             .write(true)
             .open("/dev/tty")
         {
-            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
             use std::os::unix::io::FromRawFd;
             let _ = std::process::Command::new("stty")
