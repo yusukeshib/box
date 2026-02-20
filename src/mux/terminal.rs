@@ -51,7 +51,7 @@ impl Drop for RawModeGuard {
             .open("/dev/tty")
         {
             // Disable mouse tracking, show cursor, leave alternate screen, reset attributes
-            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
         }
         unsafe {
@@ -242,6 +242,7 @@ pub fn draw_frame(
     project_name: &str,
     scroll: &ScrollState,
     command_mode: bool,
+    hover_close: bool,
 ) {
     let scrolled_up = scroll.offset > 0;
     let scroll_offset = scroll.offset;
@@ -289,16 +290,34 @@ pub fn draw_frame(
         ""
     };
 
-    // Close button: "x " = 2 chars
-    let right_len = scroll_text.len() + help_hint.len() + 2;
+    // Close button: " x " = 3 chars (wider click target)
+    let close_btn = " x ";
+    let right_len = scroll_text.len() + help_hint.len() + close_btn.len();
 
     let pad = (area.width as usize)
         .saturating_sub(left.len())
         .saturating_sub(right_len);
 
-    let header_text = format!("{}{}{}{}x ", left, " ".repeat(pad), help_hint, scroll_text);
+    let close_style = if hover_close {
+        Style::default().bg(Color::Red).fg(Color::White)
+    } else {
+        header_style
+    };
+
+    let header_text = format!("{}{}{}{}", left, " ".repeat(pad), help_hint, scroll_text);
     let header = Paragraph::new(header_text).style(header_style);
     f.render_widget(header, header_area);
+
+    // Render the close button with its own style (supports hover highlight)
+    let btn_start = area.width.saturating_sub(close_btn.len() as u16);
+    let btn_area = Rect {
+        x: area.x + btn_start,
+        y: area.y,
+        width: close_btn.len() as u16,
+        height: 1,
+    };
+    let close_widget = Paragraph::new(close_btn).style(close_style);
+    f.render_widget(close_widget, btn_area);
 
     let widget = TerminalWidget {
         screen,
@@ -349,6 +368,8 @@ pub struct InputState {
     pub scroll_offset: usize,
     /// The control byte that enters COMMAND mode (default 0x10 = Ctrl+P).
     prefix_key: u8,
+    /// True when the mouse is hovering over the header close button.
+    pub hover_close: bool,
     /// True while the user is click-dragging the scrollbar thumb.
     dragging_scrollbar: bool,
     /// Bytes from an incomplete escape sequence carried over from the
@@ -422,6 +443,7 @@ impl InputState {
             command_mode: false,
             scroll_offset: 0,
             prefix_key,
+            hover_close: false,
             dragging_scrollbar: false,
             pending: Vec::new(),
         }
@@ -502,10 +524,28 @@ impl InputState {
 
             // Gate 1: Always intercept SGR mouse events for scrollback / scrollbar
             if let Some((mouse, consumed)) = parse_sgr_mouse(data, i) {
+                // Update hover state for the close button area.
+                // Close button " x " occupies the last 4 columns of the header (row 1).
+                let in_close_area = mouse.row == 1
+                    && term_cols >= 4
+                    && mouse.col >= term_cols - 3
+                    && mouse.col <= term_cols;
+                // Motion events (button 35 = motion with no button pressed,
+                // button 32 = motion with left button held)
+                if mouse.button == 35 || mouse.button == 32 {
+                    let was_hover = self.hover_close;
+                    self.hover_close = in_close_area;
+                    if self.hover_close != was_hover {
+                        actions.push(InputAction::Redraw);
+                    }
+                    i += consumed;
+                    continue;
+                }
+
                 match mouse.button {
                     // Left click on header close button (SGR coords are 1-indexed)
-                    // "x" at col tc-1
-                    0 if mouse.pressed && mouse.row == 1 && mouse.col == term_cols - 1 => {
+                    // " x " spans last 4 columns of the header
+                    0 if mouse.pressed && in_close_area => {
                         // Close (detach) button
                         actions.push(InputAction::Detach);
                         return actions;
@@ -693,9 +733,11 @@ impl InputState {
 /// Mode 1000 = basic press/release, 1002 = button-event (drag), 1006 = SGR encoding.
 pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
     let seq: &[u8] = if enable {
-        b"\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+        // Mode 1003: any-event tracking (reports motion even without buttons held)
+        // Mode 1006: SGR extended mouse encoding
+        b"\x1b[?1003h\x1b[?1006h"
     } else {
-        b"\x1b[?1006l\x1b[?1002l\x1b[?1000l"
+        b"\x1b[?1006l\x1b[?1003l"
     };
     unsafe {
         libc::write(tty_fd, seq.as_ptr() as *const libc::c_void, seq.len());
@@ -711,7 +753,7 @@ pub fn install_panic_hook() {
             .write(true)
             .open("/dev/tty")
         {
-            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?25h\x1b[?1049l\x1b[0m");
+            let _ = tty.write_all(b"\x1b[?1006l\x1b[?1003l\x1b[?25h\x1b[?1049l\x1b[0m");
             let _ = tty.flush();
             use std::os::unix::io::FromRawFd;
             let _ = std::process::Command::new("stty")

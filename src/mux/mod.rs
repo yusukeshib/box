@@ -328,6 +328,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         max: max_scrollback,
                     };
                     let cmd_mode = input_state.command_mode;
+                    let hover_close = input_state.hover_close;
                     term.draw(|f| {
                         terminal::draw_frame(
                             f,
@@ -336,6 +337,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             &project_name,
                             &scroll,
                             cmd_mode,
+                            hover_close,
                         );
                     })
                     .context("Failed to draw terminal frame")?;
