@@ -16,6 +16,7 @@ pub struct Session {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub local: bool,
+    pub color: Option<String>,
 }
 
 impl From<config::BoxConfig> for Session {
@@ -28,6 +29,7 @@ impl From<config::BoxConfig> for Session {
             command: cfg.command,
             env: cfg.env,
             local: cfg.local,
+            color: cfg.color,
         }
     }
 }
@@ -112,6 +114,11 @@ pub fn save(session: &Session) -> Result<()> {
     } else {
         let _ = fs::remove_file(dir.join("env"));
     }
+    if let Some(ref color) = session.color {
+        fs::write(dir.join("color"), color)?;
+    } else {
+        let _ = fs::remove_file(dir.join("color"));
+    }
     Ok(())
 }
 
@@ -157,6 +164,11 @@ pub fn load(name: &str) -> Result<Session> {
         .map(|s| s.trim() == "local")
         .unwrap_or(false);
 
+    let color = fs::read_to_string(dir.join("color"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     Ok(Session {
         name: name.to_string(),
         project_dir,
@@ -165,6 +177,7 @@ pub fn load(name: &str) -> Result<Session> {
         command,
         env,
         local,
+        color,
     })
 }
 
@@ -380,6 +393,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
 
@@ -407,6 +421,7 @@ mod tests {
                 ],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
 
@@ -426,6 +441,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
 
@@ -490,6 +506,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
             assert!(session_exists("exists-test").unwrap());
@@ -516,6 +533,7 @@ mod tests {
                     command: vec![],
                     env: vec![],
                     local: false,
+                    color: None,
                 };
                 save(&sess).unwrap();
             }
@@ -540,6 +558,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
 
@@ -562,6 +581,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
             assert!(session_exists("to-remove").unwrap());
@@ -590,6 +610,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
 
@@ -628,6 +649,7 @@ mod tests {
                 command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
 
@@ -648,6 +670,7 @@ mod tests {
                 command: vec![],
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
 
@@ -671,6 +694,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
+                color: None,
             };
             save(&sess).unwrap();
 
