@@ -6,19 +6,36 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-AIコーディングエージェントのための安全で使い捨て可能な開発環境 — Gitで動作。Dockerはオプションで完全なコンテナ隔離に対応。
+隔離されたgitワークスペースとターミナルマルチプレクサ。クローンして、ブランチして、壊しても — 元のリポジトリは無傷。
 
 ![demo](./demo.gif)
 
 ## なぜ box？
 
-AIコーディングエージェント（Claude Code、Cursor、Copilot）は強力ですが、実際の作業ツリーで自由に動かすのはリスクがあります。Boxは**安全で隔離されたサンドボックス**を提供し、エージェントが影響を気にせず自由に実験できる環境を作ります。
+Boxは**隔離された**gitワークスペースと**永続的な**ターミナルセッションを提供します。2つの核となるアイデア：
 
-- **コードの安全性** — 独立したクローンを使用し、ホストのファイルは一切変更されません
-- **AIエージェントが自由に実験可能** — コミット、ブランチ作成、書き換え、破壊 — 作業ツリーには影響なし
-- **永続的なセッション** — 終了しても再開時にそのまま続行、ファイルは保持されます
-- **名前付きセッション** — 複数の実験を並行して実行可能
-- **Dockerモード** — `BOX_MODE=docker` で任意のDockerイメージを使った完全なコンテナ隔離に対応
+**1. `git clone --local` による即座の隔離**
+
+各セッションは独立したgitリポジトリを取得します — 全履歴と全ブランチを含む完全なクローンで、ハードリンクにより大きなリポジトリでも高速に作成されます。Boxセッション内で何をしても、元のリポジトリには影響しません。
+
+**2. 内蔵ターミナルマルチプレクサによるセッション永続化**
+
+すべてのセッションはスクロールバック、マウスサポート、永続的な接続を備えたターミナルマルチプレクサ内で実行されます。デタッチと再接続を自由に行えます — プロセスはバックグラウンドで実行され続けます。
+
+```
+ COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
+$ make test
+...
+```
+
+## 特徴
+
+- **隔離されたgitワークスペース** — `git clone --local` でセッションごとに独立したリポジトリを作成。ホストのファイルは変更されない
+- **永続的なセッション** — `Ctrl+P` → `Ctrl+Q` でデタッチ、`box resume` で再接続。プロセスは実行され続ける
+- **ターミナルマルチプレクサ** — スクロールバック履歴、マウススクロール、スクロールバー、ナビゲーション用COMMANDモード
+- **名前付きセッション** — 複数の実験を並行して、それぞれ独自のワークスペースで実行
+- **セッションマネージャーTUI** — セッションの作成、再開、管理のための対話型ダッシュボード
+- **Dockerモード** — 任意のDockerイメージによるオプションの完全コンテナ隔離（`BOX_MODE=docker`）
 
 ## 必要なもの
 
@@ -59,51 +76,82 @@ nix run github:yusukeshib/box
 
 ```bash
 box my-feature
-# `box create my-feature` のショートカット — 新しい隔離セッションを作成
+# 隔離されたgitワークスペースを作成し、その中でシェルを開く
 ```
 
-Boxはgitリポジトリ内で実行する必要があります — 現在のリポジトリをワークスペースにクローンします。
-
-フラグ不要のワークフローについては、下記の[カスタムイメージのセットアップ](#カスタムイメージのセットアップ)を参照してください。
-
-## Dockerモードのセットアップ
-
-Dockerベースのコンテナ隔離を使用するには、`BOX_MODE=docker` を設定し、オプションでカスタムイメージを構成します。
-
-**1. Dockerモードを有効化**
-
-`.zshrc` または `.bashrc` に以下を追加：
+Boxはgitリポジトリ内で実行する必要があります。現在のリポジトリを `~/.box/workspaces/<name>/` にクローンします。
 
 ```bash
-export BOX_MODE=docker
+# 隔離されたワークスペースで作業...
+$ git checkout -b experiment
+$ make test  # 自由に壊してOK
+
+# デタッチ（Ctrl+PでCOMMANDモードに入り、Ctrl+Q）
+# プロセスはバックグラウンドで実行され続ける
+
+# 後で再接続
+box resume my-feature
+
+# 完了？クリーンアップ
+box remove my-feature
 ```
 
-**2. （オプション）ツールチェーンを含むDockerfileを作成**
+## ターミナルマルチプレクサ
 
-ワークフローに必要なツール（言語、ランタイム、CLIツールなど）をすべて含めます。
+すべてのboxセッションは内蔵ターミナルマルチプレクサ内で実行されます。これによりセッションの永続化、スクロールバック、キーボードナビゲーションが可能になります。
 
-**3. （オプション）イメージをビルドして設定**
+### COMMANDモード
 
-```bash
-docker build -t mydev .
+`Ctrl+P`（設定変更可能）を押すとCOMMANDモードに入ります。ヘッダーバーがダークグレーに変わり、利用可能なキーが表示されます：
+
+```
+ COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
 ```
 
-`.zshrc` または `.bashrc` に以下を追加：
+| キー | 動作 |
+|-----|--------|
+| `Ctrl+P` | 1行上にスクロール |
+| `Ctrl+N` | 1行下にスクロール |
+| `Ctrl+U` | 半ページ上にスクロール |
+| `Ctrl+D` | 半ページ下にスクロール |
+| `矢印キー` | 上下スクロール |
+| `PgUp` / `PgDn` | 半ページスクロール |
+| `Ctrl+Q` | セッションからデタッチ（プロセスは実行され続ける） |
+| `Ctrl+X` | セッションを停止/キル |
+| `Esc` | COMMANDモードを終了（最下部にスナップ） |
 
-```bash
-export BOX_DEFAULT_IMAGE=mydev              # カスタムイメージ
-export BOX_DOCKER_ARGS="--network host"     # 常に使いたいDockerフラグ
-export BOX_DEFAULT_CMD="bash"               # 新規セッションのデフォルトコマンド
+マウススクロールは通常モードとCOMMANDモードの両方で動作します。スクロールバックコンテンツがある場合、スクロールバーが表示されます。
+
+### プレフィックスキーの設定
+
+COMMANDモードに入るキーは `~/.config/box/config.toml` で変更できます：
+
+```toml
+[mux]
+prefix_key = "Ctrl+B"   # デフォルト: "Ctrl+P"
 ```
 
-**4. 完了 — あとは box を使うだけ**
+`Ctrl+A` から `Ctrl+Z` まで対応しています。
 
-```bash
-box create feature-1
-box create bugfix-auth
-box create experiment-v2
-# それぞれが完全なツールチェーンを持つ隔離サンドボックスになります。
+## セッションマネージャー
+
+引数なしで `box` を実行すると、対話型TUIが開きます：
+
 ```
+ NAME            PROJECT      MODE    STATUS   CMD      IMAGE            CREATED
+  New box...
+> my-feature     /U/y/p/app   local   running  bash                      2026-02-07 12:00:00 UTC
+  experiment     /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
+  docker-test    /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
+
+ [Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit
+```
+
+- **Enter** — セッションを再開、または「New box...」で新規作成
+- **c** — セッションのワークスペースディレクトリにcd
+- **o** — セッションの元のプロジェクトディレクトリにcd
+- **d** — ハイライト中のセッションを削除（確認あり）
+- **q** / **Esc** — 終了
 
 ## 使い方
 
@@ -123,114 +171,68 @@ box config zsh|bash                               シェル補完を出力
 box upgrade                                       最新版にアップグレード
 ```
 
-### セッションマネージャー
-
-引数なしで `box` を実行すると、対話型TUIが開きます：
-
-```
- NAME            PROJECT      MODE    STATUS   CMD      IMAGE            CREATED
-  New box...
-> my-feature     /U/y/p/app   docker  running  claude   alpine:latest    2026-02-07 12:00:00 UTC
-  local-exp      /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
-  test           /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
-
- [Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit
-```
-
-- **Enter** でセッションを再開、または「New box...」で新規作成
-- **c** でセッションのワークスペースディレクトリにcd
-- **o** でセッションの元のプロジェクトディレクトリにcd
-- **d** でハイライト中のセッションを削除（確認あり）
-- **q** / **Esc** で終了
-
 ### セッションの作成
 
 ```bash
 # ショートカット: 名前を渡すだけ
 box my-feature
 
-# 明示的な形式
-box create my-feature
-
-# Dockerセッションを作成
-box create my-feature --docker --image ubuntu:latest -- bash
-
-# 追加のDockerフラグ（環境変数、ボリューム、ネットワークなど）
-box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container --network host"
+# コマンドを指定して作成
+box create my-feature -- make test
 
 # デタッチモードで作成（バックグラウンド）
-box create my-feature -d -- claude -p "do something"
+box create my-feature -d -- long-running-task
 ```
 
 ### セッションの再開
 
 ```bash
-# 既存のセッションを再開
 box resume my-feature
 
 # デタッチモードで再開
 box resume my-feature -d
-
-# 停止せずにデタッチ: Ctrl+P, Ctrl+Q
 ```
 
-### 実行中のセッションでコマンドを実行
+### セッションの一覧と管理
 
 ```bash
-# 実行中のセッションでコマンドを実行
-box exec my-feature -- ls -la
-
-# 実行中のセッションでシェルを開く
-box exec my-feature -- bash
+box list                        # 全セッションを一覧表示
+box ls                          # エイリアス
+box list --running              # 実行中のセッションのみ
+box list -q --running           # 名前のみ（スクリプト用途）
+box stop my-feature             # セッションを停止
+box remove my-feature           # セッション、ワークスペース、データを削除
+box stop $(box list -q --running)  # 実行中の全セッションを停止
 ```
 
-### セッション一覧の表示
+### ワークスペース間のナビゲーション
 
 ```bash
-# 全セッションを一覧表示
-box list
-
-# エイリアス
-box ls
-
-# 実行中のセッションのみ表示
-box list --running
-
-# 停止中のセッションのみ表示
-box list --stopped
-
-# クワイエットモード — 名前のみ出力（スクリプト用途に便利）
-box list -q --running
-
-# 例: 実行中の全セッションを停止
-box stop $(box list -q --running)
+box cd my-feature               # ホストプロジェクトディレクトリを表示
+cd "$(box path my-feature)"    # ワークスペースにcd
+box origin                      # ワークスペースから元のプロジェクトにcd
 ```
 
-### プロジェクトディレクトリへのcd
+## Dockerモード
+
+完全なコンテナ隔離には `BOX_MODE=docker` を設定します。各セッションはワークスペースをバインドマウントしたDockerコンテナ内で実行されます。
 
 ```bash
-# セッションのホストプロジェクトディレクトリを表示
-box cd my-feature
-
-# シェル補完を有効にしている場合、プロジェクトディレクトリにcd
-cd "$(box cd my-feature)"
+export BOX_MODE=docker
 ```
 
-### 元のプロジェクトに移動
+オプションでカスタムイメージとデフォルトを設定：
 
 ```bash
-# ワークスペース内から、元のプロジェクトディレクトリにcd
-box origin
+export BOX_DEFAULT_IMAGE=mydev              # カスタムイメージ
+export BOX_DOCKER_ARGS="--network host"     # 追加のDockerフラグ
+export BOX_DEFAULT_CMD="bash"               # デフォルトコマンド
 ```
 
-### 停止と削除
-
 ```bash
-# 実行中のセッションを停止
-box stop my-feature
-
-# 停止したセッションを削除（コンテナ、ワークスペース、セッションデータ）
-box remove my-feature
+# 明示的なオプション付きDockerセッション
+box create my-feature --docker --image ubuntu:latest -- bash
+box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 ```
 
 ## オプション
@@ -263,8 +265,6 @@ box remove my-feature
 
 ## 環境変数
 
-CLIフラグを完全に省略するためのデフォルト設定です。`.zshrc` や `.bashrc` に設定すれば、`box <name>` を実行するだけで自動的に適用されます。
-
 | 変数 | 説明 |
 |----------|-------------|
 | `BOX_DEFAULT_IMAGE` | 新規セッションのデフォルトDockerイメージ（デフォルト: `alpine:latest`） |
@@ -272,18 +272,7 @@ CLIフラグを完全に省略するためのデフォルト設定です。`.zsh
 | `BOX_DEFAULT_CMD` | 新規セッションのデフォルトコマンド。`-- cmd` が指定されていない場合に使用 |
 | `BOX_MODE` | セッションモード: `local`（デフォルト）または `docker` |
 
-```bash
-# 全セッションにデフォルトのDockerフラグを設定
-export BOX_DOCKER_ARGS="--network host -v /data:/data:ro"
-box create my-session
-
-# 特定のセッションで --docker-args で上書き
-box create my-session --docker-args "-e DEBUG=1"
-```
-
 ## シェル補完
-
-シェル設定ファイルに以下のいずれかを追加すると、セッション名やサブコマンドのタブ補完が有効になります：
 
 ```bash
 # Zsh (~/.zshrc)
@@ -293,81 +282,84 @@ eval "$(box config zsh)"
 eval "$(box config bash)"
 ```
 
-シェルを再読み込みすると、`box [tab]` で利用可能なセッションとサブコマンドが表示されます。
-
 ## 仕組み
 
-初回実行時、`git clone --local` でリポジトリの独立したコピーをワークスペースディレクトリに作成します。コンテナは完全に自己完結したgitリポジトリを取得します — 特別なマウントやentrypointスクリプトは不要です。ホストの作業ディレクトリは一切変更されません。
+```
+your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
+  .git/        ──── git clone --local ────>         .git/  (独立)
+  src/                                              src/   (ハードリンク)
+  ...                                               ...
+```
 
-- **独立したクローン** — 各セッションは `git clone --local` による完全なgitリポジトリを持ちます
-- **永続的なワークスペース** — `exit` してもファイルは保持され、`box resume <name>` で再開可能。`box remove` でクリーンアップ
-- **任意のイメージ・ユーザー** — rootおよび非rootコンテナイメージで動作
+`git clone --local` はハードリンクを使って完全に独立したgitリポジトリを作成します。クローンは独自の `.git` ディレクトリを持つため、ワークスペース内でのコミット、ブランチ操作、リセット、破壊的操作が元のリポジトリに影響することはありません。
 
-| 観点 | 保護 |
-|--------|------------|
-| ホスト作業ツリー | 変更されない — ワークスペースは独立したクローン |
-| ワークスペース | `~/.box/workspaces/<name>/` からバインドマウント、停止・起動をまたいで永続化 |
-| セッションクリーンアップ | `box remove` でコンテナ、ワークスペース、セッションデータを削除 |
+内蔵ターミナルマルチプレクサは各セッションを以下の機能でラップします：
+- **セッション永続化** — プロセスはバックグラウンドサーバーで実行され、中断なくデタッチ・再接続が可能
+- **スクロールバック** — 10,000行の履歴をキーボードとマウスでナビゲーション
+- **ヘッダーバー** — セッション名、スクロール位置、COMMANDモードのステータスを表示
+
+| 項目 | 詳細 |
+|--------|--------|
+| ワークスペースの場所 | `~/.box/workspaces/<name>/` |
+| セッションメタデータ | `~/.box/sessions/<name>/` |
+| Git隔離 | 完全 — 独立した `.git`、共有refなし |
+| セッション永続化 | マルチプレクササーバーがデタッチ・再接続をまたいでプロセスを維持 |
+| クリーンアップ | `box remove` でワークスペース、セッションデータ、コンテナ（Docker時）を削除 |
 
 ## 設計上の判断
 
 <details>
 <summary><strong>なぜ <code>git clone --local</code>？</strong></summary>
 
-gitの隔離戦略はいくつか存在しますが、それぞれに問題があります：
-
 | 戦略 | 問題点 |
 |------|--------|
 | **ホストリポジトリをバインドマウント** | 隔離なし — エージェントが実際のファイルを直接変更してしまう |
 | **git worktree** | `.git` ディレクトリをホストと共有するため、checkout・reset・rebaseがホストのブランチやrefに影響する |
 | **bare-gitマウント** | 状態を共有するため、コンテナ内でのブランチ作成・削除がホストに影響する |
-| **ブランチのみの隔離** | エージェントが他のブランチをチェックアウトしたり、共有refに対して破壊的なgitコマンドを実行することを防げない |
+| **ブランチのみの隔離** | 共有refに対する破壊的なgitコマンドを防げない |
 | **完全コピー（`cp -r`）** | 完全に隔離されるが、大きなリポジトリでは遅い |
 
-`git clone --local` が最適な理由：
+`git clone --local` は完全に独立（独自の `.git`）、高速（ハードリンク）、完全（全履歴）、シンプル（ラッパースクリプト不要）です。
 
-- **完全に独立** — クローンは独自の `.git` を持ち、コンテナ内の操作がホストリポジトリに影響することはない
-- **高速** — 同一ファイルシステム上ではコピーではなくハードリンクを使用
-- **完全** — 全履歴、全ブランチを含む標準的なgitリポジトリ
-- **シンプル** — ラッパースクリプトや特別なentrypointは不要
+</details>
+
+<details>
+<summary><strong>なぜ内蔵マルチプレクサ？</strong></summary>
+
+Boxにはセッション永続化 — 実行中のプロセスからデタッチして後で再接続する機能 — が必要です。tmuxやscreenを外部依存として要求する代わりに、専用のターミナルマルチプレクサを内蔵しています：
+
+- 設定不要 — そのまま動作
+- 全セッションで一貫したUI（ヘッダーバー、スクロールバック、COMMANDモード）
+- セッション永続化のためのクライアント-サーバーアーキテクチャを透過的に処理
+- マウススクロールとビジュアルスクロールバーで出力履歴をナビゲーション
 
 </details>
 
 <details>
 <summary><strong>なぜ素のDocker？</strong></summary>
 
-一部のツール（例: Claude Codeの `--sandbox`）はDockerサンドボックスを組み込みで提供しています。Boxは別のアプローチ — 素のDockerを直接使用 — を採ることで、以下を実現しています：
+一部のツールはDockerサンドボックスを組み込みで提供しています。Boxは素のDockerを直接使用することで、以下を実現しています：
 
-- **自分のツールチェーンを使用** — 必要な言語、ランタイム、ツールを含む任意のDockerイメージを使用可能
-- **永続的なセッション** — 終了しても再開可能、ファイルと状態が保持される
+- **自分のツールチェーンを使用** — 必要なツールを含む任意のDockerイメージを使用可能
 - **完全なDocker制御** — カスタムネットワーク、ボリューム、環境変数、その他の `docker run` フラグが使用可能
-- **任意のエージェントで動作** — 特定のツールに縛られず、Claude Code、Cursor、Copilot、手動操作で使用可能
-
-素のDockerを使うことで完全な制御を維持しつつ、Boxが隔離とライフサイクルを管理します。
+- **任意のワークフローで動作** — 特定のツールやエージェントに縛られない
 
 </details>
 
 ## Claude Code連携
 
-Boxは[Claude Code](https://docs.anthropic.com/en/docs/claude-code)の理想的なパートナーです。Boxセッション内でClaude Codeを実行すれば、リスクのある変更、ブランチの実験、テストの実行 — すべて隔離されたgitワークスペースで行えます。
+Boxは[Claude Code](https://docs.anthropic.com/en/docs/claude-code)と組み合わせて、隔離されたワークスペースでAIエージェントを実行するのに適しています：
 
 ```bash
 box create ai-experiment -- claude
-```
-
-デタッチモードでバックグラウンド実行：
-
-```bash
 box create ai-experiment -d -- claude -p "refactor the auth module"
 ```
 
-Dockerによる完全なコンテナ隔離：
-
-```bash
-box create ai-experiment --docker --image node:20 -- claude
-```
-
 エージェントが行うすべての操作はワークスペース内に留まります。完了したらセッションを削除すれば消えます。
+
+## セキュリティに関する注意
+
+`--docker-args` フラグと `BOX_DOCKER_ARGS` 環境変数は引数を `docker run` に直接渡します。`--privileged` や `-v /:/host` のようなフラグはコンテナのサンドボックスを弱める可能性があります。信頼できる値のみを使用してください。
 
 ## ライセンス
 
