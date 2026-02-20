@@ -273,7 +273,7 @@ pub fn draw_frame(
             scroll_offset, max_scrollback
         )
     } else {
-        " Ctrl+P,Q:detach  ,X:stop ".to_string()
+        " Ctrl+P,Q:detach  Ctrl+P,X:stop ".to_string()
     };
 
     let pad = (area.width as usize)
