@@ -251,7 +251,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                     let max_scrollback = scrollback_line_count(&mut parser);
 
                     // Enable mouse tracking only when there's scrollback content
-                    let want_mouse = max_scrollback > 0;
+                    let want_mouse = true;
                     if want_mouse != mouse_tracking_on {
                         mouse_tracking_on = want_mouse;
                         terminal::set_mouse_tracking(tty_fd, mouse_tracking_on);
@@ -266,6 +266,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                         max: max_scrollback,
                     };
                     let cmd_mode = input_state.command_mode;
+                    let hover_close = input_state.hover_close;
                     terminal
                         .draw(|f| {
                             terminal::draw_frame(
@@ -275,6 +276,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                                 &project_name,
                                 &scroll,
                                 cmd_mode,
+                                hover_close,
                             );
                         })
                         .context("Failed to draw terminal frame")?;
