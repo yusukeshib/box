@@ -30,11 +30,9 @@ impl RawModeGuard {
             anyhow::bail!("Failed to set raw mode: {}", io::Error::last_os_error());
         }
 
-        // Enter alternate screen, hide cursor.
-        // Mouse tracking (?1000h/?1006h) is NOT enabled here so that native
-        // text selection works by default.  It is toggled on/off dynamically
-        // when entering/leaving scrollback mode via `set_mouse_tracking()`.
-        tty.write_all(b"\x1b[?1049h\x1b[?25l")?;
+        // Enter alternate screen, hide cursor, enable SGR mouse tracking
+        // for scroll wheel support.  Hold Shift to bypass for text selection.
+        tty.write_all(b"\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h")?;
         tty.flush()?;
 
         Ok(RawModeGuard {
@@ -216,9 +214,21 @@ pub fn write_bytes_to_pty(pty: &pty_process::blocking::Pty, data: &[u8]) -> Resu
     Ok(())
 }
 
+/// Return the number of lines in the scrollback buffer.
+///
+/// `screen().scrollback()` returns the current *viewing offset*, not the
+/// total number of buffered lines.  The only public way to discover the
+/// actual count is to set the offset to MAX (which clamps to `len()`),
+/// read the value, and restore.
+pub fn scrollback_line_count(parser: &mut vt100::Parser) -> usize {
+    parser.set_scrollback(usize::MAX);
+    let count = parser.screen().scrollback();
+    parser.set_scrollback(0);
+    count
+}
+
 /// Scrollback state passed to `draw_frame` for rendering the scrollbar.
 pub struct ScrollState {
-    pub active: bool,
     pub offset: usize,
     pub max: usize,
 }
@@ -233,7 +243,7 @@ pub fn draw_frame(
     show_help: bool,
     scroll: &ScrollState,
 ) {
-    let is_scrollback = scroll.active;
+    let scrolled_up = scroll.offset > 0;
     let scroll_offset = scroll.offset;
     let max_scrollback = scroll.max;
     let area = f.area();
@@ -259,10 +269,10 @@ pub fn draw_frame(
         format!(" {} > {} ", project_name, session_name)
     };
     let right = if show_help {
-        " Ctrl+P,Q:detach  ,X:stop  ,[:scroll  ,?:help ".to_string()
-    } else if is_scrollback {
+        " Ctrl+P,Q:detach  ,X:stop  ,?:help ".to_string()
+    } else if scrolled_up {
         format!(
-            " [{}/{}] Up/Down PgUp/PgDn q:exit ",
+            " [{}/{}] q:exit scroll ",
             scroll_offset, max_scrollback
         )
     } else {
@@ -279,12 +289,12 @@ pub fn draw_frame(
 
     let widget = TerminalWidget {
         screen,
-        show_cursor: !is_scrollback,
+        show_cursor: !scrolled_up,
     };
     f.render_widget(widget, grid_area);
 
-    // Render scrollbar when in scrollback mode
-    if is_scrollback && max_scrollback > 0 && grid_area.height > 0 {
+    // Render scrollbar when there is scrollback content
+    if max_scrollback > 0 && grid_area.height > 0 {
         let track_height = grid_area.height as usize;
         // Thumb size: at least 1 row, proportional to visible / total
         let total_lines = max_scrollback + track_height;
@@ -300,8 +310,8 @@ pub fn draw_frame(
         let thumb_y_start = max_thumb_top - thumb_top;
 
         let scrollbar_x = grid_area.x + grid_area.width.saturating_sub(1);
-        let track_style = Style::default().fg(Color::DarkGray);
-        let thumb_style = Style::default().fg(Color::White);
+        let track_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
+        let thumb_style = Style::default().fg(Color::White).bg(Color::White);
 
         for row in 0..track_height {
             let y = grid_area.y + row as u16;
@@ -320,11 +330,10 @@ pub fn draw_frame(
     }
 }
 
-/// Input processing state machine for the Ctrl+P prefix and scrollback mode.
+/// Input processing state machine for the Ctrl+P prefix and scroll.
 pub struct InputState {
     pub prefix_active: bool,
     pub scroll_offset: usize,
-    pub scrollback_mode: bool,
     pub show_help: bool,
     /// Bytes from an incomplete escape sequence carried over from the
     /// previous read.  Combined with the next input in `process()`.
@@ -381,7 +390,6 @@ impl InputState {
         Self {
             prefix_active: false,
             scroll_offset: 0,
-            scrollback_mode: false,
             show_help: false,
             pending: Vec::new(),
         }
@@ -456,46 +464,45 @@ impl InputState {
                 }
             }
 
-            if self.scrollback_mode {
-                // SGR mouse scroll in scrollback mode
-                if let Some((btn, consumed)) = parse_sgr_mouse(data, i) {
-                    match btn {
-                        64 => {
-                            self.scroll_offset = (self.scroll_offset + 3).min(max_scrollback);
-                            actions.push(InputAction::Redraw);
-                        }
-                        65 => {
-                            self.scroll_offset = self.scroll_offset.saturating_sub(3);
-                            if self.scroll_offset == 0 {
-                                self.scrollback_mode = false;
-                            }
-                            actions.push(InputAction::Redraw);
-                        }
-                        _ => {} // consume other mouse events
+            // Always intercept SGR mouse scroll events for scrollback
+            if let Some((btn, consumed)) = parse_sgr_mouse(data, i) {
+                match btn {
+                    64 => {
+                        // Scroll up
+                        self.scroll_offset = (self.scroll_offset + 3).min(max_scrollback);
+                        actions.push(InputAction::Redraw);
                     }
-                    i += consumed;
-                    continue;
+                    65 => {
+                        // Scroll down
+                        self.scroll_offset = self.scroll_offset.saturating_sub(3);
+                        actions.push(InputAction::Redraw);
+                    }
+                    _ => {} // consume other mouse events
                 }
+                i += consumed;
+                continue;
+            }
+
+            // When scrolled up, intercept keyboard for scroll navigation
+            if self.scroll_offset > 0 {
                 if b == 0x1b && i + 2 < data.len() && data[i + 1] == b'[' {
                     match data[i + 2] {
                         b'A' => {
-                            if self.scroll_offset < max_scrollback {
-                                self.scroll_offset += 1;
-                            }
+                            // Up arrow
+                            self.scroll_offset = (self.scroll_offset + 1).min(max_scrollback);
                             actions.push(InputAction::Redraw);
                             i += 3;
                             continue;
                         }
                         b'B' => {
+                            // Down arrow
                             self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                            if self.scroll_offset == 0 {
-                                self.scrollback_mode = false;
-                            }
                             actions.push(InputAction::Redraw);
                             i += 3;
                             continue;
                         }
                         b'5' if i + 3 < data.len() && data[i + 3] == b'~' => {
+                            // PgUp
                             let half = (current_inner_rows / 2) as usize;
                             self.scroll_offset = (self.scroll_offset + half).min(max_scrollback);
                             actions.push(InputAction::Redraw);
@@ -503,11 +510,9 @@ impl InputState {
                             continue;
                         }
                         b'6' if i + 3 < data.len() && data[i + 3] == b'~' => {
+                            // PgDn
                             let half = (current_inner_rows / 2) as usize;
                             self.scroll_offset = self.scroll_offset.saturating_sub(half);
-                            if self.scroll_offset == 0 {
-                                self.scrollback_mode = false;
-                            }
                             actions.push(InputAction::Redraw);
                             i += 4;
                             continue;
@@ -515,19 +520,14 @@ impl InputState {
                         _ => {}
                     }
                 }
-                match b {
-                    b'q' | 0x1b => {
-                        if b == b'q' || (b == 0x1b && (i + 1 >= data.len() || data[i + 1] != 0x5b))
-                        {
-                            self.scrollback_mode = false;
-                            self.scroll_offset = 0;
-                            actions.push(InputAction::Redraw);
-                            i += 1;
-                            continue;
-                        }
-                    }
-                    _ => {}
+                // q or bare Esc snaps back to bottom
+                if b == b'q' || (b == 0x1b && (i + 1 >= data.len() || data[i + 1] != b'[')) {
+                    self.scroll_offset = 0;
+                    actions.push(InputAction::Redraw);
+                    i += 1;
+                    continue;
                 }
+                // Consume all other input while scrolled up
                 i += 1;
                 continue;
             }
@@ -543,12 +543,6 @@ impl InputState {
                     b'x' | b'X' | 0x18 => {
                         // x, X, or Ctrl+X
                         actions.push(InputAction::Kill);
-                        i += 1;
-                        continue;
-                    }
-                    b'[' => {
-                        self.scrollback_mode = true;
-                        actions.push(InputAction::Redraw);
                         i += 1;
                         continue;
                     }
@@ -577,10 +571,10 @@ impl InputState {
                 continue;
             }
 
-            // Normal input — find the next Ctrl+P (if any) and forward
-            // everything before it in one write.
+            // Normal input — find the next Ctrl+P or ESC (potential mouse
+            // sequence) and forward everything before it in one write.
             let start = i;
-            while i < data.len() && data[i] != 0x10 {
+            while i < data.len() && data[i] != 0x10 && data[i] != 0x1b {
                 i += 1;
             }
             if i > start {
@@ -589,20 +583,6 @@ impl InputState {
         }
 
         actions
-    }
-}
-
-/// Enable or disable SGR mouse tracking on the terminal.
-/// Called when entering/leaving scrollback mode so that text selection
-/// works in normal mode while scroll wheel works in scrollback mode.
-pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
-    let seq: &[u8] = if enable {
-        b"\x1b[?1000h\x1b[?1006h"
-    } else {
-        b"\x1b[?1006l\x1b[?1000l"
-    };
-    unsafe {
-        libc::write(tty_fd, seq.as_ptr() as *const libc::c_void, seq.len());
     }
 }
 

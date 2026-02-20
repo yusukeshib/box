@@ -120,6 +120,11 @@ pub fn run(session_name: &str) -> Result<()> {
     // Create vt100 parser for screen state
     let mut parser = vt100::Parser::new(default_rows, default_cols, super::SCROLLBACK_LINES);
 
+    // Raw PTY output history for replaying scrollback to new clients.
+    // Capped at 4MB — enough for ~10k lines of typical terminal output.
+    let mut history: Vec<u8> = Vec::new();
+    const MAX_HISTORY_BYTES: usize = 4 * 1024 * 1024;
+
     let mut pty_cols = default_cols;
     let mut pty_rows = default_rows;
 
@@ -177,6 +182,12 @@ pub fn run(session_name: &str) -> Result<()> {
         match event {
             Ok(ServerEvent::PtyOutput(data)) => {
                 parser.process(&data);
+                // Accumulate raw output for scrollback replay
+                history.extend_from_slice(&data);
+                if history.len() > MAX_HISTORY_BYTES {
+                    let excess = history.len() - MAX_HISTORY_BYTES;
+                    history.drain(..excess);
+                }
                 // Broadcast to all clients
                 let msg = ServerMsg::Output(data);
                 let mut disconnected = Vec::new();
@@ -258,7 +269,15 @@ pub fn run(session_name: &str) -> Result<()> {
                                     rows: pty_rows,
                                 },
                             );
-                            // Send screen dump
+                            // Replay raw PTY history so the client builds up
+                            // the same scrollback buffer, then send a formatted
+                            // screen dump to ensure the visible area matches exactly.
+                            if !history.is_empty() {
+                                let _ = protocol::write_server_msg(
+                                    &mut client.writer,
+                                    &ServerMsg::Output(history.clone()),
+                                );
+                            }
                             let contents = parser.screen().contents_formatted();
                             if !contents.is_empty() {
                                 let _ = protocol::write_server_msg(

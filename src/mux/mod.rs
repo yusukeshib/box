@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::session;
 
-use terminal::{InputAction, InputState, RawModeGuard, ScrollState};
+use terminal::{InputAction, InputState, RawModeGuard, ScrollState, scrollback_line_count};
 
 /// Acquire an exclusive lock on a session-specific lockfile.
 /// Returns the lock file (must be kept alive for the duration of the lock).
@@ -208,7 +208,6 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
     let mut input_state = InputState::new();
     let mut dirty = true;
     let mut child_exited = false;
-    let mut mouse_tracking_on = false;
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
@@ -227,13 +226,10 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         match event {
             Ok(StandaloneEvent::PtyOutput(data)) => {
                 parser.process(&data);
-                if !input_state.scrollback_mode {
-                    input_state.scroll_offset = 0;
-                }
                 dirty = true;
             }
             Ok(StandaloneEvent::InputBytes(data)) => {
-                let max_scrollback = parser.screen().scrollback();
+                let max_scrollback = scrollback_line_count(&mut parser);
                 let actions = input_state.process(&data, current_inner_rows, max_scrollback);
                 for action in actions {
                     match action {
@@ -268,7 +264,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Flush any buffered incomplete escape sequence
                 // (e.g. bare ESC that wasn't followed by more bytes).
-                let max_scrollback = parser.screen().scrollback();
+                let max_scrollback = scrollback_line_count(&mut parser);
                 let pending_actions = input_state.flush_pending(current_inner_rows, max_scrollback);
                 for action in pending_actions {
                     match action {
@@ -298,29 +294,21 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             parser.process(b"\x1b[H\x1b[2J");
                             term = terminal::create_terminal(tty_fd, cols, rows)?;
                         }
-                        input_state.scrollback_mode = false;
                         input_state.scroll_offset = 0;
                         dirty = true;
                     }
                 }
 
-                // Toggle mouse tracking when scrollback mode changes
-                if input_state.scrollback_mode != mouse_tracking_on {
-                    mouse_tracking_on = input_state.scrollback_mode;
-                    terminal::set_mouse_tracking(tty_fd, mouse_tracking_on);
-                }
-
                 // Draw only when the event queue is quiet, so rapid bursts
                 // of output are coalesced into a single frame.
                 if dirty {
-                    let max_scrollback = parser.screen().scrollback();
+                    let max_scrollback = scrollback_line_count(&mut parser);
                     parser.set_scrollback(input_state.scroll_offset);
                     let session_name = config.session_name.clone();
                     let project_name = project_name.clone();
                     let screen = parser.screen();
                     let show_help = input_state.show_help;
                     let scroll = ScrollState {
-                        active: input_state.scrollback_mode,
                         offset: input_state.scroll_offset,
                         max: max_scrollback,
                     };

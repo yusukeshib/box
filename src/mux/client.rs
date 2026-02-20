@@ -7,7 +7,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::protocol::{self, ClientMsg, ServerMsg};
-use super::terminal::{self, InputAction, InputState, RawModeGuard, ScrollState};
+use super::terminal::{self, scrollback_line_count, InputAction, InputState, RawModeGuard, ScrollState};
 
 enum ClientEvent {
     ServerMsg(ServerMsg),
@@ -46,7 +46,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     // Install panic hook
     terminal::install_panic_hook();
 
-    // Enter raw mode
+    // Enter raw mode (also enables mouse tracking for scroll wheel)
     let _guard = RawModeGuard::activate(&mut tty)?;
 
     // Send initial Resize to server
@@ -138,7 +138,6 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     let project_name = super::project_name_for_session(session_name);
     let mut input_state = InputState::new();
     let mut dirty = true;
-    let mut mouse_tracking_on = false;
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
@@ -155,15 +154,11 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
             Ok(ClientEvent::ServerMsg(msg)) => match msg {
                 ServerMsg::Output(data) => {
                     parser.process(&data);
-                    if !input_state.scrollback_mode {
-                        input_state.scroll_offset = 0;
-                    }
                     dirty = true;
                 }
                 ServerMsg::Resized { cols, rows } => {
                     parser.set_size(rows, cols);
                     parser.process(b"\x1b[H\x1b[2J");
-                    input_state.scrollback_mode = false;
                     input_state.scroll_offset = 0;
                     dirty = true;
                 }
@@ -172,7 +167,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                 }
             },
             Ok(ClientEvent::InputBytes(data)) => {
-                let max_scrollback = parser.screen().scrollback();
+                let max_scrollback = scrollback_line_count(&mut parser);
                 let actions = input_state.process(&data, current_inner_rows, max_scrollback);
                 for action in actions {
                     match action {
@@ -199,7 +194,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Flush any buffered incomplete escape sequence
-                let max_scrollback = parser.screen().scrollback();
+                let max_scrollback = scrollback_line_count(&mut parser);
                 let pending_actions = input_state.flush_pending(current_inner_rows, max_scrollback);
                 for action in pending_actions {
                     match action {
@@ -233,26 +228,18 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                             );
                             terminal = terminal::create_terminal(tty_fd, cols, rows)?;
                         }
-                        input_state.scrollback_mode = false;
                         input_state.scroll_offset = 0;
                         dirty = true;
                     }
                 }
 
-                // Toggle mouse tracking when scrollback mode changes
-                if input_state.scrollback_mode != mouse_tracking_on {
-                    mouse_tracking_on = input_state.scrollback_mode;
-                    terminal::set_mouse_tracking(tty_fd, mouse_tracking_on);
-                }
-
                 if dirty {
-                    let max_scrollback = parser.screen().scrollback();
+                    let max_scrollback = scrollback_line_count(&mut parser);
                     parser.set_scrollback(input_state.scroll_offset);
                     let session_name = session_name.to_string();
                     let project_name = project_name.clone();
                     let screen = parser.screen();
                     let scroll = ScrollState {
-                        active: input_state.scrollback_mode,
                         offset: input_state.scroll_offset,
                         max: max_scrollback,
                     };
