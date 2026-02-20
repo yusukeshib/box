@@ -251,7 +251,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                     let max_scrollback = scrollback_line_count(&mut parser);
 
                     // Enable mouse tracking only when there's scrollback content
-                    let want_mouse = max_scrollback > 0;
+                    let want_mouse = true;
                     if want_mouse != mouse_tracking_on {
                         mouse_tracking_on = want_mouse;
                         terminal::set_mouse_tracking(tty_fd, mouse_tracking_on);

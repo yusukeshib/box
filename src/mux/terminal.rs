@@ -299,7 +299,7 @@ pub fn draw_frame(
         .saturating_sub(right_len);
 
     let close_style = if hover_close {
-        Style::default().bg(Color::Red).fg(Color::White)
+        Style::default().add_modifier(Modifier::DIM)
     } else {
         header_style
     };
