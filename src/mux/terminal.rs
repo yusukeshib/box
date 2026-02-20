@@ -541,10 +541,6 @@ impl InputState {
                         i += 1;
                         continue;
                     }
-                    b'?' => {
-                        // Not a recognized prefix command — send Ctrl+P + the byte
-                        actions.push(InputAction::Forward(vec![0x10, b]));
-                    }
                     0x10 => {
                         // Ctrl+P Ctrl+P -> send literal Ctrl+P
                         actions.push(InputAction::Forward(vec![0x10]));

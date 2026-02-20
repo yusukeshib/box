@@ -278,6 +278,8 @@ pub fn run(session_name: &str) -> Result<()> {
                             // Replay raw PTY history so the client builds up
                             // the same scrollback buffer, then send a formatted
                             // screen dump to ensure the visible area matches exactly.
+                            // Always send at least one Output (even if empty) so
+                            // the client handshake read doesn't block waiting.
                             if !history.is_empty() {
                                 let _ = protocol::write_server_msg(
                                     &mut client.writer,
@@ -285,12 +287,10 @@ pub fn run(session_name: &str) -> Result<()> {
                                 );
                             }
                             let contents = parser.screen().contents_formatted();
-                            if !contents.is_empty() {
-                                let _ = protocol::write_server_msg(
-                                    &mut client.writer,
-                                    &ServerMsg::Output(contents),
-                                );
-                            }
+                            let _ = protocol::write_server_msg(
+                                &mut client.writer,
+                                &ServerMsg::Output(contents),
+                            );
                         }
 
                         // Recalculate effective size
