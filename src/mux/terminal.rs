@@ -235,13 +235,11 @@ pub struct ScrollState {
 }
 
 /// Render the mux frame: header bar + terminal grid.
-#[allow(clippy::too_many_arguments)]
 pub fn draw_frame(
     f: &mut ratatui::Frame,
     screen: &vt100::Screen,
     session_name: &str,
     project_name: &str,
-    show_help: bool,
     scroll: &ScrollState,
 ) {
     let scrolled_up = scroll.offset > 0;
@@ -269,15 +267,13 @@ pub fn draw_frame(
     } else {
         format!(" {} > {} ", project_name, session_name)
     };
-    let right = if show_help {
-        " Ctrl+P,Q:detach  ,X:stop  ,?:help ".to_string()
-    } else if scrolled_up {
+    let right = if scrolled_up {
         format!(
             " [{}/{}] q:exit scroll ",
             scroll_offset, max_scrollback
         )
     } else {
-        " Ctrl+P,? for help ".to_string()
+        " Ctrl+P,Q:detach  ,X:stop ".to_string()
     };
 
     let pad = (area.width as usize)
@@ -335,7 +331,6 @@ pub fn draw_frame(
 pub struct InputState {
     pub prefix_active: bool,
     pub scroll_offset: usize,
-    pub show_help: bool,
     /// Bytes from an incomplete escape sequence carried over from the
     /// previous read.  Combined with the next input in `process()`.
     pending: Vec<u8>,
@@ -391,7 +386,6 @@ impl InputState {
         Self {
             prefix_active: false,
             scroll_offset: 0,
-            show_help: false,
             pending: Vec::new(),
         }
     }
@@ -548,10 +542,8 @@ impl InputState {
                         continue;
                     }
                     b'?' => {
-                        self.show_help = !self.show_help;
-                        actions.push(InputAction::Redraw);
-                        i += 1;
-                        continue;
+                        // Not a recognized prefix command — send Ctrl+P + the byte
+                        actions.push(InputAction::Forward(vec![0x10, b]));
                     }
                     0x10 => {
                         // Ctrl+P Ctrl+P -> send literal Ctrl+P

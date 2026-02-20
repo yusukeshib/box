@@ -267,7 +267,6 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                                 screen,
                                 &session_name,
                                 &project_name,
-                                input_state.show_help,
                                 &scroll,
                             );
                         })

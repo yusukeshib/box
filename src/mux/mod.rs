@@ -320,7 +320,6 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                     let session_name = config.session_name.clone();
                     let project_name = project_name.clone();
                     let screen = parser.screen();
-                    let show_help = input_state.show_help;
                     let scroll = ScrollState {
                         offset: input_state.scroll_offset,
                         max: max_scrollback,
@@ -331,7 +330,6 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             screen,
                             &session_name,
                             &project_name,
-                            show_help,
                             &scroll,
                         );
                     })
