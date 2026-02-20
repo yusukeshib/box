@@ -176,6 +176,7 @@ pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
             session_name: cfg.name.to_string(),
             command: docker_cmd,
             working_dir: None,
+            prefix_key: crate::config::load_mux_prefix_key(),
         })
     }
 }
@@ -249,6 +250,7 @@ pub fn attach_container(name: &str) -> Result<i32> {
             format!("box-{}", name),
         ],
         working_dir: None,
+        prefix_key: crate::config::load_mux_prefix_key(),
     })
 }
 
@@ -265,6 +267,7 @@ pub fn exec_container(name: &str, cmd: &[String]) -> Result<i32> {
         session_name: name.to_string(),
         command: docker_cmd,
         working_dir: None,
+        prefix_key: crate::config::load_mux_prefix_key(),
     })
 }
 

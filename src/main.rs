@@ -753,6 +753,7 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
             session_name: name.to_string(),
             command: cmd.to_vec(),
             working_dir: Some(workspace.to_string_lossy().to_string()),
+            prefix_key: config::load_mux_prefix_key(),
         });
     }
 

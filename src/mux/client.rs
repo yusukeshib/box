@@ -142,7 +142,8 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     });
 
     let project_name = super::project_name_for_session(session_name);
-    let mut input_state = InputState::new();
+    let prefix_key = crate::config::load_mux_prefix_key();
+    let mut input_state = InputState::new(prefix_key);
     let mut dirty = true;
     let mut mouse_tracking_on = false;
 
@@ -264,9 +265,17 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                         offset: input_state.scroll_offset,
                         max: max_scrollback,
                     };
+                    let cmd_mode = input_state.command_mode;
                     terminal
                         .draw(|f| {
-                            terminal::draw_frame(f, screen, &session_name, &project_name, &scroll);
+                            terminal::draw_frame(
+                                f,
+                                screen,
+                                &session_name,
+                                &project_name,
+                                &scroll,
+                                cmd_mode,
+                            );
                         })
                         .context("Failed to draw terminal frame")?;
                     parser.set_scrollback(0);
