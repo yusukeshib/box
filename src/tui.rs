@@ -355,18 +355,12 @@ where
                             }
                             // Refresh list
                             if let Ok(mut refreshed) = session::list() {
-                                if let Ok(running) =
-                                    std::panic::catch_unwind(docker::running_sessions)
-                                {
-                                    for s in &mut refreshed {
-                                        if !s.local {
-                                            s.running = running.contains(&s.name);
-                                        }
-                                    }
-                                }
+                                let running = docker::running_sessions();
                                 for s in &mut refreshed {
                                     if s.local {
                                         s.running = session::is_local_running(&s.name);
+                                    } else {
+                                        s.running = running.contains(&s.name);
                                     }
                                 }
                                 items = refreshed;

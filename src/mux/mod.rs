@@ -312,11 +312,9 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 if dirty {
                     let max_scrollback = scrollback_line_count(&mut parser);
 
-                    // Enable mouse tracking only when there's scrollback content
-                    let want_mouse = true;
-                    if want_mouse != mouse_tracking_on {
-                        mouse_tracking_on = want_mouse;
-                        terminal::set_mouse_tracking(tty_fd, mouse_tracking_on);
+                    if !mouse_tracking_on {
+                        mouse_tracking_on = true;
+                        terminal::set_mouse_tracking(tty_fd, true);
                     }
 
                     parser.set_scrollback(input_state.scroll_offset);
@@ -485,12 +483,27 @@ fn is_box_mux_server(pid: i32) -> bool {
     }
 
     // On macOS, use `ps` to verify the process command contains our binary name.
-    // On Linux, check /proc/<pid>/cmdline.
+    // On Linux, check /proc/<pid>/cmdline + /proc/<pid>/environ.
     #[cfg(target_os = "linux")]
     {
         let cmdline_path = format!("/proc/{}/cmdline", pid);
-        if let Ok(cmdline) = std::fs::read_to_string(&cmdline_path) {
-            return cmdline.contains("box") && cmdline.contains("__BOX_MUX_SERVER");
+        let cmdline_ok = std::fs::read(&cmdline_path)
+            .map(|bytes| {
+                // cmdline is NUL-separated; check any argv element contains "box"
+                bytes
+                    .split(|&b| b == 0)
+                    .any(|arg| arg.windows(3).any(|w| w == b"box"))
+            })
+            .unwrap_or(false);
+        if !cmdline_ok {
+            return false;
+        }
+        // __BOX_MUX_SERVER is an env var, so check /proc/<pid>/environ
+        let environ_path = format!("/proc/{}/environ", pid);
+        if let Ok(env_bytes) = std::fs::read(&environ_path) {
+            return env_bytes
+                .split(|&b| b == 0)
+                .any(|entry| entry.starts_with(b"__BOX_MUX_SERVER="));
         }
         false
     }

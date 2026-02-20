@@ -17,7 +17,7 @@ use super::terminal;
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn handle_sigterm(_: libc::c_int) {
-    SHUTDOWN.store(true, Ordering::Relaxed);
+    SHUTDOWN.store(true, Ordering::SeqCst);
 }
 
 enum ServerEvent {
@@ -186,7 +186,15 @@ pub fn run(session_name: &str) -> Result<()> {
                 history.extend_from_slice(&data);
                 if history.len() > MAX_HISTORY_BYTES {
                     let excess = history.len() - MAX_HISTORY_BYTES;
-                    history.drain(..excess);
+                    // Find a newline near the cut point to avoid splitting
+                    // mid-escape-sequence, which would garble scrollback for
+                    // newly connecting clients.
+                    let cut = history[excess..]
+                        .iter()
+                        .position(|&b| b == b'\n')
+                        .map(|p| excess + p + 1)
+                        .unwrap_or(excess);
+                    history.drain(..cut);
                 }
                 // Broadcast to all clients
                 let msg = ServerMsg::Output(data);
@@ -348,7 +356,7 @@ pub fn run(session_name: &str) -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Check for SIGTERM
-                if SHUTDOWN.load(Ordering::Relaxed) {
+                if SHUTDOWN.load(Ordering::SeqCst) {
                     let _ = child.kill();
                     let _ = child.wait();
 

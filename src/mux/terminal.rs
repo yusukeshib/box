@@ -739,8 +739,19 @@ pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
     } else {
         b"\x1b[?1006l\x1b[?1003l"
     };
-    unsafe {
-        libc::write(tty_fd, seq.as_ptr() as *const libc::c_void, seq.len());
+    let mut offset = 0;
+    while offset < seq.len() {
+        let n = unsafe {
+            libc::write(
+                tty_fd,
+                seq[offset..].as_ptr() as *const libc::c_void,
+                seq.len() - offset,
+            )
+        };
+        if n <= 0 {
+            break;
+        }
+        offset += n as usize;
     }
 }
 

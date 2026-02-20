@@ -46,7 +46,7 @@ pub fn ensure_workspace(home: &str, name: &str, project_dir: &str) -> Result<Str
     {
         use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(&dir)?.permissions();
-        perms.set_mode(0o777);
+        perms.set_mode(0o775);
         std::fs::set_permissions(&dir, perms)?;
     }
 
