@@ -157,8 +157,8 @@ prefix_key = "Ctrl+B"   # デフォルト: "Ctrl+P"
 
 ```bash
 box                                               セッションマネージャー（TUI）
-box <name> [--local] [--docker]                   `box create <name>` のショートカット
-box create <name> [--local] [--docker] [options] [-- cmd...] 新しいセッションを作成
+box <name> [--local] [--docker] [--color <color>]  `box create <name>` のショートカット
+box create <name> [--local] [--docker] [--color <color>] [options] [-- cmd...] 新しいセッションを作成
 box resume <name> [-d] [--docker-args <args>]     既存のセッションを再開
 box stop <name>                                   実行中のセッションを停止
 box exec <name> -- <cmd...>                       実行中のセッションでコマンドを実行
@@ -179,6 +179,10 @@ box my-feature
 
 # コマンドを指定して作成
 box create my-feature -- make test
+
+# ヘッダーの背景色をカスタマイズ
+box create my-feature --color blue
+box my-feature --color '#ff6600'
 
 # デタッチモードで作成（バックグラウンド）
 box create my-feature -d -- long-running-task
@@ -245,6 +249,7 @@ box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 | `--local` | ローカルセッションを作成（デフォルト） |
 | `--docker` | Dockerセッションを作成（Docker必要） |
 | `--image <image>` | 使用するDockerイメージ（デフォルト: `alpine:latest`） |
+| `--color <color>` | ヘッダーの背景色（色名、`#rrggbb` 16進数、またはANSI 256番号） |
 | `--docker-args <args>` | 追加のDockerフラグ（例: `-e KEY=VALUE`、`-v /host:/container`）。`$BOX_DOCKER_ARGS` を上書き |
 | `-- cmd...` | 実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
 

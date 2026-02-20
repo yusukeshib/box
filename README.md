@@ -157,8 +157,8 @@ Running `box` with no arguments opens an interactive TUI:
 
 ```bash
 box                                               Session manager (TUI)
-box <name> [--local] [--docker]                   Shortcut for `box create <name>`
-box create <name> [--local] [--docker] [options] [-- cmd...] Create a new session
+box <name> [--local] [--docker] [--color <color>]  Shortcut for `box create <name>`
+box create <name> [--local] [--docker] [--color <color>] [options] [-- cmd...] Create a new session
 box resume <name> [-d] [--docker-args <args>]     Resume an existing session
 box stop <name>                                   Stop a running session
 box exec <name> -- <cmd...>                       Run a command in a running session
@@ -179,6 +179,10 @@ box my-feature
 
 # With a specific command
 box create my-feature -- make test
+
+# With a custom header color
+box create my-feature --color blue
+box my-feature --color '#ff6600'
 
 # Create in detached mode (background)
 box create my-feature -d -- long-running-task
@@ -245,6 +249,7 @@ box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 | `--local` | Create a local session (default) |
 | `--docker` | Create a Docker session (requires Docker) |
 | `--image <image>` | Docker image to use (default: `alpine:latest`) |
+| `--color <color>` | Header background color (name, `#rrggbb` hex, or ANSI 256 number) |
 | `--docker-args <args>` | Extra Docker flags (e.g. `-e KEY=VALUE`, `-v /host:/container`). Overrides `$BOX_DOCKER_ARGS` |
 | `-- cmd...` | Command to run (default: `$BOX_DEFAULT_CMD` if set) |
 
