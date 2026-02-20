@@ -220,6 +220,12 @@ pub fn run(session_name: &str) -> Result<()> {
                     Err(_) => continue,
                 };
 
+                // Set a write timeout so that broadcasting to a slow/stuck client
+                // doesn't block the entire server event loop.  If any single
+                // write() call doesn't make progress within this window we
+                // disconnect the client instead of freezing all sessions.
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+
                 clients.insert(
                     id,
                     ClientEntry {

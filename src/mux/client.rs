@@ -43,6 +43,10 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
     let sock = UnixStream::connect(socket_path).context("Failed to connect to mux server")?;
     let mut sock_writer = sock.try_clone().context("Failed to clone socket")?;
 
+    // Set a write timeout so the client event loop doesn't block
+    // indefinitely if the server is slow to read.
+    let _ = sock_writer.set_write_timeout(Some(Duration::from_secs(5)));
+
     // Install panic hook
     terminal::install_panic_hook();
 
