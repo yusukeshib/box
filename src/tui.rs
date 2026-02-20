@@ -307,12 +307,8 @@ where
                                     input = TextInput::new();
                                     mode = Mode::InputName;
                                 } else {
-                                    let s = &items[i - 1];
-                                    let name = s.name.clone();
+                                    let name = items[i - 1].name.clone();
                                     clear_viewport(&mut terminal, viewport_height)?;
-                                    if s.local {
-                                        return Ok(TuiAction::Cd(name));
-                                    }
                                     return Ok(TuiAction::Resume(name));
                                 }
                             }
@@ -363,7 +359,14 @@ where
                                     std::panic::catch_unwind(docker::running_sessions)
                                 {
                                     for s in &mut refreshed {
-                                        s.running = running.contains(&s.name);
+                                        if !s.local {
+                                            s.running = running.contains(&s.name);
+                                        }
+                                    }
+                                }
+                                for s in &mut refreshed {
+                                    if s.local {
+                                        s.running = session::is_local_running(&s.name);
                                     }
                                 }
                                 items = refreshed;
@@ -392,8 +395,8 @@ where
                             mode = Mode::Normal;
                             input = TextInput::new();
                         } else if std::env::var("BOX_MODE")
-                            .map(|v| v == "local")
-                            .unwrap_or(false)
+                            .map(|v| v != "docker")
+                            .unwrap_or(true)
                         {
                             new_name = name;
                             new_image = None;

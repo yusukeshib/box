@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use crate::config;
@@ -42,9 +44,10 @@ pub struct SessionSummary {
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
-    Ok(PathBuf::from(config::home_dir()?)
+    let dir = PathBuf::from(config::home_dir()?)
         .join(".box")
-        .join("sessions"))
+        .join("sessions");
+    Ok(dir)
 }
 
 const RESERVED_NAMES: &[&str] = &[
@@ -80,6 +83,11 @@ pub fn session_exists(name: &str) -> Result<bool> {
 pub fn save(session: &Session) -> Result<()> {
     let dir = sessions_dir()?.join(&session.name);
     fs::create_dir_all(&dir).context("Failed to create session directory")?;
+    // Restrict session directory to owner-only access (0o700) to prevent
+    // other local users from connecting to the Unix socket or tampering
+    // with PID files.
+    #[cfg(unix)]
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
 
     fs::write(dir.join("project_dir"), &session.project_dir)?;
     fs::write(dir.join("image"), &session.image)?;
@@ -225,6 +233,51 @@ pub fn touch_resumed_at(name: &str) -> Result<()> {
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
     )?;
     Ok(())
+}
+
+pub fn write_pid(name: &str, pid: u32) -> Result<()> {
+    let dir = sessions_dir()?.join(name);
+    fs::write(dir.join("pid"), pid.to_string())?;
+    Ok(())
+}
+
+pub fn remove_pid(name: &str) {
+    if let Ok(dir) = sessions_dir() {
+        let _ = fs::remove_file(dir.join(name).join("pid"));
+    }
+}
+
+pub fn socket_path(name: &str) -> Result<PathBuf> {
+    Ok(sessions_dir()?.join(name).join("sock"))
+}
+
+pub fn remove_socket(name: &str) {
+    if let Ok(dir) = sessions_dir() {
+        let _ = fs::remove_file(dir.join(name).join("sock"));
+    }
+}
+
+pub fn is_local_running(name: &str) -> bool {
+    // Check socket first (authoritative if server is up)
+    if let Ok(path) = socket_path(name) {
+        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+            return true;
+        }
+    }
+    // Fallback: PID check (handles server startup race)
+    let dir = match sessions_dir() {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+    let pid_str = match fs::read_to_string(dir.join(name).join("pid")) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let pid: i32 = match pid_str.trim().parse() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    unsafe { libc::kill(pid, 0) == 0 }
 }
 
 #[cfg(test)]

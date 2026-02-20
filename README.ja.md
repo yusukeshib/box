@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-AIコーディングエージェントのための安全で使い捨て可能な開発環境 — DockerとGitで動作。Docker不要の `--local` モードにも対応。
+AIコーディングエージェントのための安全で使い捨て可能な開発環境 — Gitで動作。Dockerはオプションで完全なコンテナ隔離に対応。
 
 ![demo](./demo.gif)
 
@@ -18,13 +18,12 @@ AIコーディングエージェント（Claude Code、Cursor、Copilot）は強
 - **AIエージェントが自由に実験可能** — コミット、ブランチ作成、書き換え、破壊 — 作業ツリーには影響なし
 - **永続的なセッション** — 終了しても再開時にそのまま続行、ファイルは保持されます
 - **名前付きセッション** — 複数の実験を並行して実行可能
-- **自分のツールチェーンを使用** — 任意のDockerイメージで動作
-- **ローカルモード** — `--local` でDocker不要のgitワークスペースセッションを作成
+- **Dockerモード** — `BOX_MODE=docker` で任意のDockerイメージを使った完全なコンテナ隔離に対応
 
 ## 必要なもの
 
 - [Git](https://git-scm.com/)
-- [Docker](https://www.docker.com/)（macOSでは[OrbStack](https://orbstack.dev/)も可） — `--local` モード使用時は不要
+- [Docker](https://www.docker.com/)（macOSでは[OrbStack](https://orbstack.dev/)も可） — `BOX_MODE=docker` 使用時のみ必要
 
 ## インストール
 
@@ -61,30 +60,33 @@ nix run github:yusukeshib/box
 ```bash
 box my-feature
 # `box create my-feature` のショートカット — 新しい隔離セッションを作成
-
-box my-feature --local
-# ローカルセッションを作成（gitワークスペースのみ、Docker不要）
 ```
 
 Boxはgitリポジトリ内で実行する必要があります — 現在のリポジトリをワークスペースにクローンします。
 
 フラグ不要のワークフローについては、下記の[カスタムイメージのセットアップ](#カスタムイメージのセットアップ)を参照してください。
 
-## カスタムイメージのセットアップ
+## Dockerモードのセットアップ
 
-Boxの推奨ワークフロー：イメージを一度ビルドし、環境変数を設定するだけ。以降はフラグなしで使えます。
+Dockerベースのコンテナ隔離を使用するには、`BOX_MODE=docker` を設定し、オプションでカスタムイメージを構成します。
 
-**1. ツールチェーンを含むDockerfileを作成**
+**1. Dockerモードを有効化**
+
+`.zshrc` または `.bashrc` に以下を追加：
+
+```bash
+export BOX_MODE=docker
+```
+
+**2. （オプション）ツールチェーンを含むDockerfileを作成**
 
 ワークフローに必要なツール（言語、ランタイム、CLIツールなど）をすべて含めます。
 
-**2. イメージをビルド**
+**3. （オプション）イメージをビルドして設定**
 
 ```bash
 docker build -t mydev .
 ```
-
-**3. 環境変数を設定**
 
 `.zshrc` または `.bashrc` に以下を追加：
 
@@ -96,10 +98,7 @@ export BOX_DEFAULT_CMD="bash"               # 新規セッションのデフォ�
 
 **4. 完了 — あとは box を使うだけ**
 
-環境変数を設定すれば、すべてのセッションがフラグなしでカスタムイメージを使用します：
-
 ```bash
-# これだけです。以降は:
 box create feature-1
 box create bugfix-auth
 box create experiment-v2
@@ -110,8 +109,8 @@ box create experiment-v2
 
 ```bash
 box                                               セッションマネージャー（TUI）
-box <name> [--local]                              `box create <name>` のショートカット
-box create <name> [--local] [options] [-- cmd...] 新しいセッションを作成
+box <name> [--local] [--docker]                   `box create <name>` のショートカット
+box create <name> [--local] [--docker] [options] [-- cmd...] 新しいセッションを作成
 box resume <name> [-d] [--docker-args <args>]     既存のセッションを再開
 box stop <name>                                   実行中のセッションを停止
 box exec <name> -- <cmd...>                       実行中のセッションでコマンドを実行
@@ -153,17 +152,14 @@ box my-feature
 # 明示的な形式
 box create my-feature
 
-# カスタムイメージでbashを使用
-box create my-feature --image ubuntu:latest -- bash
+# Dockerセッションを作成
+box create my-feature --docker --image ubuntu:latest -- bash
 
 # 追加のDockerフラグ（環境変数、ボリューム、ネットワークなど）
-box create my-feature --docker-args "-e KEY=VALUE -v /host:/container --network host"
+box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container --network host"
 
 # デタッチモードで作成（バックグラウンド）
 box create my-feature -d -- claude -p "do something"
-
-# ローカルセッションを作成（Docker不要）
-box create my-feature --local
 ```
 
 ### セッションの再開
@@ -243,11 +239,12 @@ box remove my-feature
 
 | オプション | 説明 |
 |--------|-------------|
-| `-d` | バックグラウンドでコンテナを実行（デタッチ） |
-| `--local` | ローカルセッションを作成（gitワークスペースのみ、Docker不要） |
+| `-d` | バックグラウンドで実行（デタッチ） |
+| `--local` | ローカルセッションを作成（デフォルト） |
+| `--docker` | Dockerセッションを作成（Docker必要） |
 | `--image <image>` | 使用するDockerイメージ（デフォルト: `alpine:latest`） |
 | `--docker-args <args>` | 追加のDockerフラグ（例: `-e KEY=VALUE`、`-v /host:/container`）。`$BOX_DOCKER_ARGS` を上書き |
-| `-- cmd...` | コンテナで実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
+| `-- cmd...` | 実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
 
 ### `box list`
 
@@ -273,7 +270,7 @@ CLIフラグを完全に省略するためのデフォルト設定です。`.zsh
 | `BOX_DEFAULT_IMAGE` | 新規セッションのデフォルトDockerイメージ（デフォルト: `alpine:latest`） |
 | `BOX_DOCKER_ARGS` | デフォルトの追加Dockerフラグ。`--docker-args` が指定されていない場合に使用 |
 | `BOX_DEFAULT_CMD` | 新規セッションのデフォルトコマンド。`-- cmd` が指定されていない場合に使用 |
-| `BOX_MODE` | `local` に設定すると、すべてのセッションをデフォルトでローカルモードで作成 |
+| `BOX_MODE` | セッションモード: `local`（デフォルト）または `docker` |
 
 ```bash
 # 全セッションにデフォルトのDockerフラグを設定
@@ -352,19 +349,25 @@ gitの隔離戦略はいくつか存在しますが、それぞれに問題が�
 
 ## Claude Code連携
 
-Boxは[Claude Code](https://docs.anthropic.com/en/docs/claude-code)の理想的なパートナーです。Boxセッション内でClaude Codeを実行すれば、リスクのある変更、ブランチの実験、テストの実行 — すべてホストから完全に隔離された環境で行えます。
+Boxは[Claude Code](https://docs.anthropic.com/en/docs/claude-code)の理想的なパートナーです。Boxセッション内でClaude Codeを実行すれば、リスクのある変更、ブランチの実験、テストの実行 — すべて隔離されたgitワークスペースで行えます。
 
 ```bash
-box create ai-experiment --image node:20 -- claude
+box create ai-experiment -- claude
 ```
 
 デタッチモードでバックグラウンド実行：
 
 ```bash
-box create ai-experiment -d --image node:20 -- claude -p "refactor the auth module"
+box create ai-experiment -d -- claude -p "refactor the auth module"
 ```
 
-エージェントが行うすべての操作はコンテナ内に留まります。完了したらセッションを削除すれば消えます。
+Dockerによる完全なコンテナ隔離：
+
+```bash
+box create ai-experiment --docker --image node:20 -- claude
+```
+
+エージェントが行うすべての操作はワークスペース内に留まります。完了したらセッションを削除すれば消えます。
 
 ## ライセンス
 

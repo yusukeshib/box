@@ -1,10 +1,11 @@
 mod config;
 mod docker;
 mod git;
+mod mux;
 mod session;
 mod tui;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use std::ffi::OsString;
 use std::fs;
@@ -83,6 +84,10 @@ struct CreateArgs {
     #[arg(long)]
     local: bool,
 
+    /// Create a Docker session (container isolation)
+    #[arg(long)]
+    docker: bool,
+
     /// Command to run in container (default: $BOX_DEFAULT_CMD if set)
     #[arg(last = true)]
     cmd: Vec<String>,
@@ -151,16 +156,35 @@ enum ConfigShell {
 
 fn is_local_mode() -> bool {
     std::env::var("BOX_MODE")
-        .map(|v| v == "local")
-        .unwrap_or(false)
+        .map(|v| v != "docker")
+        .unwrap_or(true)
 }
 
 fn main() {
+    // Server mode: if __BOX_MUX_SERVER is set, run as mux server daemon
+    if let Ok(session_name) = std::env::var("__BOX_MUX_SERVER") {
+        if let Err(e) = mux::server::run(&session_name) {
+            eprintln!("mux server: {:#}", e);
+        }
+        std::process::exit(0);
+    }
+
     let cli = Cli::parse();
 
     let result = match cli.command {
         Some(Commands::Create(args)) => {
-            let local = args.local || is_local_mode();
+            if std::env::var_os("BOX_SESSION").is_some() {
+                eprintln!(
+                    "Error: cannot nest box sessions (already inside session {:?})",
+                    std::env::var("BOX_SESSION").unwrap_or_default()
+                );
+                std::process::exit(1);
+            }
+            let local = if args.docker {
+                false
+            } else {
+                args.local || is_local_mode()
+            };
             let docker_args = args
                 .docker_args
                 .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
@@ -180,6 +204,13 @@ fn main() {
             )
         }
         Some(Commands::Resume(args)) => {
+            if std::env::var_os("BOX_SESSION").is_some() {
+                eprintln!(
+                    "Error: cannot nest box sessions (already inside session {:?})",
+                    std::env::var("BOX_SESSION").unwrap_or_default()
+                );
+                std::process::exit(1);
+            }
             let docker_args = args
                 .docker_args
                 .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
@@ -199,15 +230,30 @@ fn main() {
             ConfigShell::Bash => cmd_config_bash(),
         },
         Some(Commands::External(args)) => {
+            // Prevent infinite recursion: if we're already inside a mux PTY,
+            // don't create or resume sessions.
+            if std::env::var_os("BOX_SESSION").is_some() {
+                eprintln!(
+                    "Error: cannot nest box sessions (already inside session {:?})",
+                    std::env::var("BOX_SESSION").unwrap_or_default()
+                );
+                std::process::exit(1);
+            }
             let name = args[0].to_string_lossy().to_string();
-            let local = args[1..].iter().any(|a| a == "--local") || is_local_mode();
+            let has_docker = args[1..].iter().any(|a| a == "--docker");
+            let has_local = args[1..].iter().any(|a| a == "--local");
+            let local = if has_docker {
+                false
+            } else {
+                has_local || is_local_mode()
+            };
             let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
             if session::session_exists(&name).unwrap_or(false) {
                 cmd_resume(&name, &docker_args, false)
             } else {
                 let cmd: Vec<String> = args[1..]
                     .iter()
-                    .filter(|a| *a != "--local")
+                    .filter(|a| *a != "--local" && *a != "--docker")
                     .skip_while(|a| *a != "--")
                     .skip(1)
                     .map(|a| a.to_string_lossy().to_string())
@@ -228,14 +274,8 @@ fn main() {
     }
 }
 
-fn run_local_command(workspace: &str, command: &[String]) -> Result<i32> {
-    let mut child = std::process::Command::new(&command[0])
-        .args(&command[1..])
-        .current_dir(workspace)
-        .spawn()
-        .with_context(|| format!("Failed to run command: {}", shell_words::join(command)))?;
-    let status = child.wait()?;
-    Ok(status.code().unwrap_or(1))
+fn run_local_command(session_name: &str) -> Result<i32> {
+    mux::run(session_name)
 }
 
 fn output_cd_path(path: &str) {
@@ -335,6 +375,11 @@ fn cmd_list() -> Result<i32> {
             }
         }
     }
+    for s in &mut sessions {
+        if s.local {
+            s.running = session::is_local_running(&s.name);
+        }
+    }
 
     let delete_fn = |name: &str| -> Result<()> {
         let sess = session::load(name)?;
@@ -377,6 +422,11 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
             if !s.local {
                 s.running = running.contains(&s.name);
             }
+        }
+    }
+    for s in &mut sessions {
+        if s.local {
+            s.running = session::is_local_running(&s.name);
         }
     }
 
@@ -512,7 +562,7 @@ fn cmd_create(
         output_cd_path(&workspace);
 
         if !sess.command.is_empty() {
-            return run_local_command(&workspace, &sess.command);
+            return run_local_command(&sess.name);
         }
         return Ok(0);
     }
@@ -570,7 +620,7 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
         output_cd_path(&workspace.to_string_lossy());
 
         if !sess.command.is_empty() {
-            return run_local_command(&workspace.to_string_lossy(), &sess.command);
+            return run_local_command(name);
         }
         return Ok(0);
     }
@@ -627,6 +677,13 @@ fn cmd_remove(name: &str) -> Result<i32> {
     let sess = session::load(name)?;
 
     if sess.local {
+        if session::is_local_running(name) {
+            bail!(
+                "Session '{}' is still running. Stop it first with `box stop {}`.",
+                name,
+                name
+            );
+        }
         docker::remove_workspace(name);
         session::remove_dir(name)?;
         output_cd_path(&sess.project_dir);
@@ -663,10 +720,12 @@ fn cmd_stop(name: &str) -> Result<i32> {
     let sess = session::load(name)?;
 
     if sess.local {
-        bail!(
-            "Session '{}' is a local session (not a Docker container).",
-            name
-        );
+        if !session::is_local_running(name) {
+            bail!("Session '{}' is not running.", name);
+        }
+        mux::send_kill(name)?;
+        println!("Session '{}' stopped.", name);
+        return Ok(0);
     }
 
     docker::check()?;
@@ -690,14 +749,11 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     if sess.local {
         let home = config::home_dir()?;
         let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
-        let status = std::process::Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .current_dir(&workspace)
-            .stdin(std::process::Stdio::inherit())
-            .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit())
-            .status()?;
-        return Ok(status.code().unwrap_or(1));
+        return mux::run_standalone(mux::MuxConfig {
+            session_name: name.to_string(),
+            command: cmd.to_vec(),
+            working_dir: Some(workspace.to_string_lossy().to_string()),
+        });
     }
 
     docker::check()?;
@@ -793,10 +849,11 @@ _box() {{
             case $words[1] in
                 create)
                     _arguments \
-                        '-d[Run container in the background]' \
+                        '-d[Run in the background]' \
                         '--image=[Docker image to use]:image' \
                         '--docker-args=[Extra Docker flags]:args' \
-                        '--local[Create a local session (no Docker)]' \
+                        '--local[Create a local session (default)]' \
+                        '--docker[Create a Docker session]' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -882,7 +939,7 @@ fn cmd_config_bash() -> Result<i32> {
         create)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "-d --image --docker-args --local" -- "$cur"))
+                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker" -- "$cur"))
                     ;;
             esac
             ;;
