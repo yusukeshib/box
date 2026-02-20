@@ -120,6 +120,22 @@ pub fn write_client_msg(w: &mut impl Write, msg: &ClientMsg) -> io::Result<()> {
     }
 }
 
+/// Serialize a ServerMsg into a self-contained byte buffer (tag + length + payload).
+/// Used for pre-serializing messages before sending to per-client writer threads.
+pub fn serialize_server_msg(msg: &ServerMsg) -> Vec<u8> {
+    let mut buf = Vec::new();
+    write_server_msg(&mut buf, msg).unwrap(); // Vec<u8> write never fails
+    buf
+}
+
+/// Serialize an Output message from a borrowed slice, avoiding a clone of the
+/// underlying data.  Used to send the history buffer without copying it.
+pub fn serialize_output_slice(data: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(5 + data.len());
+    write_frame(&mut buf, 0x01, data).unwrap();
+    buf
+}
+
 pub fn read_client_msg(r: &mut impl Read) -> io::Result<ClientMsg> {
     let (tag, payload) = read_frame(r)?;
     match tag {

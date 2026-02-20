@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
-use std::collections::HashMap;
-use std::io::Read;
+use std::collections::{HashMap, VecDeque};
+use std::io::{Read, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config;
@@ -29,7 +30,9 @@ enum ServerEvent {
 }
 
 struct ClientEntry {
-    writer: UnixStream,
+    /// Bounded channel to per-client writer thread.  Sending serialised
+    /// message bytes here never blocks the server event loop.
+    tx: mpsc::SyncSender<Arc<[u8]>>,
     cols: u16,
     rows: u16,
     has_resized: bool,
@@ -122,7 +125,9 @@ pub fn run(session_name: &str) -> Result<()> {
 
     // Raw PTY output history for replaying scrollback to new clients.
     // Capped at 4MB — enough for ~10k lines of typical terminal output.
-    let mut history: Vec<u8> = Vec::new();
+    // VecDeque so that draining old bytes from the front is O(1) amortised
+    // instead of the O(n) memmove that Vec::drain(..n) requires.
+    let mut history: VecDeque<u8> = VecDeque::new();
     const MAX_HISTORY_BYTES: usize = 4 * 1024 * 1024;
 
     let mut pty_cols = default_cols;
@@ -183,39 +188,41 @@ pub fn run(session_name: &str) -> Result<()> {
             Ok(ServerEvent::PtyOutput(data)) => {
                 parser.process(&data);
                 // Accumulate raw output for scrollback replay
-                history.extend_from_slice(&data);
+                history.extend(data.iter().copied());
                 if history.len() > MAX_HISTORY_BYTES {
                     let excess = history.len() - MAX_HISTORY_BYTES;
                     // Find a newline near the cut point to avoid splitting
                     // mid-escape-sequence, which would garble scrollback for
                     // newly connecting clients.
-                    let cut = history[excess..]
-                        .iter()
-                        .position(|&b| b == b'\n')
-                        .map(|p| excess + p + 1)
+                    let cut = (excess..history.len())
+                        .find(|&i| history[i] == b'\n')
+                        .map(|p| p + 1)
                         .unwrap_or(excess);
                     history.drain(..cut);
                 }
-                // Broadcast to all clients
-                let msg = ServerMsg::Output(data);
+                // Broadcast to all clients via their writer-thread channels
+                let msg_bytes: Arc<[u8]> =
+                    Arc::from(protocol::serialize_server_msg(&ServerMsg::Output(data)));
                 let mut disconnected = Vec::new();
-                for (&id, client) in clients.iter_mut() {
-                    if protocol::write_server_msg(&mut client.writer, &msg).is_err() {
+                for (&id, client) in clients.iter() {
+                    if client.tx.try_send(msg_bytes.clone()).is_err() {
                         disconnected.push(id);
                     }
                 }
-                for id in disconnected {
-                    clients.remove(&id);
-                }
-                // Recalculate size after disconnects
-                if !clients.is_empty() {
-                    recalc_size(
-                        &mut clients,
-                        &pty,
-                        &mut parser,
-                        &mut pty_cols,
-                        &mut pty_rows,
-                    );
+                // Only recalculate PTY size when clients were actually removed
+                if !disconnected.is_empty() {
+                    for id in disconnected {
+                        clients.remove(&id);
+                    }
+                    if !clients.is_empty() {
+                        recalc_size(
+                            &mut clients,
+                            &pty,
+                            &mut parser,
+                            &mut pty_cols,
+                            &mut pty_rows,
+                        );
+                    }
                 }
             }
             Ok(ServerEvent::NewClient(stream)) => {
@@ -228,16 +235,30 @@ pub fn run(session_name: &str) -> Result<()> {
                     Err(_) => continue,
                 };
 
-                // Set a write timeout so that broadcasting to a slow/stuck client
-                // doesn't block the entire server event loop.  If any single
-                // write() call doesn't make progress within this window we
-                // disconnect the client instead of freezing all sessions.
-                let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                // Set a write timeout so the writer thread doesn't block
+                // indefinitely on a stuck client socket.
+                let mut writer_stream = stream;
+                let _ = writer_stream.set_write_timeout(Some(Duration::from_secs(5)));
+
+                // Bounded channel for non-blocking broadcast to this client.
+                // Capacity of 64 messages (~256 KB of buffered output).
+                let (client_tx, client_rx) = mpsc::sync_channel::<Arc<[u8]>>(64);
+
+                // Per-client writer thread — drains the channel and writes
+                // to the socket.  This decouples broadcast from socket I/O
+                // so a slow client cannot block output to other clients.
+                std::thread::spawn(move || {
+                    while let Ok(bytes) = client_rx.recv() {
+                        if writer_stream.write_all(&bytes).is_err() {
+                            break;
+                        }
+                    }
+                });
 
                 clients.insert(
                     id,
                     ClientEntry {
-                        writer: stream,
+                        tx: client_tx,
                         cols: 0,
                         rows: 0,
                         has_resized: false,
@@ -276,29 +297,30 @@ pub fn run(session_name: &str) -> Result<()> {
 
                         if first_resize {
                             // Send current PTY size
-                            let _ = protocol::write_server_msg(
-                                &mut client.writer,
+                            let _ = client.tx.send(Arc::from(protocol::serialize_server_msg(
                                 &ServerMsg::Resized {
                                     cols: pty_cols,
                                     rows: pty_rows,
                                 },
-                            );
+                            )));
                             // Replay raw PTY history so the client builds up
                             // the same scrollback buffer, then send a formatted
                             // screen dump to ensure the visible area matches exactly.
                             // Always send at least one Output (even if empty) so
                             // the client handshake read doesn't block waiting.
+                            //
+                            // make_contiguous() arranges the VecDeque in-place
+                            // (no heap alloc) so we can serialise from a borrow
+                            // instead of cloning the entire history.
                             if !history.is_empty() {
-                                let _ = protocol::write_server_msg(
-                                    &mut client.writer,
-                                    &ServerMsg::Output(history.clone()),
-                                );
+                                let _ = client.tx.send(Arc::from(
+                                    protocol::serialize_output_slice(history.make_contiguous()),
+                                ));
                             }
                             let contents = parser.screen().contents_formatted();
-                            let _ = protocol::write_server_msg(
-                                &mut client.writer,
+                            let _ = client.tx.send(Arc::from(protocol::serialize_server_msg(
                                 &ServerMsg::Output(contents),
-                            );
+                            )));
                         }
 
                         // Recalculate effective size
@@ -336,9 +358,10 @@ pub fn run(session_name: &str) -> Result<()> {
                 // Drain remaining PTY output
                 while let Ok(ServerEvent::PtyOutput(data)) = rx.try_recv() {
                     parser.process(&data);
-                    let msg = ServerMsg::Output(data);
-                    for client in clients.values_mut() {
-                        let _ = protocol::write_server_msg(&mut client.writer, &msg);
+                    let msg_bytes: Arc<[u8]> =
+                        Arc::from(protocol::serialize_server_msg(&ServerMsg::Output(data)));
+                    for client in clients.values() {
+                        let _ = client.tx.try_send(msg_bytes.clone());
                     }
                 }
 
@@ -346,10 +369,13 @@ pub fn run(session_name: &str) -> Result<()> {
                 let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(0);
 
                 // Broadcast Exited to all clients
-                let exit_msg = ServerMsg::Exited(code);
-                for client in clients.values_mut() {
-                    let _ = protocol::write_server_msg(&mut client.writer, &exit_msg);
+                let exit_bytes: Arc<[u8]> =
+                    Arc::from(protocol::serialize_server_msg(&ServerMsg::Exited(code)));
+                for client in clients.values() {
+                    let _ = client.tx.try_send(exit_bytes.clone());
                 }
+                // Drop senders so writer threads drain their queues and exit.
+                clients.clear();
 
                 // Cleanup happens via CleanupGuard on drop
                 break;
@@ -361,10 +387,12 @@ pub fn run(session_name: &str) -> Result<()> {
                     let _ = child.wait();
 
                     // Broadcast Exited to all clients
-                    let exit_msg = ServerMsg::Exited(0);
-                    for client in clients.values_mut() {
-                        let _ = protocol::write_server_msg(&mut client.writer, &exit_msg);
+                    let exit_bytes: Arc<[u8]> =
+                        Arc::from(protocol::serialize_server_msg(&ServerMsg::Exited(0)));
+                    for client in clients.values() {
+                        let _ = client.tx.try_send(exit_bytes.clone());
                     }
+                    clients.clear();
                     break;
                 }
                 continue;
@@ -404,13 +432,13 @@ fn recalc_size(
         parser.set_size(new_rows, new_cols);
 
         // Broadcast Resized to all clients
-        let msg = ServerMsg::Resized {
+        let msg_bytes: Arc<[u8]> = Arc::from(protocol::serialize_server_msg(&ServerMsg::Resized {
             cols: new_cols,
             rows: new_rows,
-        };
+        }));
         let mut disconnected = Vec::new();
-        for (&id, client) in clients.iter_mut() {
-            if protocol::write_server_msg(&mut client.writer, &msg).is_err() {
+        for (&id, client) in clients.iter() {
+            if client.tx.try_send(msg_bytes.clone()).is_err() {
                 disconnected.push(id);
             }
         }

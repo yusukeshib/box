@@ -97,8 +97,8 @@ impl<'a> Widget for TerminalWidget<'a> {
                     continue;
                 };
 
-                let ch: String = cell.contents();
-                let display_ch = if ch.is_empty() { " ".to_string() } else { ch };
+                let ch = cell.contents();
+                let display_ch = if ch.is_empty() { " " } else { ch.as_str() };
 
                 let mut style = Style::default();
                 style = style.fg(map_vt100_color(cell.fgcolor()));
@@ -124,7 +124,7 @@ impl<'a> Widget for TerminalWidget<'a> {
                 }
 
                 let buf_cell = &mut buf[(buf_x, buf_y)];
-                buf_cell.set_symbol(&display_ch);
+                buf_cell.set_symbol(display_ch);
                 buf_cell.set_style(style);
             }
         }
