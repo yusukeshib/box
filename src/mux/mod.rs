@@ -47,14 +47,14 @@ pub struct MuxConfig {
     pub prefix_key: u8,
 }
 
-/// Client-server mode for local sessions.
-/// Starts server if not running, then attaches as client.
-pub fn run(session_name: &str) -> Result<i32> {
+/// Ensure a session's mux server is running. Starts one if needed.
+/// Returns the socket path once ready.
+pub fn ensure_server(session_name: &str) -> Result<std::path::PathBuf> {
     let socket_path = session::socket_path(session_name)?;
 
     // Try connecting to existing server (fast path, no lock needed)
     if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
-        return client::run(session_name, &socket_path);
+        return Ok(socket_path);
     }
 
     // Acquire exclusive lock to prevent two concurrent callers from both
@@ -64,7 +64,7 @@ pub fn run(session_name: &str) -> Result<i32> {
     // Re-check under the lock — another caller may have started the server
     // while we were waiting for the lock.
     if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
-        return client::run(session_name, &socket_path);
+        return Ok(socket_path);
     }
 
     // Kill any stale server process (e.g. one that survived SIGHUP but
@@ -77,10 +77,46 @@ pub fn run(session_name: &str) -> Result<i32> {
     // Spawn server daemon
     spawn_server(session_name)?;
 
-    // Poll for socket (up to 3s), then connect as client
+    // Poll for socket (up to 3s), then return once server is ready.
     // Lock is released here (dropped at end of scope) once server is ready.
     wait_for_socket(session_name, &socket_path)?;
-    client::run(session_name, &socket_path)
+    Ok(socket_path)
+}
+
+/// Client-server mode for local sessions.
+/// Starts server if not running, then attaches as client.
+/// Supports switching sessions via the sidebar without detaching.
+pub fn run(session_name: &str) -> Result<i32> {
+    // Open /dev/tty and enter raw mode once for the entire run.
+    // This avoids a visible blackout when switching sessions, since we
+    // never leave the alternate screen between switches.
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("Cannot open /dev/tty for mux client")?;
+    let tty_fd = tty.as_raw_fd();
+
+    terminal::install_panic_hook();
+    let _guard = RawModeGuard::activate(&mut tty)?;
+
+    let mut current = session_name.to_string();
+    loop {
+        let socket_path = ensure_server(&current)?;
+        match client::run(&current, &socket_path, tty_fd)? {
+            client::ClientResult::Exit(code) => return Ok(code),
+            client::ClientResult::SwitchSession(next) => {
+                // Clear the physical screen between sessions so the new
+                // client's first ratatui draw is guaranteed to repaint
+                // everything (ratatui diffs against its empty internal
+                // buffer and sees every cell as changed).
+                use std::io::Write;
+                let _ = tty.write_all(b"\x1b[H\x1b[2J");
+                let _ = tty.flush();
+                current = next;
+            }
+        }
+    }
 }
 
 fn project_name_for_session(session_name: &str) -> String {
@@ -314,6 +350,9 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         InputAction::Redraw => {
                             dirty = true;
                         }
+                        InputAction::OpenSidebar => {
+                            // Sidebar not available in standalone mode
+                        }
                     }
                 }
             }
@@ -398,10 +437,12 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         hover_close: input_state.hover_close,
                         header_color,
                     };
+                    terminal::begin_sync_update(tty_fd);
                     term.draw(|f| {
-                        terminal::draw_frame(f, &params);
+                        terminal::draw_frame(f, &params, f.area());
                     })
                     .context("Failed to draw terminal frame")?;
+                    terminal::end_sync_update(tty_fd);
                     parser.set_scrollback(0);
                     dirty = false;
                 }
