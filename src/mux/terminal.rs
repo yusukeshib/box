@@ -659,8 +659,8 @@ impl InputState {
                     actions.push(InputAction::Detach);
                     return actions;
                 }
-                // 'a' — open session sidebar
-                if b == b'a' {
+                // 'a' or Ctrl+A — open session sidebar
+                if b == b'a' || b == 0x01 {
                     self.command_mode = false;
                     actions.push(InputAction::OpenSidebar);
                     i += 1;
