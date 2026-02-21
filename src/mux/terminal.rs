@@ -178,12 +178,13 @@ pub fn create_terminal(
     tty_fd: i32,
     cols: u16,
     rows: u16,
-) -> Result<Terminal<CrosstermBackend<std::fs::File>>> {
+) -> Result<Terminal<CrosstermBackend<io::BufWriter<std::fs::File>>>> {
     let fd = unsafe { libc::dup(tty_fd) };
     if fd < 0 {
         anyhow::bail!("Failed to dup tty fd: {}", io::Error::last_os_error());
     }
-    let writer = unsafe { std::fs::File::from_raw_fd(fd) };
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let writer = io::BufWriter::new(file);
     let backend = CrosstermBackend::new(writer);
     Terminal::with_options(
         backend,
@@ -786,6 +787,36 @@ impl InputState {
 /// off when scrollback is empty (native text selection works),
 /// on when there's content to scroll through.
 /// Mode 1000 = basic press/release, 1002 = button-event (drag), 1006 = SGR encoding.
+/// Write raw bytes to a tty fd (retries on short writes).
+fn tty_write(tty_fd: i32, data: &[u8]) {
+    let mut offset = 0;
+    while offset < data.len() {
+        let n = unsafe {
+            libc::write(
+                tty_fd,
+                data[offset..].as_ptr() as *const libc::c_void,
+                data.len() - offset,
+            )
+        };
+        if n <= 0 {
+            break;
+        }
+        offset += n as usize;
+    }
+}
+
+/// Begin DEC synchronized update mode (DECSM 2026).
+/// Tells the terminal to buffer all output until `end_sync_update` is called,
+/// then render everything in a single atomic frame.
+pub fn begin_sync_update(tty_fd: i32) {
+    tty_write(tty_fd, b"\x1b[?2026h");
+}
+
+/// End DEC synchronized update mode (DECRM 2026).
+pub fn end_sync_update(tty_fd: i32) {
+    tty_write(tty_fd, b"\x1b[?2026l");
+}
+
 pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
     let seq: &[u8] = if enable {
         // Mode 1003: any-event tracking (reports motion even without buttons held)
@@ -794,20 +825,7 @@ pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
     } else {
         b"\x1b[?1006l\x1b[?1003l"
     };
-    let mut offset = 0;
-    while offset < seq.len() {
-        let n = unsafe {
-            libc::write(
-                tty_fd,
-                seq[offset..].as_ptr() as *const libc::c_void,
-                seq.len() - offset,
-            )
-        };
-        if n <= 0 {
-            break;
-        }
-        offset += n as usize;
-    }
+    tty_write(tty_fd, seq);
 }
 
 /// Install a panic hook that restores terminal state.

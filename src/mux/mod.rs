@@ -106,6 +106,13 @@ pub fn run(session_name: &str) -> Result<i32> {
         match client::run(&current, &socket_path, tty_fd)? {
             client::ClientResult::Exit(code) => return Ok(code),
             client::ClientResult::SwitchSession(next) => {
+                // Clear the physical screen between sessions so the new
+                // client's first ratatui draw is guaranteed to repaint
+                // everything (ratatui diffs against its empty internal
+                // buffer and sees every cell as changed).
+                use std::io::Write;
+                let _ = tty.write_all(b"\x1b[H\x1b[2J");
+                let _ = tty.flush();
                 current = next;
             }
         }
@@ -430,10 +437,12 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         hover_close: input_state.hover_close,
                         header_color,
                     };
+                    terminal::begin_sync_update(tty_fd);
                     term.draw(|f| {
                         terminal::draw_frame(f, &params, f.area());
                     })
                     .context("Failed to draw terminal frame")?;
+                    terminal::end_sync_update(tty_fd);
                     parser.set_scrollback(0);
                     dirty = false;
                 }

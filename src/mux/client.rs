@@ -378,10 +378,9 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
     // Clear timeout for normal operation (reader thread handles its own blocking)
     sock_reader.set_read_timeout(None)?;
 
-    // Create ratatui terminal and force a full repaint so the screen
-    // is not left blank after a session switch.
+    // Create ratatui terminal.  Both internal buffers start empty, so the
+    // first draw() will output every cell as a full diff — no clear() needed.
     let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
-    terminal.clear()?;
 
     let project_name = super::project_name_for_session(session_name);
     let header_color = super::color_for_session(session_name);
@@ -389,8 +388,7 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
     let mut input_state = InputState::new(prefix_key);
 
     // Draw the first frame immediately so the user sees content right
-    // after a session switch instead of staring at a blank screen while
-    // the event loop spins up.
+    // after a session switch instead of a blank screen.
     terminal::set_mouse_tracking(tty_fd, true);
     let mut mouse_tracking_on = true;
     {
@@ -410,11 +408,13 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
             hover_close: false,
             header_color,
         };
+        terminal::begin_sync_update(tty_fd);
         terminal
             .draw(|f| {
                 terminal::draw_frame(f, &params, f.area());
             })
             .context("Failed to draw initial frame")?;
+        terminal::end_sync_update(tty_fd);
         parser.set_scrollback(0);
     }
 
@@ -494,10 +494,6 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                     let (_, cur_cols) = parser.screen().size();
                     let cols_changed = cols != cur_cols;
                     parser.set_size(rows, cols);
-                    // Only clear when columns changed — width changes cause
-                    // content reflow that looks garbled.  Height-only or
-                    // same-size responses keep content valid; clearing would
-                    // just cause a blank-screen flash.
                     if cols_changed {
                         parser.process(b"\x1b[H\x1b[2J");
                     }
@@ -604,15 +600,7 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                                     rows: new_inner,
                                 },
                             );
-                            // Update parser locally so the next draw uses
-                            // dimensions consistent with the new terminal size.
-                            // The server will send Resized later (which may
-                            // differ in multi-client scenarios), but without
-                            // this the first frame has a dimension mismatch.
                             parser.set_size(new_inner, cols);
-                            // Only clear parser screen when columns changed —
-                            // width changes cause content reflow that looks
-                            // garbled.  Height-only changes keep content valid.
                             if cols_changed {
                                 parser.process(b"\x1b[H\x1b[2J");
                             }
@@ -648,6 +636,7 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                         header_color,
                     };
                     let sidebar_ref = sidebar.as_ref();
+                    terminal::begin_sync_update(tty_fd);
                     terminal
                         .draw(|f| {
                             let full = f.area();
@@ -673,6 +662,7 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                             }
                         })
                         .context("Failed to draw terminal frame")?;
+                    terminal::end_sync_update(tty_fd);
                     parser.set_scrollback(0);
                     dirty = false;
                 }
