@@ -43,6 +43,7 @@ pub struct SessionSummary {
     pub created_at: String,
     pub running: bool,
     pub local: bool,
+    pub color: Option<String>,
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
@@ -232,6 +233,11 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             .map(|s| s.trim() == "local")
             .unwrap_or(false);
 
+        let color = fs::read_to_string(session_path.join("color"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         sessions.push(SessionSummary {
             name,
             project_dir,
@@ -240,6 +246,7 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             created_at,
             running: false,
             local,
+            color,
         });
     }
 
