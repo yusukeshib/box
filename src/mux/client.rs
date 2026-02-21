@@ -378,8 +378,10 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
     // Clear timeout for normal operation (reader thread handles its own blocking)
     sock_reader.set_read_timeout(None)?;
 
-    // Create ratatui terminal
+    // Create ratatui terminal and force a full repaint so the screen
+    // is not left blank after a session switch.
     let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
+    terminal.clear()?;
 
     // Channel for events
     let (tx, rx) = mpsc::channel::<ClientEvent>();
