@@ -345,6 +345,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 // Check for terminal resize
                 if let Ok((cols, rows)) = terminal::get_term_size(tty_fd) {
                     if cols != last_cols || rows != last_rows {
+                        let cols_changed = cols != last_cols;
                         last_cols = cols;
                         last_rows = rows;
                         let new_inner = rows.saturating_sub(1);
@@ -352,10 +353,15 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             current_inner_rows = new_inner;
                             let _ = terminal::set_pty_size(&pty, new_inner, cols);
                             parser.set_size(new_inner, cols);
-                            // Clear parser screen — set_size() rewraps old
-                            // content which looks garbled for TUI apps.
-                            // The child will send a fresh redraw via SIGWINCH.
-                            parser.process(b"\x1b[H\x1b[2J");
+                            // Only clear parser screen when columns changed —
+                            // set_size() rewraps content on width change which
+                            // looks garbled for TUI apps.  Height-only changes
+                            // just add/remove rows; the existing content stays
+                            // valid, so clearing would cause a blank-screen
+                            // flash until the child redraws via SIGWINCH.
+                            if cols_changed {
+                                parser.process(b"\x1b[H\x1b[2J");
+                            }
                             term = terminal::create_terminal(tty_fd, cols, rows)?;
                             // Clear stale content left by the terminal emulator's
                             // resize reflow.  Without this, ratatui's diff skips
