@@ -488,6 +488,8 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                             terminal.clear()?;
                         }
                         SidebarAction::Switch(next) => {
+                            // Clear screen so the new session starts fresh
+                            terminal.clear()?;
                             // Close the dup'd input fd to unblock the reader thread
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::SwitchSession(next));
