@@ -19,6 +19,7 @@ pub enum TuiAction {
         command: Option<Vec<String>>,
         local: bool,
         color: Option<String>,
+        strategy: Option<String>,
     },
     Cd(String),
     Origin(String),
@@ -584,6 +585,7 @@ where
                             command: new_command,
                             local: new_local,
                             color,
+                            strategy: None,
                         });
                     }
                     KeyCode::Esc => {

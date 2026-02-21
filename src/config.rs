@@ -22,6 +22,7 @@ pub struct BoxConfig {
     pub env: Vec<String>,
     pub local: bool,
     pub color: Option<String>,
+    pub strategy: String,
 }
 
 pub struct BoxConfigInput {
@@ -33,6 +34,7 @@ pub struct BoxConfigInput {
     pub env: Vec<String>,
     pub local: bool,
     pub color: Option<String>,
+    pub strategy: Option<String>,
 }
 
 fn resolve_command(command: Option<Vec<String>>) -> Result<Vec<String>> {
@@ -46,8 +48,19 @@ fn resolve_command(command: Option<Vec<String>>) -> Result<Vec<String>> {
     }
 }
 
+fn resolve_strategy(strategy: Option<String>) -> Result<String> {
+    let s = strategy
+        .or_else(|| std::env::var("BOX_STRATEGY").ok().filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| "clone".to_string());
+    match s.as_str() {
+        "clone" | "worktree" => Ok(s),
+        _ => bail!("Invalid strategy '{}'. Must be 'clone' or 'worktree'.", s),
+    }
+}
+
 pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
     let command = resolve_command(input.command)?;
+    let strategy = resolve_strategy(input.strategy)?;
 
     if input.local {
         return Ok(BoxConfig {
@@ -59,6 +72,7 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
             env: vec![],
             local: true,
             color: input.color,
+            strategy,
         });
     }
 
@@ -78,6 +92,7 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
         env: input.env,
         local: false,
         color: input.color,
+        strategy,
     })
 }
 
@@ -201,6 +216,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
 
@@ -215,6 +231,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             }
         );
 
@@ -239,6 +256,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
 
@@ -258,6 +276,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
 
@@ -279,6 +298,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(config.image, "ubuntu:latest");
@@ -303,6 +323,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(config.image, "python:3.11");
@@ -364,6 +385,7 @@ mod tests {
             env: vec!["FOO=bar".to_string()],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
 
@@ -378,6 +400,7 @@ mod tests {
                 env: vec!["FOO=bar".to_string()],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             }
         );
     }
@@ -396,6 +419,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(config.command, vec!["bash".to_string()]);
@@ -419,6 +443,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(config.command, vec!["sh".to_string()]);
@@ -442,6 +467,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(
@@ -472,6 +498,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
@@ -495,6 +522,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("BOX_DEFAULT_CMD"));
@@ -518,6 +546,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
@@ -540,6 +569,7 @@ mod tests {
             env: vec![],
             local: true,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(config.command, vec!["bash".to_string()]);
@@ -564,6 +594,7 @@ mod tests {
             env: vec![],
             local: false,
             color: None,
+            strategy: None,
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());

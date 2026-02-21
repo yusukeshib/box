@@ -6,9 +6,23 @@ use crate::config;
 use crate::mux;
 
 /// Create a workspace directory on the host for the session.
-/// On first run, clones the project repo via `git clone --local`.
+/// Dispatches to clone or worktree strategy based on the `strategy` parameter.
+/// Returns the host path.
+pub fn ensure_workspace(
+    home: &str,
+    name: &str,
+    project_dir: &str,
+    strategy: &str,
+) -> Result<String> {
+    match strategy {
+        "worktree" => ensure_workspace_worktree(home, name, project_dir),
+        _ => ensure_workspace_clone(home, name, project_dir),
+    }
+}
+
+/// Create a workspace via `git clone --local`.
 /// Returns the host path. The directory is writable by the owner and group so container users with the appropriate group can write.
-pub fn ensure_workspace(home: &str, name: &str, project_dir: &str) -> Result<String> {
+fn ensure_workspace_clone(home: &str, name: &str, project_dir: &str) -> Result<String> {
     let dir_path = Path::new(home).join(".box").join("workspaces").join(name);
     let dir = dir_path.to_string_lossy().to_string();
     let git_dir = dir_path.join(".git");
@@ -53,11 +67,56 @@ pub fn ensure_workspace(home: &str, name: &str, project_dir: &str) -> Result<Str
     Ok(dir)
 }
 
-/// Remove the workspace directory for a session.
-pub fn remove_workspace(name: &str) {
+/// Create a workspace via `git worktree add --detach`.
+fn ensure_workspace_worktree(home: &str, name: &str, project_dir: &str) -> Result<String> {
+    let dir_path = Path::new(home).join(".box").join("workspaces").join(name);
+    let dir = dir_path.to_string_lossy().to_string();
+
+    if !dir_path.exists() {
+        eprintln!("\x1b[2mrunning worktree command:\x1b[0m");
+        eprintln!("git -C {} worktree add --detach {}", project_dir, dir);
+        let status = Command::new("git")
+            .args(["-C", project_dir, "worktree", "add", "--detach", &dir])
+            .status()?;
+        if !status.success() {
+            bail!("git worktree add failed");
+        }
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&dir)?.permissions();
+        perms.set_mode(0o775);
+        std::fs::set_permissions(&dir, perms)?;
+    }
+
+    Ok(dir)
+}
+
+/// Remove the workspace for a session. Dispatches based on strategy.
+pub fn remove_workspace(name: &str, strategy: &str) {
+    match strategy {
+        "worktree" => remove_workspace_worktree(name),
+        _ => remove_workspace_clone(name),
+    }
+}
+
+/// Remove the workspace directory for a clone-based session.
+fn remove_workspace_clone(name: &str) {
     if let Ok(home) = config::home_dir() {
         let dir = Path::new(&home).join(".box").join("workspaces").join(name);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Remove the workspace for a worktree-based session.
+fn remove_workspace_worktree(name: &str) {
+    if let Ok(home) = config::home_dir() {
+        let dir = Path::new(&home).join(".box").join("workspaces").join(name);
+        let _ = Command::new("git")
+            .args(["worktree", "remove", "--force", &dir.to_string_lossy()])
+            .status();
     }
 }
 
@@ -97,6 +156,7 @@ pub struct DockerRunConfig<'a> {
     pub home: &'a str,
     pub docker_args: Option<&'a str>,
     pub detach: bool,
+    pub strategy: &'a str,
 }
 
 /// Build the docker run argument list without executing. Used by run_container and tests.
@@ -153,7 +213,7 @@ pub fn build_run_args(cfg: &DockerRunConfig) -> Result<Vec<String>> {
 }
 
 pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
-    ensure_workspace(cfg.home, cfg.name, cfg.project_dir)?;
+    ensure_workspace(cfg.home, cfg.name, cfg.project_dir, cfg.strategy)?;
 
     let args = build_run_args(cfg)?;
     eprintln!("\x1b[2mrunning container:\x1b[0m");
@@ -325,6 +385,7 @@ mod tests {
             home: "/home/user",
             docker_args: None,
             detach: false,
+            strategy: "clone",
         }
     }
 
