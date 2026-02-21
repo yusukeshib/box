@@ -438,7 +438,8 @@ fn cmd_list() -> Result<i32> {
             image,
             command,
             local,
-        } => cmd_create(&name, image, &docker_args, command, false, local, None),
+            color,
+        } => cmd_create(&name, image, &docker_args, command, false, local, color),
         tui::TuiAction::Cd(name) => cmd_cd(&name),
         tui::TuiAction::Origin(name) => {
             let sess = session::load(&name)?;
@@ -446,6 +447,25 @@ fn cmd_list() -> Result<i32> {
             Ok(0)
         }
         tui::TuiAction::Quit => Ok(0),
+    }
+}
+
+fn ansi_color_code(name: &str) -> Option<&'static str> {
+    match name {
+        "red" => Some("\x1b[31m"),
+        "green" => Some("\x1b[32m"),
+        "yellow" => Some("\x1b[33m"),
+        "blue" => Some("\x1b[34m"),
+        "magenta" => Some("\x1b[35m"),
+        "cyan" => Some("\x1b[36m"),
+        "darkgray" => Some("\x1b[90m"),
+        "lightred" => Some("\x1b[91m"),
+        "lightgreen" => Some("\x1b[92m"),
+        "lightyellow" => Some("\x1b[93m"),
+        "lightblue" => Some("\x1b[94m"),
+        "lightmagenta" => Some("\x1b[95m"),
+        "lightcyan" => Some("\x1b[96m"),
+        _ => None,
     }
 }
 
@@ -531,7 +551,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max(3);
 
     println!(
-        "\x1b[2m{:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED\x1b[0m",
+        "\x1b[2m  {:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED\x1b[0m",
         "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE",
     );
 
@@ -539,9 +559,18 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         let mode = if s.local { "local" } else { "docker" };
         let status = if s.running { "running" } else { "stopped" };
         let project = shorten_path(&s.project_dir);
+        let color_prefix = if let Some(ref c) = s.color {
+            if let Some(code) = ansi_color_code(c) {
+                format!("{}\u{2588}\x1b[0m ", code)
+            } else {
+                "  ".to_string()
+            }
+        } else {
+            "  ".to_string()
+        };
         println!(
-            "{:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
-            s.name, project, mode, status, s.command, s.image, s.created_at,
+            "{}{:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
+            color_prefix, s.name, project, mode, status, s.command, s.image, s.created_at,
         );
     }
 

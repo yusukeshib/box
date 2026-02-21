@@ -2,7 +2,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, execute, terminal};
 use ratatui::prelude::*;
-use ratatui::widgets::{Row, Table, TableState};
+use ratatui::widgets::{Cell, Row, Table, TableState};
 use ratatui::{TerminalOptions, Viewport};
 use std::io;
 
@@ -18,11 +18,29 @@ pub enum TuiAction {
         image: Option<String>,
         command: Option<Vec<String>>,
         local: bool,
+        color: Option<String>,
     },
     Cd(String),
     Origin(String),
     Quit,
 }
+
+const COLOR_PALETTE: &[(&str, Option<Color>)] = &[
+    ("none", None),
+    ("red", Some(Color::Red)),
+    ("green", Some(Color::Green)),
+    ("blue", Some(Color::Blue)),
+    ("yellow", Some(Color::Yellow)),
+    ("cyan", Some(Color::Cyan)),
+    ("magenta", Some(Color::Magenta)),
+    ("darkgray", Some(Color::DarkGray)),
+    ("lightred", Some(Color::LightRed)),
+    ("lightgreen", Some(Color::LightGreen)),
+    ("lightblue", Some(Color::LightBlue)),
+    ("lightyellow", Some(Color::LightYellow)),
+    ("lightcyan", Some(Color::LightCyan)),
+    ("lightmagenta", Some(Color::LightMagenta)),
+];
 
 #[derive(PartialEq)]
 enum Mode {
@@ -31,6 +49,7 @@ enum Mode {
     InputName,
     InputImage,
     InputCommand,
+    InputColor,
 }
 
 struct TextInput {
@@ -144,6 +163,25 @@ fn clear_viewport(
     Ok(())
 }
 
+fn color_name_to_ratatui(name: &str) -> Option<Color> {
+    match name {
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "blue" => Some(Color::Blue),
+        "yellow" => Some(Color::Yellow),
+        "cyan" => Some(Color::Cyan),
+        "magenta" => Some(Color::Magenta),
+        "darkgray" => Some(Color::DarkGray),
+        "lightred" => Some(Color::LightRed),
+        "lightgreen" => Some(Color::LightGreen),
+        "lightblue" => Some(Color::LightBlue),
+        "lightyellow" => Some(Color::LightYellow),
+        "lightcyan" => Some(Color::LightCyan),
+        "lightmagenta" => Some(Color::LightMagenta),
+        _ => None,
+    }
+}
+
 pub fn session_manager<F>(sessions: &[SessionSummary], delete_fn: F) -> Result<TuiAction>
 where
     F: Fn(&str) -> Result<()>,
@@ -174,6 +212,8 @@ where
     let mut new_name = String::new();
     let mut new_image: Option<String> = None;
     let mut new_local = false;
+    let mut new_command: Option<Vec<String>> = None;
+    let mut color_index: usize = 0;
 
     loop {
         terminal.draw(|f| {
@@ -195,7 +235,7 @@ where
             // Table
             {
                 let header = Row::new([
-                    "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE", "CREATED",
+                    "", "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE", "CREATED",
                 ])
                 .style(Style::default().dim());
 
@@ -203,20 +243,30 @@ where
                 let mut rows: Vec<Row> = Vec::with_capacity(total_rows);
 
                 // First row: "+ new session"
-                rows.push(Row::new(["New box...", "", "", "", "", "", ""]));
+                rows.push(Row::new(["", "New box...", "", "", "", "", "", ""]));
 
                 // Session rows
                 for (i, s) in items.iter().enumerate() {
                     let session_mode = if s.local { "local" } else { "docker" };
                     let status = if s.running { "running" } else { "" };
+                    let color_cell: Cell = if let Some(ref c) = s.color {
+                        if let Some(rc) = color_name_to_ratatui(c) {
+                            Cell::from(Span::styled("\u{2588}", Style::default().fg(rc)))
+                        } else {
+                            Cell::from("")
+                        }
+                    } else {
+                        Cell::from("")
+                    };
                     let row = Row::new([
-                        s.name.as_str(),
-                        s.project_dir.as_str(),
-                        session_mode,
-                        status,
-                        s.command.as_str(),
-                        s.image.as_str(),
-                        s.created_at.as_str(),
+                        color_cell,
+                        Cell::from(s.name.as_str()),
+                        Cell::from(s.project_dir.as_str()),
+                        Cell::from(session_mode),
+                        Cell::from(status),
+                        Cell::from(s.command.as_str()),
+                        Cell::from(s.image.as_str()),
+                        Cell::from(s.created_at.as_str()),
                     ]);
                     let row_idx = i + 1; // offset by "new session" row
                     if mode == Mode::DeleteConfirm && state.selected() == Some(row_idx) {
@@ -226,14 +276,49 @@ where
                     }
                 }
 
+                let name_w = items
+                    .iter()
+                    .map(|s| s.name.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max("New box...".len())
+                    .max(4) as u16;
+                let project_w = items
+                    .iter()
+                    .map(|s| s.project_dir.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max(7) as u16;
+                let mode_w = 6u16;
+                let status_w = 7u16;
+                let cmd_w = items
+                    .iter()
+                    .map(|s| s.command.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max(3) as u16;
+                let image_w = items
+                    .iter()
+                    .map(|s| s.image.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max(5) as u16;
+                let created_w = items
+                    .iter()
+                    .map(|s| s.created_at.len())
+                    .max()
+                    .unwrap_or(0)
+                    .max(7) as u16;
+
                 let widths = [
-                    Constraint::Fill(1),
-                    Constraint::Length(30),
-                    Constraint::Length(8),
-                    Constraint::Length(10),
-                    Constraint::Length(15),
-                    Constraint::Length(20),
-                    Constraint::Length(22),
+                    Constraint::Length(1),
+                    Constraint::Length(name_w),
+                    Constraint::Length(project_w),
+                    Constraint::Length(mode_w),
+                    Constraint::Length(status_w),
+                    Constraint::Length(cmd_w),
+                    Constraint::Length(image_w),
+                    Constraint::Length(created_w),
                 ];
 
                 let table = Table::new(rows, widths)
@@ -271,6 +356,18 @@ where
                 Mode::InputName => Line::from(input.to_spans("Session name: ")),
                 Mode::InputImage => Line::from(input.to_spans("Image: ")),
                 Mode::InputCommand => Line::from(input.to_spans("Command (optional): ")),
+                Mode::InputColor => {
+                    let (name, color) = COLOR_PALETTE[color_index];
+                    let mut spans = vec![Span::styled("Color: ", Style::default().bold())];
+                    if let Some(c) = color {
+                        spans.push(Span::styled("\u{2588} ", Style::default().fg(c)));
+                        spans.push(Span::raw(name));
+                    } else {
+                        spans.push(Span::styled("\u{2588} ", Style::default().fg(Color::White)));
+                        spans.push(Span::raw("white"));
+                    }
+                    Line::from(spans)
+                }
             };
             f.render_widget(footer_line, footer_area);
         })?;
@@ -448,13 +545,9 @@ where
                                 }
                             }
                         };
-                        clear_viewport(&mut terminal, viewport_height)?;
-                        return Ok(TuiAction::New {
-                            name: new_name,
-                            image: new_image,
-                            command,
-                            local: new_local,
-                        });
+                        new_command = command;
+                        color_index = 0;
+                        mode = Mode::InputColor;
                     }
                     KeyCode::Esc => {
                         mode = Mode::Normal;
@@ -462,6 +555,41 @@ where
                     _ => {
                         input.handle_key(key.code);
                     }
+                },
+                Mode::InputColor => match key.code {
+                    KeyCode::Up => {
+                        if color_index > 0 {
+                            color_index -= 1;
+                        } else {
+                            color_index = COLOR_PALETTE.len() - 1;
+                        }
+                    }
+                    KeyCode::Down => {
+                        if color_index < COLOR_PALETTE.len() - 1 {
+                            color_index += 1;
+                        } else {
+                            color_index = 0;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let color = if color_index == 0 {
+                            None
+                        } else {
+                            Some(COLOR_PALETTE[color_index].0.to_string())
+                        };
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::New {
+                            name: new_name,
+                            image: new_image,
+                            command: new_command,
+                            local: new_local,
+                            color,
+                        });
+                    }
+                    KeyCode::Esc => {
+                        mode = Mode::Normal;
+                    }
+                    _ => {}
                 },
             }
         }
