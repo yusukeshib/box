@@ -87,10 +87,23 @@ pub fn ensure_server(session_name: &str) -> Result<std::path::PathBuf> {
 /// Starts server if not running, then attaches as client.
 /// Supports switching sessions via the sidebar without detaching.
 pub fn run(session_name: &str) -> Result<i32> {
+    // Open /dev/tty and enter raw mode once for the entire run.
+    // This avoids a visible blackout when switching sessions, since we
+    // never leave the alternate screen between switches.
+    let mut tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .context("Cannot open /dev/tty for mux client")?;
+    let tty_fd = tty.as_raw_fd();
+
+    terminal::install_panic_hook();
+    let _guard = RawModeGuard::activate(&mut tty)?;
+
     let mut current = session_name.to_string();
     loop {
         let socket_path = ensure_server(&current)?;
-        match client::run(&current, &socket_path)? {
+        match client::run(&current, &socket_path, tty_fd)? {
             client::ClientResult::Exit(code) => return Ok(code),
             client::ClientResult::SwitchSession(next) => {
                 current = next;

@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
 use ratatui::prelude::*;
-use std::io::Read;
-use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::mpsc;
@@ -9,8 +7,7 @@ use std::time::Duration;
 
 use super::protocol::{self, ClientMsg, ServerMsg};
 use super::terminal::{
-    self, scrollback_line_count, DrawFrameParams, InputAction, InputState, RawModeGuard,
-    ScrollState,
+    self, scrollback_line_count, DrawFrameParams, InputAction, InputState, ScrollState,
 };
 use crate::session;
 
@@ -80,7 +77,12 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
 }
 
 /// Draw the sidebar as a full-height left panel.
-fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, _current_session: &str) {
+fn draw_sidebar(
+    f: &mut ratatui::Frame,
+    sidebar: &SidebarState,
+    area: Rect,
+    _current_session: &str,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -320,24 +322,8 @@ fn parse_sidebar_mouse(
     None
 }
 
-pub fn run(session_name: &str, socket_path: &Path) -> Result<ClientResult> {
-    // Open /dev/tty
-    let mut tty = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/tty")
-        .context("Cannot open /dev/tty for mux client")?;
-    let tty_fd = tty.as_raw_fd();
-
+pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<ClientResult> {
     let (term_cols, term_rows) = terminal::get_term_size(tty_fd)?;
-
-    // Verify termios
-    {
-        let mut termios: libc::termios = unsafe { std::mem::zeroed() };
-        if unsafe { libc::tcgetattr(tty_fd, &mut termios) } != 0 {
-            anyhow::bail!("Not a terminal device");
-        }
-    }
 
     let inner_rows = term_rows.saturating_sub(1);
     if inner_rows == 0 || term_cols == 0 {
@@ -351,12 +337,6 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<ClientResult> {
     // Set a write timeout so the client event loop doesn't block
     // indefinitely if the server is slow to read.
     let _ = sock_writer.set_write_timeout(Some(Duration::from_secs(5)));
-
-    // Install panic hook
-    terminal::install_panic_hook();
-
-    // Enter raw mode (also enables mouse tracking for scroll wheel)
-    let _guard = RawModeGuard::activate(&mut tty)?;
 
     // Send initial Resize to server
     protocol::write_client_msg(
@@ -420,28 +400,35 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<ClientResult> {
         }
     });
 
-    // Input reader thread
+    // Input reader thread.
+    // We dup the tty fd and close it on session switch to unblock the
+    // thread's read() call so it exits cleanly.
     let tx_input = tx.clone();
     let tty_input_fd = unsafe { libc::dup(tty_fd) };
     if tty_input_fd < 0 {
         anyhow::bail!("Failed to dup tty fd for input");
     }
     std::thread::spawn(move || {
-        let mut tty_input = unsafe { std::fs::File::from_raw_fd(tty_input_fd) };
         let mut buf = [0u8; 4096];
         loop {
-            match tty_input.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if tx_input
-                        .send(ClientEvent::InputBytes(buf[..n].to_vec()))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
+            let n = unsafe {
+                libc::read(
+                    tty_input_fd,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                )
+            };
+            if n <= 0 {
+                break;
+            }
+            if tx_input
+                .send(ClientEvent::InputBytes(buf[..n as usize].to_vec()))
+                .is_err()
+            {
+                break;
             }
         }
+        // Thread doesn't own the fd — main thread closes it.
     });
 
     let project_name = super::project_name_for_session(session_name);
@@ -501,6 +488,8 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<ClientResult> {
                             terminal.clear()?;
                         }
                         SidebarAction::Switch(next) => {
+                            // Close the dup'd input fd to unblock the reader thread
+                            unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::SwitchSession(next));
                         }
                         SidebarAction::Redraw => {
