@@ -14,17 +14,17 @@ use crate::session;
 pub enum ClientResult {
     /// Normal exit (detach or session exited)
     Exit(i32),
-    /// User requested switch to another session
-    SwitchSession(String),
+    /// User requested switch to another session (name, sidebar state to restore)
+    SwitchSession(String, Option<SidebarState>),
 }
 
-struct SidebarState {
+pub(super) struct SidebarState {
     sessions: Vec<SidebarEntry>,
-    selected: usize,
+    pub(super) selected: usize,
 }
 
-struct SidebarEntry {
-    name: String,
+pub(super) struct SidebarEntry {
+    pub(super) name: String,
     running: bool,
     local: bool,
 }
@@ -157,7 +157,11 @@ fn draw_sidebar(
 /// Returns Some(action) if the sidebar produces a result, None to keep it open.
 enum SidebarAction {
     Close,
-    Switch(String),
+    /// Switch to another session. `keep_sidebar` = true keeps sidebar open (keyboard nav).
+    Switch {
+        name: String,
+        keep_sidebar: bool,
+    },
     Redraw,
     None,
 }
@@ -170,6 +174,9 @@ fn process_sidebar_input(
 ) -> SidebarAction {
     let mut i = 0;
     let mut result = SidebarAction::None;
+    // Track a pending switch so that a close key (Enter/ESC/q) arriving
+    // in the same input chunk converts it to switch-and-close.
+    let mut pending_switch: Option<String> = None;
     while i < data.len() {
         let b = data[i];
 
@@ -179,18 +186,38 @@ fn process_sidebar_input(
             if i + 2 < data.len() && data[i + 1] == b'[' {
                 match data[i + 2] {
                     b'A' => {
-                        // Up arrow
+                        // Up arrow — move and switch
                         if sidebar.selected > 0 {
                             sidebar.selected -= 1;
+                            let entry = &sidebar.sessions[sidebar.selected];
+                            if entry.name != current_session && (entry.running || entry.local) {
+                                pending_switch = Some(entry.name.clone());
+                                result = SidebarAction::Switch {
+                                    name: entry.name.clone(),
+                                    keep_sidebar: true,
+                                };
+                                i += 3;
+                                continue;
+                            }
                         }
                         result = SidebarAction::Redraw;
                         i += 3;
                         continue;
                     }
                     b'B' => {
-                        // Down arrow
+                        // Down arrow — move and switch
                         if sidebar.selected + 1 < sidebar.sessions.len() {
                             sidebar.selected += 1;
+                            let entry = &sidebar.sessions[sidebar.selected];
+                            if entry.name != current_session && (entry.running || entry.local) {
+                                pending_switch = Some(entry.name.clone());
+                                result = SidebarAction::Switch {
+                                    name: entry.name.clone(),
+                                    keep_sidebar: true,
+                                };
+                                i += 3;
+                                continue;
+                            }
                         }
                         result = SidebarAction::Redraw;
                         i += 3;
@@ -217,44 +244,71 @@ fn process_sidebar_input(
                     }
                 }
             }
-            // Bare ESC → close
+            // Bare ESC → close (or switch-and-close if a switch is pending)
+            if let Some(name) = pending_switch {
+                return SidebarAction::Switch {
+                    name,
+                    keep_sidebar: false,
+                };
+            }
             return SidebarAction::Close;
         }
         if b == b'q' {
+            if let Some(name) = pending_switch {
+                return SidebarAction::Switch {
+                    name,
+                    keep_sidebar: false,
+                };
+            }
             return SidebarAction::Close;
         }
-        // j → down
+        // j → down and switch
         if b == b'j' {
             if sidebar.selected + 1 < sidebar.sessions.len() {
                 sidebar.selected += 1;
+                let entry = &sidebar.sessions[sidebar.selected];
+                if entry.name != current_session && (entry.running || entry.local) {
+                    pending_switch = Some(entry.name.clone());
+                    result = SidebarAction::Switch {
+                        name: entry.name.clone(),
+                        keep_sidebar: true,
+                    };
+                    i += 1;
+                    continue;
+                }
             }
             result = SidebarAction::Redraw;
             i += 1;
             continue;
         }
-        // k → up
+        // k → up and switch
         if b == b'k' {
             if sidebar.selected > 0 {
                 sidebar.selected -= 1;
+                let entry = &sidebar.sessions[sidebar.selected];
+                if entry.name != current_session && (entry.running || entry.local) {
+                    pending_switch = Some(entry.name.clone());
+                    result = SidebarAction::Switch {
+                        name: entry.name.clone(),
+                        keep_sidebar: true,
+                    };
+                    i += 1;
+                    continue;
+                }
             }
             result = SidebarAction::Redraw;
             i += 1;
             continue;
         }
-        // Enter → select
+        // Enter → close sidebar (or switch-and-close if a switch is pending)
         if b == b'\r' || b == b'\n' {
-            let selected_name = &sidebar.sessions[sidebar.selected].name;
-            if selected_name == current_session {
-                return SidebarAction::Close;
+            if let Some(name) = pending_switch {
+                return SidebarAction::Switch {
+                    name,
+                    keep_sidebar: false,
+                };
             }
-            // Check if session can be started
-            let entry = &sidebar.sessions[sidebar.selected];
-            if !entry.running && !entry.local {
-                // Non-local stopped session — can't switch
-                i += 1;
-                continue;
-            }
-            return SidebarAction::Switch(selected_name.clone());
+            return SidebarAction::Close;
         }
         i += 1;
     }
@@ -308,7 +362,13 @@ fn parse_sidebar_mouse(
                         if !entry.running && !entry.local {
                             return Some((SidebarAction::None, consumed));
                         }
-                        return Some((SidebarAction::Switch(selected_name.clone()), consumed));
+                        return Some((
+                            SidebarAction::Switch {
+                                name: selected_name.clone(),
+                                keep_sidebar: false,
+                            },
+                            consumed,
+                        ));
                     }
                 }
 
@@ -322,7 +382,12 @@ fn parse_sidebar_mouse(
     None
 }
 
-pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<ClientResult> {
+pub fn run(
+    session_name: &str,
+    socket_path: &Path,
+    tty_fd: i32,
+    initial_sidebar: Option<SidebarState>,
+) -> Result<ClientResult> {
     let (term_cols, term_rows) = terminal::get_term_size(tty_fd)?;
 
     let inner_rows = term_rows.saturating_sub(1);
@@ -387,11 +452,17 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
     let prefix_key = crate::config::load_mux_prefix_key();
     let mut input_state = InputState::new(prefix_key);
 
+    // Sidebar state — restore from previous session switch if provided
+    let mut sidebar: Option<SidebarState> = initial_sidebar;
+
     // Draw the first frame immediately so the user sees content right
     // after a session switch instead of a blank screen.
+    // When restoring a sidebar we skip the eager draw and let the event
+    // loop handle it — the fresh ratatui terminal has empty buffers so
+    // the first event-loop draw outputs every cell reliably.
     terminal::set_mouse_tracking(tty_fd, true);
     let mut mouse_tracking_on = true;
-    {
+    if sidebar.is_none() {
         let max_scrollback = scrollback_line_count(&mut parser);
         parser.set_scrollback(0);
         let screen = parser.screen();
@@ -408,13 +479,20 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
             hover_close: false,
             header_color,
         };
-        terminal::begin_sync_update(tty_fd);
+        {
+            use std::io::Write;
+            let _ = terminal.backend_mut().write_all(b"\x1b[?2026h");
+        }
         terminal
             .draw(|f| {
                 terminal::draw_frame(f, &params, f.area());
             })
             .context("Failed to draw initial frame")?;
-        terminal::end_sync_update(tty_fd);
+        {
+            use std::io::Write;
+            let _ = terminal.backend_mut().write_all(b"\x1b[?2026l");
+            let _ = std::io::Write::flush(terminal.backend_mut());
+        }
         parser.set_scrollback(0);
     }
 
@@ -468,14 +546,14 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
         // Thread doesn't own the fd — main thread closes it.
     });
 
-    let mut dirty = false;
+    let mut dirty = sidebar.is_some();
+    // Deferred session switch — set by sidebar Switch action so we repaint
+    // (showing the updated selection highlight) before actually switching.
+    let mut pending_switch: Option<(String, bool)> = None;
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
     let mut current_inner_rows = inner_rows;
-
-    // Sidebar state
-    let mut sidebar: Option<SidebarState> = None;
 
     loop {
         let timeout = if dirty {
@@ -515,10 +593,12 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                             // Force full redraw to clear sidebar overlay
                             terminal.clear()?;
                         }
-                        SidebarAction::Switch(next) => {
-                            // Close the dup'd input fd to unblock the reader thread
-                            unsafe { libc::close(tty_input_fd) };
-                            return Ok(ClientResult::SwitchSession(next));
+                        SidebarAction::Switch {
+                            name: next,
+                            keep_sidebar,
+                        } => {
+                            pending_switch = Some((next, keep_sidebar));
+                            dirty = true;
                         }
                         SidebarAction::Redraw => {
                             dirty = true;
@@ -636,7 +716,15 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                         header_color,
                     };
                     let sidebar_ref = sidebar.as_ref();
-                    terminal::begin_sync_update(tty_fd);
+                    // Write BSU/ESU through the same BufWriter as the
+                    // frame data so the terminal emulator receives them
+                    // as one contiguous byte stream (avoids the render
+                    // being deferred when BSU/ESU travel on the raw
+                    // tty_fd while frame data goes through the dup'd fd).
+                    {
+                        use std::io::Write;
+                        let _ = terminal.backend_mut().write_all(b"\x1b[?2026h");
+                    }
                     terminal
                         .draw(|f| {
                             let full = f.area();
@@ -662,9 +750,21 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                             }
                         })
                         .context("Failed to draw terminal frame")?;
-                    terminal::end_sync_update(tty_fd);
+                    {
+                        use std::io::Write;
+                        let _ = terminal.backend_mut().write_all(b"\x1b[?2026l");
+                        let _ = std::io::Write::flush(terminal.backend_mut());
+                    }
                     parser.set_scrollback(0);
                     dirty = false;
+
+                    // Process deferred switch after repaint so the user
+                    // sees the updated selection highlight.
+                    if let Some((next, keep_sidebar)) = pending_switch.take() {
+                        unsafe { libc::close(tty_input_fd) };
+                        let sb = if keep_sidebar { sidebar.take() } else { None };
+                        return Ok(ClientResult::SwitchSession(next, sb));
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
