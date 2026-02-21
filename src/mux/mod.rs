@@ -47,14 +47,14 @@ pub struct MuxConfig {
     pub prefix_key: u8,
 }
 
-/// Client-server mode for local sessions.
-/// Starts server if not running, then attaches as client.
-pub fn run(session_name: &str) -> Result<i32> {
+/// Ensure a session's mux server is running. Starts one if needed.
+/// Returns the socket path once ready.
+pub fn ensure_server(session_name: &str) -> Result<std::path::PathBuf> {
     let socket_path = session::socket_path(session_name)?;
 
     // Try connecting to existing server (fast path, no lock needed)
     if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
-        return client::run(session_name, &socket_path);
+        return Ok(socket_path);
     }
 
     // Acquire exclusive lock to prevent two concurrent callers from both
@@ -64,7 +64,7 @@ pub fn run(session_name: &str) -> Result<i32> {
     // Re-check under the lock — another caller may have started the server
     // while we were waiting for the lock.
     if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
-        return client::run(session_name, &socket_path);
+        return Ok(socket_path);
     }
 
     // Kill any stale server process (e.g. one that survived SIGHUP but
@@ -77,10 +77,26 @@ pub fn run(session_name: &str) -> Result<i32> {
     // Spawn server daemon
     spawn_server(session_name)?;
 
-    // Poll for socket (up to 3s), then connect as client
+    // Poll for socket (up to 3s), then return once server is ready.
     // Lock is released here (dropped at end of scope) once server is ready.
     wait_for_socket(session_name, &socket_path)?;
-    client::run(session_name, &socket_path)
+    Ok(socket_path)
+}
+
+/// Client-server mode for local sessions.
+/// Starts server if not running, then attaches as client.
+/// Supports switching sessions via the sidebar without detaching.
+pub fn run(session_name: &str) -> Result<i32> {
+    let mut current = session_name.to_string();
+    loop {
+        let socket_path = ensure_server(&current)?;
+        match client::run(&current, &socket_path)? {
+            client::ClientResult::Exit(code) => return Ok(code),
+            client::ClientResult::SwitchSession(next) => {
+                current = next;
+            }
+        }
+    }
 }
 
 fn project_name_for_session(session_name: &str) -> String {
@@ -314,6 +330,9 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         InputAction::Redraw => {
                             dirty = true;
                         }
+                        InputAction::OpenSidebar => {
+                            // Sidebar not available in standalone mode
+                        }
                     }
                 }
             }
@@ -399,7 +418,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         header_color,
                     };
                     term.draw(|f| {
-                        terminal::draw_frame(f, &params);
+                        terminal::draw_frame(f, &params, f.area());
                     })
                     .context("Failed to draw terminal frame")?;
                     parser.set_scrollback(0);

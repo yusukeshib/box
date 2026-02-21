@@ -271,7 +271,8 @@ fn auto_fg(bg: Color) -> Color {
 }
 
 /// Render the mux frame: header bar + terminal grid.
-pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams) {
+/// `area` defines the region to draw into (allows callers to constrain it).
+pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) {
     let screen = params.screen;
     let session_name = params.session_name;
     let project_name = params.project_name;
@@ -281,7 +282,6 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams) {
     let scrolled_up = params.scroll.offset > 0;
     let scroll_offset = params.scroll.offset;
     let max_scrollback = params.scroll.max;
-    let area = f.area();
 
     let header_area = Rect {
         x: area.x,
@@ -321,7 +321,7 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams) {
     };
 
     let help_hint = if command_mode {
-        " ^P/^N scroll  ^Q detach  ^X stop  Esc exit "
+        " a sessions  ^P/^N scroll  ^Q detach  ^X stop  Esc exit "
     } else {
         ""
     };
@@ -422,6 +422,8 @@ pub enum InputAction {
     Kill,
     /// Screen needs redraw
     Redraw,
+    /// Open the session switcher sidebar
+    OpenSidebar,
 }
 
 struct SgrMouseEvent {
@@ -578,7 +580,17 @@ impl InputState {
                     continue;
                 }
 
+                // Title text area on the header (row 1, before the right-side controls).
+                // Clicking it opens the session sidebar.
+                let in_title_area = mouse.row == 1 && mouse.col >= 1 && !in_close_area;
+
                 match mouse.button {
+                    // Left click on header title → open sidebar
+                    0 if mouse.pressed && in_title_area => {
+                        actions.push(InputAction::OpenSidebar);
+                        i += consumed;
+                        continue;
+                    }
                     // Left click on header close button (SGR coords are 1-indexed)
                     // " x " spans last 4 columns of the header
                     0 if mouse.pressed && in_close_area => {
@@ -646,6 +658,13 @@ impl InputState {
                 if b == 0x11 {
                     actions.push(InputAction::Detach);
                     return actions;
+                }
+                // 'a' — open session sidebar
+                if b == b'a' {
+                    self.command_mode = false;
+                    actions.push(InputAction::OpenSidebar);
+                    i += 1;
+                    continue;
                 }
                 // Ctrl+X — kill
                 if b == 0x18 {
