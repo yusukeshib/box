@@ -80,13 +80,13 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
 }
 
 /// Draw the sidebar as a full-height left panel.
-fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, current_session: &str) {
+fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, _current_session: &str) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
     let buf = f.buffer_mut();
-    let bg_style = Style::default().bg(Color::Indexed(235)).fg(Color::White);
+    let bg_style = Style::default().bg(Color::Black).fg(Color::White);
 
     // Fill background
     for y in area.y..area.y + area.height {
@@ -99,63 +99,20 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, curr
         }
     }
 
-    // Title row
-    let title = " Sessions";
-    let title_style = Style::default()
-        .bg(Color::Indexed(235))
-        .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
-    for (i, ch) in title.chars().enumerate() {
-        let x = area.x + i as u16;
-        if x < area.x + area.width && area.y < buf.area().height {
-            let cell = &mut buf[(x, area.y)];
-            cell.set_symbol(&ch.to_string());
-            cell.set_style(title_style);
-        }
-    }
-
-    // Separator line under title
-    let sep_y = area.y + 1;
-    if sep_y < area.y + area.height {
-        let sep_style = Style::default().bg(Color::Indexed(235)).fg(Color::DarkGray);
-        for x in area.x..area.x + area.width {
-            if x < buf.area().width && sep_y < buf.area().height {
-                let cell = &mut buf[(x, sep_y)];
-                cell.set_symbol("\u{2500}"); // ─
-                cell.set_style(sep_style);
-            }
-        }
-    }
-
-    // Session entries (starting at row 2)
+    // Session entries from the first row
     for (idx, entry) in sidebar.sessions.iter().enumerate() {
-        let row_y = area.y + 2 + idx as u16;
+        let row_y = area.y + idx as u16;
         if row_y >= area.y + area.height {
             break;
         }
 
-        let is_current = entry.name == current_session;
         let is_selected = idx == sidebar.selected;
-
-        let icon = if is_current {
-            "\u{25cf}" // ● (current/running)
-        } else if entry.running {
-            "\u{25cb}" // ○ (running but not current)
-        } else {
-            " "
-        };
-
-        let line = format!("  {} {} ", icon, entry.name);
+        let line = format!(" {} ", entry.name);
 
         let style = if is_selected {
-            Style::default()
-                .bg(Color::Indexed(240))
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD)
-        } else if is_current {
-            Style::default().bg(Color::Indexed(235)).fg(Color::Cyan)
+            Style::default().bg(Color::White).fg(Color::Black)
         } else {
-            Style::default().bg(Color::Indexed(235)).fg(Color::Gray)
+            bg_style
         };
 
         // Fill entire row with background first
@@ -183,7 +140,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, curr
     // Right border
     let border_x = area.x + area.width - 1;
     if border_x < buf.area().width {
-        let border_style = Style::default().bg(Color::Indexed(235)).fg(Color::DarkGray);
+        let border_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
         for y in area.y..area.y + area.height {
             if y < buf.area().height {
                 let cell = &mut buf[(border_x, y)];
@@ -303,7 +260,7 @@ fn process_sidebar_input(
 }
 
 /// Parse SGR mouse event within sidebar context.
-/// Sidebar spans full height from row 1. Entries start at row 3 (1-indexed).
+/// Sidebar spans full height from row 1. Entries start at row 1 (1-indexed).
 fn parse_sidebar_mouse(
     data: &[u8],
     i: usize,
@@ -337,9 +294,9 @@ fn parse_sidebar_mouse(
                 let consumed = j + 1 - i;
 
                 // Left click on a session entry row
-                // Sidebar: row 1 = title, row 2 = separator, row 3+ = entries
-                if button == 0 && pressed && col <= sb_width && row >= 3 {
-                    let entry_idx = (row - 3) as usize;
+                // Sidebar: entries start at row 1 (1-indexed)
+                if button == 0 && pressed && col <= sb_width && row >= 1 {
+                    let entry_idx = (row - 1) as usize;
                     if entry_idx < sidebar.sessions.len() {
                         let selected_name = &sidebar.sessions[entry_idx].name;
                         if selected_name == current_session {
