@@ -74,8 +74,8 @@ fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
 /// Calculate sidebar width from entries (min 20, max 40).
 fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
     let max_name = entries.iter().map(|e| e.name.len()).max().unwrap_or(8);
-    // "  ● name  " → 2 + 2 + name + 2 = name + 6
-    let w = (max_name + 6).clamp(20, 40);
+    // " name " → 1 + name + 1 = name + 2
+    let w = (max_name + 2).clamp(30, 50);
     w as u16
 }
 
