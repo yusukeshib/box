@@ -383,6 +383,41 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
     let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
     terminal.clear()?;
 
+    let project_name = super::project_name_for_session(session_name);
+    let header_color = super::color_for_session(session_name);
+    let prefix_key = crate::config::load_mux_prefix_key();
+    let mut input_state = InputState::new(prefix_key);
+
+    // Draw the first frame immediately so the user sees content right
+    // after a session switch instead of staring at a blank screen while
+    // the event loop spins up.
+    terminal::set_mouse_tracking(tty_fd, true);
+    let mut mouse_tracking_on = true;
+    {
+        let max_scrollback = scrollback_line_count(&mut parser);
+        parser.set_scrollback(0);
+        let screen = parser.screen();
+        let scroll = ScrollState {
+            offset: 0,
+            max: max_scrollback,
+        };
+        let params = DrawFrameParams {
+            screen,
+            session_name,
+            project_name: &project_name,
+            scroll: &scroll,
+            command_mode: false,
+            hover_close: false,
+            header_color,
+        };
+        terminal
+            .draw(|f| {
+                terminal::draw_frame(f, &params, f.area());
+            })
+            .context("Failed to draw initial frame")?;
+        parser.set_scrollback(0);
+    }
+
     // Channel for events
     let (tx, rx) = mpsc::channel::<ClientEvent>();
 
@@ -433,12 +468,7 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
         // Thread doesn't own the fd — main thread closes it.
     });
 
-    let project_name = super::project_name_for_session(session_name);
-    let header_color = super::color_for_session(session_name);
-    let prefix_key = crate::config::load_mux_prefix_key();
-    let mut input_state = InputState::new(prefix_key);
-    let mut dirty = true;
-    let mut mouse_tracking_on = false;
+    let mut dirty = false;
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
@@ -490,8 +520,6 @@ pub fn run(session_name: &str, socket_path: &Path, tty_fd: i32) -> Result<Client
                             terminal.clear()?;
                         }
                         SidebarAction::Switch(next) => {
-                            // Clear screen so the new session starts fresh
-                            terminal.clear()?;
                             // Close the dup'd input fd to unblock the reader thread
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::SwitchSession(next));
