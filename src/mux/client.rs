@@ -167,8 +167,16 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                     dirty = true;
                 }
                 ServerMsg::Resized { cols, rows } => {
+                    let (_, cur_cols) = parser.screen().size();
+                    let cols_changed = cols != cur_cols;
                     parser.set_size(rows, cols);
-                    parser.process(b"\x1b[H\x1b[2J");
+                    // Only clear when columns changed — width changes cause
+                    // content reflow that looks garbled.  Height-only or
+                    // same-size responses keep content valid; clearing would
+                    // just cause a blank-screen flash.
+                    if cols_changed {
+                        parser.process(b"\x1b[H\x1b[2J");
+                    }
                     input_state.scroll_offset = 0;
                     dirty = true;
                 }
@@ -226,6 +234,7 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                 // Check for terminal resize
                 if let Ok((cols, rows)) = terminal::get_term_size(tty_fd) {
                     if cols != last_cols || rows != last_rows {
+                        let cols_changed = cols != last_cols;
                         last_cols = cols;
                         last_rows = rows;
                         let new_inner = rows.saturating_sub(1);
@@ -238,6 +247,18 @@ pub fn run(session_name: &str, socket_path: &Path) -> Result<i32> {
                                     rows: new_inner,
                                 },
                             );
+                            // Update parser locally so the next draw uses
+                            // dimensions consistent with the new terminal size.
+                            // The server will send Resized later (which may
+                            // differ in multi-client scenarios), but without
+                            // this the first frame has a dimension mismatch.
+                            parser.set_size(new_inner, cols);
+                            // Only clear parser screen when columns changed —
+                            // width changes cause content reflow that looks
+                            // garbled.  Height-only changes keep content valid.
+                            if cols_changed {
+                                parser.process(b"\x1b[H\x1b[2J");
+                            }
                             terminal = terminal::create_terminal(tty_fd, cols, rows)?;
                             // Clear stale content left by the terminal emulator's
                             // resize reflow.  Without this, ratatui's diff skips
