@@ -17,6 +17,7 @@ pub struct Session {
     pub env: Vec<String>,
     pub local: bool,
     pub color: Option<String>,
+    pub strategy: String,
 }
 
 impl From<config::BoxConfig> for Session {
@@ -30,11 +31,13 @@ impl From<config::BoxConfig> for Session {
             env: cfg.env,
             local: cfg.local,
             color: cfg.color,
+            strategy: cfg.strategy,
         }
     }
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct SessionSummary {
     pub name: String,
     pub project_dir: String,
@@ -44,6 +47,7 @@ pub struct SessionSummary {
     pub running: bool,
     pub local: bool,
     pub color: Option<String>,
+    pub strategy: String,
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
@@ -120,6 +124,7 @@ pub fn save(session: &Session) -> Result<()> {
     } else {
         let _ = fs::remove_file(dir.join("color"));
     }
+    fs::write(dir.join("strategy"), &session.strategy)?;
     Ok(())
 }
 
@@ -170,6 +175,10 @@ pub fn load(name: &str) -> Result<Session> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
+    let strategy = fs::read_to_string(dir.join("strategy"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "clone".to_string());
+
     Ok(Session {
         name: name.to_string(),
         project_dir,
@@ -179,6 +188,7 @@ pub fn load(name: &str) -> Result<Session> {
         env,
         local,
         color,
+        strategy,
     })
 }
 
@@ -238,6 +248,10 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let strategy = fs::read_to_string(session_path.join("strategy"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "clone".to_string());
+
         sessions.push(SessionSummary {
             name,
             project_dir,
@@ -247,6 +261,7 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             running: false,
             local,
             color,
+            strategy,
         });
     }
 
@@ -401,6 +416,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -429,6 +445,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -449,6 +466,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -514,6 +532,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
             assert!(session_exists("exists-test").unwrap());
@@ -541,6 +560,7 @@ mod tests {
                     env: vec![],
                     local: false,
                     color: None,
+                    strategy: "clone".to_string(),
                 };
                 save(&sess).unwrap();
             }
@@ -566,6 +586,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -589,6 +610,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
             assert!(session_exists("to-remove").unwrap());
@@ -618,6 +640,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -657,6 +680,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -678,6 +702,7 @@ mod tests {
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -702,6 +727,7 @@ mod tests {
                 env: vec![],
                 local: false,
                 color: None,
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 

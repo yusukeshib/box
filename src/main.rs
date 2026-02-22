@@ -92,6 +92,11 @@ struct CreateArgs {
     #[arg(long)]
     color: Option<String>,
 
+    /// Workspace strategy: clone (git clone --local) or worktree (git worktree add)
+    /// Default: $BOX_STRATEGY or "clone"
+    #[arg(long)]
+    strategy: Option<String>,
+
     /// Command to run in container (default: $BOX_DEFAULT_CMD if set)
     #[arg(last = true)]
     cmd: Vec<String>,
@@ -206,6 +211,7 @@ fn main() {
                 args.detach,
                 local,
                 args.color,
+                args.strategy,
             )
         }
         Some(Commands::Resume(args)) => {
@@ -268,6 +274,22 @@ fn main() {
                     }
                     None
                 });
+            let strategy = args[1..]
+                .iter()
+                .find_map(|a| {
+                    a.to_string_lossy()
+                        .strip_prefix("--strategy=")
+                        .map(|v| v.to_string())
+                })
+                .or_else(|| {
+                    let mut it = args[1..].iter();
+                    while let Some(a) = it.next() {
+                        if a == "--strategy" {
+                            return it.next().map(|v| v.to_string_lossy().to_string());
+                        }
+                    }
+                    None
+                });
             let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
             if session::session_exists(&name).unwrap_or(false) {
                 cmd_resume(&name, &docker_args, false)
@@ -281,10 +303,14 @@ fn main() {
                         continue;
                     }
                     let s = a.to_string_lossy();
-                    if s == "--local" || s == "--docker" || s.starts_with("--color=") {
+                    if s == "--local"
+                        || s == "--docker"
+                        || s.starts_with("--color=")
+                        || s.starts_with("--strategy=")
+                    {
                         continue;
                     }
-                    if s == "--color" {
+                    if s == "--color" || s == "--strategy" {
                         skip_next = true;
                         continue;
                     }
@@ -297,7 +323,16 @@ fn main() {
                     .map(|a| a.to_string_lossy().to_string())
                     .collect();
                 let cmd = if cmd.is_empty() { None } else { Some(cmd) };
-                cmd_create(&name, None, &docker_args, cmd, false, local, color)
+                cmd_create(
+                    &name,
+                    None,
+                    &docker_args,
+                    cmd,
+                    false,
+                    local,
+                    color,
+                    strategy,
+                )
             }
         }
         None => cmd_list(),
@@ -424,7 +459,7 @@ fn cmd_list() -> Result<i32> {
         if !sess.local {
             docker::remove_container(name);
         }
-        docker::remove_workspace(name);
+        docker::remove_workspace(name, &sess.strategy);
         session::remove_dir(name)?;
         Ok(())
     };
@@ -439,7 +474,17 @@ fn cmd_list() -> Result<i32> {
             command,
             local,
             color,
-        } => cmd_create(&name, image, &docker_args, command, false, local, color),
+            strategy,
+        } => cmd_create(
+            &name,
+            image,
+            &docker_args,
+            command,
+            false,
+            local,
+            color,
+            strategy,
+        ),
         tui::TuiAction::Cd(name) => cmd_cd(&name),
         tui::TuiAction::Origin(name) => {
             let sess = session::load(&name)?;
@@ -577,6 +622,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     Ok(0)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_create(
     name: &str,
     image: Option<String>,
@@ -585,6 +631,7 @@ fn cmd_create(
     detach: bool,
     local: bool,
     color: Option<String>,
+    strategy: Option<String>,
 ) -> Result<i32> {
     session::validate_name(name)?;
 
@@ -613,11 +660,13 @@ fn cmd_create(
         env: vec![],
         local,
         color,
+        strategy,
     })?;
 
     if local {
         eprintln!("\x1b[2msession:\x1b[0m {}", cfg.name);
         eprintln!("\x1b[2mmode:\x1b[0m local");
+        eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
         if !cfg.command.is_empty() {
             eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
         }
@@ -627,7 +676,7 @@ fn cmd_create(
         session::save(&sess)?;
 
         let home = config::home_dir()?;
-        let workspace = docker::ensure_workspace(&home, name, &sess.project_dir)?;
+        let workspace = docker::ensure_workspace(&home, name, &sess.project_dir, &sess.strategy)?;
         output_cd_path(&workspace);
 
         if !sess.command.is_empty() {
@@ -641,6 +690,7 @@ fn cmd_create(
     eprintln!("\x1b[2msession:\x1b[0m {}", cfg.name);
     eprintln!("\x1b[2mimage:\x1b[0m {}", cfg.image);
     eprintln!("\x1b[2mmount:\x1b[0m {}", cfg.mount_path);
+    eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
     if !cfg.command.is_empty() {
         eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
     }
@@ -670,6 +720,7 @@ fn cmd_create(
         home: &home,
         docker_args: docker_args_opt,
         detach,
+        strategy: &sess.strategy,
     })
 }
 
@@ -732,6 +783,7 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
             home: &home,
             docker_args: docker_args_opt,
             detach,
+            strategy: &sess.strategy,
         })
     }
 }
@@ -753,7 +805,7 @@ fn cmd_remove(name: &str) -> Result<i32> {
                 name
             );
         }
-        docker::remove_workspace(name);
+        docker::remove_workspace(name, &sess.strategy);
         session::remove_dir(name)?;
         output_cd_path(&sess.project_dir);
         println!("Session '{}' removed.", name);
@@ -771,7 +823,7 @@ fn cmd_remove(name: &str) -> Result<i32> {
     }
 
     docker::remove_container(name);
-    docker::remove_workspace(name);
+    docker::remove_workspace(name, &sess.strategy);
     session::remove_dir(name)?;
 
     output_cd_path(&sess.project_dir);
@@ -925,6 +977,7 @@ _box() {{
                         '--local[Create a local session (default)]' \
                         '--docker[Create a Docker session]' \
                         '--color=[Header background color]:color' \
+                        '--strategy=[Workspace strategy (clone or worktree)]:strategy:(clone worktree)' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -1010,7 +1063,7 @@ fn cmd_config_bash() -> Result<i32> {
         create)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker --color" -- "$cur"))
+                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker --color --strategy" -- "$cur"))
                     ;;
             esac
             ;;
