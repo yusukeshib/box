@@ -101,11 +101,12 @@ pub fn run(session_name: &str) -> Result<i32> {
     let _guard = RawModeGuard::activate(&mut tty)?;
 
     let mut current = session_name.to_string();
+    let mut sidebar_state: Option<client::SidebarState> = None;
     loop {
         let socket_path = ensure_server(&current)?;
-        match client::run(&current, &socket_path, tty_fd)? {
+        match client::run(&current, &socket_path, tty_fd, sidebar_state.take())? {
             client::ClientResult::Exit(code) => return Ok(code),
-            client::ClientResult::SwitchSession(next) => {
+            client::ClientResult::SwitchSession(next, sb) => {
                 // Clear the physical screen between sessions so the new
                 // client's first ratatui draw is guaranteed to repaint
                 // everything (ratatui diffs against its empty internal
@@ -113,6 +114,7 @@ pub fn run(session_name: &str) -> Result<i32> {
                 use std::io::Write;
                 let _ = tty.write_all(b"\x1b[H\x1b[2J");
                 let _ = tty.flush();
+                sidebar_state = sb;
                 current = next;
             }
         }
