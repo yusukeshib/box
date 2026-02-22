@@ -14,9 +14,9 @@
 
 Boxは**隔離された**gitワークスペースと**永続的な**ターミナルセッションを提供します。2つの核となるアイデア：
 
-**1. `git clone --local` による即座の隔離**
+**1. 隔離されたgitワークスペース**
 
-各セッションは独立したgitリポジトリを取得します — 全履歴と全ブランチを含む完全なクローンで、ハードリンクにより大きなリポジトリでも高速に作成されます。Boxセッション内で何をしても、元のリポジトリには影響しません。
+各セッションは独自のワークスペースを取得します。デフォルトでは `git clone --local` がハードリンクを使って完全に独立したリポジトリを作成します — 大きなリポジトリでも高速で、何をしても元のリポジトリには影響しません。また、`--strategy worktree` を使えば `git worktree` によるさらに高速で省スペースなワークスペースも利用できます。
 
 **2. 内蔵ターミナルマルチプレクサによるセッション永続化**
 
@@ -30,7 +30,7 @@ $ make test
 
 ## 特徴
 
-- **隔離されたgitワークスペース** — `git clone --local` でセッションごとに独立したリポジトリを作成。ホストのファイルは変更されない
+- **隔離されたgitワークスペース** — `git clone --local`（デフォルト）または `git worktree` でセッションごとにワークスペースを作成。ホストのファイルは変更されない
 - **永続的なセッション** — `Ctrl+P` → `Ctrl+Q` でデタッチ、`box resume` で再接続。プロセスは実行され続ける
 - **ターミナルマルチプレクサ** — スクロールバック履歴、マウススクロール、スクロールバー、ナビゲーション用COMMANDモード
 - **名前付きセッション** — 複数の実験を並行して、それぞれ独自のワークスペースで実行
@@ -157,8 +157,8 @@ prefix_key = "Ctrl+B"   # デフォルト: "Ctrl+P"
 
 ```bash
 box                                               セッションマネージャー（TUI）
-box <name> [--local] [--docker] [--color <color>]  `box create <name>` のショートカット
-box create <name> [--local] [--docker] [--color <color>] [options] [-- cmd...] 新しいセッションを作成
+box <name> [--local] [--docker] [--strategy <s>] [--color <color>]  `box create <name>` のショートカット
+box create <name> [--local] [--docker] [--strategy <s>] [--color <color>] [options] [-- cmd...] 新しいセッションを作成
 box resume <name> [-d] [--docker-args <args>]     既存のセッションを再開
 box stop <name>                                   実行中のセッションを停止
 box exec <name> -- <cmd...>                       実行中のセッションでコマンドを実行
@@ -183,6 +183,10 @@ box create my-feature -- make test
 # ヘッダーの背景色をカスタマイズ
 box create my-feature --color blue
 box my-feature --color '#ff6600'
+
+# cloneの代わりにgit worktreeを使用（より高速、オブジェクトストアを共有）
+box create my-feature --strategy worktree
+BOX_STRATEGY=worktree box my-feature
 
 # デタッチモードで作成（バックグラウンド）
 box create my-feature -d -- long-running-task
@@ -250,6 +254,7 @@ box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 | `--docker` | Dockerセッションを作成（Docker必要） |
 | `--image <image>` | 使用するDockerイメージ（デフォルト: `alpine:latest`） |
 | `--color <color>` | ヘッダーの背景色（色名、`#rrggbb` 16進数、またはANSI 256番号） |
+| `--strategy <strategy>` | ワークスペース戦略: `clone`（デフォルト）または `worktree`。`$BOX_STRATEGY` を上書き |
 | `--docker-args <args>` | 追加のDockerフラグ（例: `-e KEY=VALUE`、`-v /host:/container`）。`$BOX_DOCKER_ARGS` を上書き |
 | `-- cmd...` | 実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
 
@@ -276,6 +281,7 @@ box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 | `BOX_DOCKER_ARGS` | デフォルトの追加Dockerフラグ。`--docker-args` が指定されていない場合に使用 |
 | `BOX_DEFAULT_CMD` | 新規セッションのデフォルトコマンド。`-- cmd` が指定されていない場合に使用 |
 | `BOX_MODE` | セッションモード: `local`（デフォルト）または `docker` |
+| `BOX_STRATEGY` | ワークスペース戦略: `clone`（デフォルト）または `worktree` |
 
 ## シェル補完
 
@@ -296,7 +302,9 @@ your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
   ...                                               ...
 ```
 
-`git clone --local` はハードリンクを使って完全に独立したgitリポジトリを作成します。クローンは独自の `.git` ディレクトリを持つため、ワークスペース内でのコミット、ブランチ操作、リセット、破壊的操作が元のリポジトリに影響することはありません。
+デフォルトでは、`git clone --local` がハードリンクを使って完全に独立したgitリポジトリを作成します。クローンは独自の `.git` ディレクトリを持つため、ワークスペース内でのコミット、ブランチ操作、リセット、破壊的操作が元のリポジトリに影響することはありません。
+
+`--strategy worktree` を指定すると、代わりに `git worktree add --detach` を使用します。親リポジトリとオブジェクトストアを共有するため、ワークスペースの作成がより高速で省スペースになります。トレードオフとして、worktreeは親リポジトリとrefを共有します — 完全なgit隔離よりも軽量なワークスペースが必要な場合に使用してください。
 
 内蔵ターミナルマルチプレクサは各セッションを以下の機能でラップします：
 - **セッション永続化** — プロセスはバックグラウンドサーバーで実行され、中断なくデタッチ・再接続が可能
@@ -307,17 +315,17 @@ your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
 |--------|--------|
 | ワークスペースの場所 | `~/.box/workspaces/<name>/` |
 | セッションメタデータ | `~/.box/sessions/<name>/` |
-| Git隔離 | 完全 — 独立した `.git`、共有refなし |
+| Git隔離 | `clone`（デフォルト）で完全隔離、`worktree` ではオブジェクトストアを共有 |
 | セッション永続化 | マルチプレクササーバーがデタッチ・再接続をまたいでプロセスを維持 |
 | クリーンアップ | `box remove` でワークスペース、セッションデータ、コンテナ（Docker時）を削除 |
 
 ## 設計上の判断
 
 <details>
-<summary><strong>なぜ <code>git clone --local</code>？</strong></summary>
+<summary><strong>なぜ <code>git clone --local</code> がデフォルト？</strong></summary>
 
-| 戦略 | 問題点 |
-|------|--------|
+| 戦略 | トレードオフ |
+|------|-------------|
 | **ホストリポジトリをバインドマウント** | 隔離なし — エージェントが実際のファイルを直接変更してしまう |
 | **git worktree** | `.git` ディレクトリをホストと共有するため、checkout・reset・rebaseがホストのブランチやrefに影響する |
 | **bare-gitマウント** | 状態を共有するため、コンテナ内でのブランチ作成・削除がホストに影響する |
@@ -325,6 +333,8 @@ your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
 | **完全コピー（`cp -r`）** | 完全に隔離されるが、大きなリポジトリでは遅い |
 
 `git clone --local` は完全に独立（独自の `.git`）、高速（ハードリンク）、完全（全履歴）、シンプル（ラッパースクリプト不要）です。
+
+なお、速度やディスク節約が完全な隔離よりも重要な場合には、`--strategy worktree` で `git worktree` を利用できます。
 
 </details>
 

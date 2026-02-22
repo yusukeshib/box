@@ -14,9 +14,9 @@ Isolated git workspaces with a built-in terminal multiplexer. Clone, branch, bre
 
 Box gives you **isolated** git workspaces with **persistent** terminal sessions — two core ideas:
 
-**1. `git clone --local` for instant isolation**
+**1. Isolated git workspaces**
 
-Each session gets its own independent git repo — a full clone with all history and branches, created via hardlinks so it's fast even for large repos. Nothing you do in a box session can affect your original repository.
+Each session gets its own workspace. By default, `git clone --local` creates a fully independent repo with hardlinks — fast even for large repos, and nothing you do can affect the original. Alternatively, `--strategy worktree` uses `git worktree` for even faster, space-efficient workspaces that share the object store.
 
 **2. Built-in terminal multiplexer for persistent sessions**
 
@@ -30,7 +30,7 @@ $ make test
 
 ## Features
 
-- **Isolated git workspaces** — `git clone --local` creates an independent repo per session; host files are never modified
+- **Isolated git workspaces** — `git clone --local` (default) or `git worktree` for per-session workspaces; host files are never modified
 - **Persistent sessions** — detach with `Ctrl+P` → `Ctrl+Q`, reattach with `box resume`; processes keep running
 - **Terminal multiplexer** — scrollback history, mouse scroll, scrollbar, COMMAND mode for navigation
 - **Named sessions** — run multiple experiments in parallel, each with its own workspace
@@ -157,8 +157,8 @@ Running `box` with no arguments opens an interactive TUI:
 
 ```bash
 box                                               Session manager (TUI)
-box <name> [--local] [--docker] [--color <color>]  Shortcut for `box create <name>`
-box create <name> [--local] [--docker] [--color <color>] [options] [-- cmd...] Create a new session
+box <name> [--local] [--docker] [--strategy <s>] [--color <color>]  Shortcut for `box create <name>`
+box create <name> [--local] [--docker] [--strategy <s>] [--color <color>] [options] [-- cmd...] Create a new session
 box resume <name> [-d] [--docker-args <args>]     Resume an existing session
 box stop <name>                                   Stop a running session
 box exec <name> -- <cmd...>                       Run a command in a running session
@@ -183,6 +183,10 @@ box create my-feature -- make test
 # With a custom header color
 box create my-feature --color blue
 box my-feature --color '#ff6600'
+
+# Use git worktree instead of clone (faster, shares object store)
+box create my-feature --strategy worktree
+BOX_STRATEGY=worktree box my-feature
 
 # Create in detached mode (background)
 box create my-feature -d -- long-running-task
@@ -250,6 +254,7 @@ box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 | `--docker` | Create a Docker session (requires Docker) |
 | `--image <image>` | Docker image to use (default: `alpine:latest`) |
 | `--color <color>` | Header background color (name, `#rrggbb` hex, or ANSI 256 number) |
+| `--strategy <strategy>` | Workspace strategy: `clone` (default) or `worktree`. Overrides `$BOX_STRATEGY` |
 | `--docker-args <args>` | Extra Docker flags (e.g. `-e KEY=VALUE`, `-v /host:/container`). Overrides `$BOX_DOCKER_ARGS` |
 | `-- cmd...` | Command to run (default: `$BOX_DEFAULT_CMD` if set) |
 
@@ -276,6 +281,7 @@ box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 | `BOX_DOCKER_ARGS` | Default extra Docker flags, used when `--docker-args` is not provided |
 | `BOX_DEFAULT_CMD` | Default command for new sessions, used when no `-- cmd` is provided |
 | `BOX_MODE` | Session mode: `local` (default) or `docker` |
+| `BOX_STRATEGY` | Workspace strategy: `clone` (default) or `worktree` |
 
 ## Shell Completions
 
@@ -296,7 +302,9 @@ your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
   ...                                               ...
 ```
 
-`git clone --local` creates a fully independent git repo using hardlinks for file objects. The clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace cannot affect your original repository.
+By default, `git clone --local` creates a fully independent git repo using hardlinks for file objects. The clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace cannot affect your original repository.
+
+With `--strategy worktree`, box uses `git worktree add --detach` instead. This shares the object store with the parent repo, making workspace creation faster and more space-efficient. The tradeoff is that worktrees share refs with the parent — use this when you want lightweight workspaces and don't need full git isolation.
 
 The built-in terminal multiplexer wraps each session with:
 - **Session persistence** — the process runs in a background server; detach and reattach without interruption
@@ -307,17 +315,17 @@ The built-in terminal multiplexer wraps each session with:
 |--------|--------|
 | Workspace location | `~/.box/workspaces/<name>/` |
 | Session metadata | `~/.box/sessions/<name>/` |
-| Git isolation | Full — independent `.git`, no shared refs |
+| Git isolation | Full with `clone` (default); shared object store with `worktree` |
 | Session persistence | Multiplexer server keeps process alive across detach/reattach |
 | Cleanup | `box remove` deletes workspace, session data, and container (if Docker) |
 
 ## Design Decisions
 
 <details>
-<summary><strong>Why <code>git clone --local</code>?</strong></summary>
+<summary><strong>Why <code>git clone --local</code> as the default?</strong></summary>
 
-| Strategy | Problem |
-|----------|---------|
+| Strategy | Trade-off |
+|----------|-----------|
 | **Bind-mount the host repo** | No isolation at all; the agent modifies your actual files |
 | **git worktree** | Shares the `.git` directory with the host; checkout, reset, and rebase can affect host branches and refs |
 | **Bare-git mount** | Still shares state; branch creates/deletes in the container affect the host |
@@ -325,6 +333,8 @@ The built-in terminal multiplexer wraps each session with:
 | **Full copy (`cp -r`)** | Truly isolated but slow for large repos |
 
 `git clone --local` is fully independent (own `.git`), fast (hardlinks), complete (full history), and simple (no wrapper scripts).
+
+That said, `git worktree` is available via `--strategy worktree` for cases where speed and disk savings matter more than full isolation.
 
 </details>
 
