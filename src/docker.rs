@@ -3,7 +3,6 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::config;
-use crate::mux;
 
 /// Create a workspace directory on the host for the session.
 /// Dispatches to clone or worktree strategy based on the `strategy` parameter.
@@ -230,14 +229,8 @@ pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
         println!("Run `box {}` to attach.", cfg.name);
         Ok(0)
     } else {
-        let mut docker_cmd = vec!["docker".to_string()];
-        docker_cmd.extend(args);
-        mux::run_standalone(mux::MuxConfig {
-            session_name: cfg.name.to_string(),
-            command: docker_cmd,
-            working_dir: None,
-            prefix_key: crate::config::load_mux_prefix_key(),
-        })
+        let status = Command::new("docker").args(&args).status()?;
+        Ok(status.code().unwrap_or(1))
     }
 }
 
@@ -302,33 +295,22 @@ pub fn start_container(name: &str) -> Result<i32> {
 }
 
 pub fn attach_container(name: &str) -> Result<i32> {
-    mux::run_standalone(mux::MuxConfig {
-        session_name: name.to_string(),
-        command: vec![
-            "docker".to_string(),
-            "attach".to_string(),
-            format!("box-{}", name),
-        ],
-        working_dir: None,
-        prefix_key: crate::config::load_mux_prefix_key(),
-    })
+    let status = Command::new("docker")
+        .args(["attach", &format!("box-{}", name)])
+        .status()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 pub fn exec_container(name: &str, cmd: &[String]) -> Result<i32> {
-    let mut docker_cmd = vec![
-        "docker".to_string(),
+    let mut args = vec![
         "exec".to_string(),
         "-it".to_string(),
         format!("box-{}", name),
     ];
-    docker_cmd.extend(cmd.iter().cloned());
+    args.extend(cmd.iter().cloned());
 
-    mux::run_standalone(mux::MuxConfig {
-        session_name: name.to_string(),
-        command: docker_cmd,
-        working_dir: None,
-        prefix_key: crate::config::load_mux_prefix_key(),
-    })
+    let status = Command::new("docker").args(&args).status()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 pub fn start_container_detached(name: &str) -> Result<i32> {

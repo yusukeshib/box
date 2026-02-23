@@ -1,5 +1,4 @@
 use anyhow::{bail, Result};
-use serde::Deserialize;
 
 pub const DEFAULT_IMAGE: &str = "alpine:latest";
 
@@ -94,62 +93,6 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
         color: input.color,
         strategy,
     })
-}
-
-/// Default prefix key: Ctrl+P (0x10).
-const DEFAULT_PREFIX_KEY: u8 = 0x10;
-
-#[derive(Deserialize, Default)]
-struct FileConfig {
-    mux: Option<MuxFileConfig>,
-}
-
-#[derive(Deserialize, Default)]
-struct MuxFileConfig {
-    prefix_key: Option<String>,
-}
-
-/// Parse a prefix key string like "Ctrl+B" into its control byte (0x01..0x1A).
-/// Returns `None` for invalid strings.
-fn parse_prefix_key(s: &str) -> Option<u8> {
-    let s = s.trim();
-    let rest = s.strip_prefix("Ctrl+")?;
-    if rest.len() != 1 {
-        return None;
-    }
-    let ch = rest.chars().next()?.to_ascii_uppercase();
-    if ch.is_ascii_uppercase() {
-        Some(ch as u8 - b'A' + 1)
-    } else {
-        None
-    }
-}
-
-/// Load the mux prefix key from `~/.config/box/config.toml`.
-/// Returns the default (Ctrl+P = 0x10) if the file doesn't exist or the key
-/// is not set / invalid.
-pub fn load_mux_prefix_key() -> u8 {
-    let home = match std::env::var("HOME") {
-        Ok(h) if !h.is_empty() => h,
-        _ => return DEFAULT_PREFIX_KEY,
-    };
-    let path = std::path::Path::new(&home)
-        .join(".config")
-        .join("box")
-        .join("config.toml");
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return DEFAULT_PREFIX_KEY,
-    };
-    let file_config: FileConfig = match toml::from_str(&content) {
-        Ok(c) => c,
-        Err(_) => return DEFAULT_PREFIX_KEY,
-    };
-    file_config
-        .mux
-        .and_then(|m| m.prefix_key)
-        .and_then(|s| parse_prefix_key(&s))
-        .unwrap_or(DEFAULT_PREFIX_KEY)
 }
 
 pub fn derive_mount_path(project_dir: &str) -> String {

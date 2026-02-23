@@ -282,36 +282,7 @@ pub fn touch_resumed_at(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn write_pid(name: &str, pid: u32) -> Result<()> {
-    let dir = sessions_dir()?.join(name);
-    fs::write(dir.join("pid"), pid.to_string())?;
-    Ok(())
-}
-
-pub fn remove_pid(name: &str) {
-    if let Ok(dir) = sessions_dir() {
-        let _ = fs::remove_file(dir.join(name).join("pid"));
-    }
-}
-
-pub fn socket_path(name: &str) -> Result<PathBuf> {
-    Ok(sessions_dir()?.join(name).join("sock"))
-}
-
-pub fn remove_socket(name: &str) {
-    if let Ok(dir) = sessions_dir() {
-        let _ = fs::remove_file(dir.join(name).join("sock"));
-    }
-}
-
 pub fn is_local_running(name: &str) -> bool {
-    // Check socket first (authoritative if server is up)
-    if let Ok(path) = socket_path(name) {
-        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
-            return true;
-        }
-    }
-    // Fallback: PID check (handles server startup race)
     let dir = match sessions_dir() {
         Ok(d) => d,
         Err(_) => return false,

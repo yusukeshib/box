@@ -1,7 +1,6 @@
 mod config;
 mod docker;
 mod git;
-mod mux;
 mod session;
 mod tui;
 
@@ -170,14 +169,6 @@ fn is_local_mode() -> bool {
 }
 
 fn main() {
-    // Server mode: if __BOX_MUX_SERVER is set, run as mux server daemon
-    if let Ok(session_name) = std::env::var("__BOX_MUX_SERVER") {
-        if let Err(e) = mux::server::run(&session_name) {
-            eprintln!("mux server: {:#}", e);
-        }
-        std::process::exit(0);
-    }
-
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -241,8 +232,7 @@ fn main() {
             ConfigShell::Bash => cmd_config_bash(),
         },
         Some(Commands::External(args)) => {
-            // Prevent infinite recursion: if we're already inside a mux PTY,
-            // don't create or resume sessions.
+            // Prevent nesting: don't create or resume sessions from inside a session.
             if std::env::var_os("BOX_SESSION").is_some() {
                 eprintln!(
                     "Error: cannot nest box sessions (already inside session {:?})",
@@ -348,7 +338,19 @@ fn main() {
 }
 
 fn run_local_command(session_name: &str) -> Result<i32> {
-    mux::run(session_name)
+    let sess = session::load(session_name)?;
+    let home = config::home_dir()?;
+    let workspace = Path::new(&home)
+        .join(".box")
+        .join("workspaces")
+        .join(session_name);
+
+    let status = std::process::Command::new(&sess.command[0])
+        .args(&sess.command[1..])
+        .current_dir(&workspace)
+        .status()?;
+
+    Ok(status.code().unwrap_or(1))
 }
 
 fn output_cd_path(path: &str) {
@@ -844,7 +846,11 @@ fn cmd_stop(name: &str) -> Result<i32> {
         if !session::is_local_running(name) {
             bail!("Session '{}' is not running.", name);
         }
-        mux::send_kill(name)?;
+        let pid_str = fs::read_to_string(session::sessions_dir()?.join(name).join("pid"))?;
+        let pid: i32 = pid_str.trim().parse()?;
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
         println!("Session '{}' stopped.", name);
         return Ok(0);
     }
@@ -870,12 +876,11 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     if sess.local {
         let home = config::home_dir()?;
         let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
-        return mux::run_standalone(mux::MuxConfig {
-            session_name: name.to_string(),
-            command: cmd.to_vec(),
-            working_dir: Some(workspace.to_string_lossy().to_string()),
-            prefix_key: config::load_mux_prefix_key(),
-        });
+        let status = std::process::Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .current_dir(&workspace)
+            .status()?;
+        return Ok(status.code().unwrap_or(1));
     }
 
     docker::check()?;
