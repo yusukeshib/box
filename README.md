@@ -6,33 +6,17 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-Isolated git workspaces with a built-in terminal multiplexer. Clone, branch, break things — your repo stays untouched.
+Isolated git workspaces. Clone, branch, break things — your repo stays untouched.
 
 ![demo](./demo.gif)
 
 ## Why box?
 
-Box gives you **isolated** git workspaces with **persistent** terminal sessions — two core ideas:
-
-**1. Isolated git workspaces**
-
 Each session gets its own workspace. By default, `git clone --local` creates a fully independent repo with hardlinks — fast even for large repos, and nothing you do can affect the original. Alternatively, `--strategy worktree` uses `git worktree` for even faster, space-efficient workspaces that share the object store.
-
-**2. Built-in terminal multiplexer for persistent sessions**
-
-Every session runs inside a terminal multiplexer with scrollback, mouse support, and a persistent connection. Detach and reattach freely — your process keeps running in the background.
-
-```
- COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
-$ make test
-...
-```
 
 ## Features
 
 - **Isolated git workspaces** — `git clone --local` (default) or `git worktree` for per-session workspaces; host files are never modified
-- **Persistent sessions** — detach with `Ctrl+P` → `Ctrl+Q`, reattach with `box resume`; processes keep running
-- **Terminal multiplexer** — scrollback history, mouse scroll, scrollbar, COMMAND mode for navigation
 - **Named sessions** — run multiple experiments in parallel, each with its own workspace
 - **Session manager TUI** — interactive dashboard to create, resume, and manage sessions
 - **Docker mode** — optional full container isolation with any Docker image (`BOX_MODE=docker`)
@@ -86,52 +70,9 @@ Box must be run inside a git repository. It clones the current repo into `~/.box
 $ git checkout -b experiment
 $ make test  # break things freely
 
-# Detach (Ctrl+P enters COMMAND mode, then Ctrl+Q)
-# Your process keeps running in the background
-
-# Reattach later
-box resume my-feature
-
 # Done? Clean up
 box remove my-feature
 ```
-
-## Terminal Multiplexer
-
-Every box session runs inside a built-in terminal multiplexer. This gives you session persistence, scrollback, and keyboard-driven navigation.
-
-### COMMAND mode
-
-Press `Ctrl+P` (configurable) to enter COMMAND mode. The header bar turns dark gray and shows available keys:
-
-```
- COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
-```
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+P` | Scroll up 1 line |
-| `Ctrl+N` | Scroll down 1 line |
-| `Ctrl+U` | Scroll up half page |
-| `Ctrl+D` | Scroll down half page |
-| `Arrow keys` | Scroll up/down |
-| `PgUp` / `PgDn` | Scroll by half page |
-| `Ctrl+Q` | Detach from session (process keeps running) |
-| `Ctrl+X` | Stop/kill the session |
-| `Esc` | Exit COMMAND mode (snap to bottom) |
-
-Mouse scroll works in both normal and COMMAND mode. A scrollbar appears when there is scrollback content.
-
-### Configuring the prefix key
-
-The key that enters COMMAND mode can be changed via `~/.config/box/config.toml`:
-
-```toml
-[mux]
-prefix_key = "Ctrl+B"   # default: "Ctrl+P"
-```
-
-Supports `Ctrl+A` through `Ctrl+Z`.
 
 ## Session Manager
 
@@ -306,17 +247,11 @@ By default, `git clone --local` creates a fully independent git repo using hardl
 
 With `--strategy worktree`, box uses `git worktree add --detach` instead. This shares the object store with the parent repo, making workspace creation faster and more space-efficient. The tradeoff is that worktrees share refs with the parent — use this when you want lightweight workspaces and don't need full git isolation.
 
-The built-in terminal multiplexer wraps each session with:
-- **Session persistence** — the process runs in a background server; detach and reattach without interruption
-- **Scrollback** — 10,000 lines of history with keyboard and mouse navigation
-- **Header bar** — shows session name, scroll position, and COMMAND mode status
-
 | Aspect | Detail |
 |--------|--------|
 | Workspace location | `~/.box/workspaces/<name>/` |
 | Session metadata | `~/.box/sessions/<name>/` |
 | Git isolation | Full with `clone` (default); shared object store with `worktree` |
-| Session persistence | Multiplexer server keeps process alive across detach/reattach |
 | Cleanup | `box remove` deletes workspace, session data, and container (if Docker) |
 
 ## Design Decisions
@@ -335,18 +270,6 @@ The built-in terminal multiplexer wraps each session with:
 `git clone --local` is fully independent (own `.git`), fast (hardlinks), complete (full history), and simple (no wrapper scripts).
 
 That said, `git worktree` is available via `--strategy worktree` for cases where speed and disk savings matter more than full isolation.
-
-</details>
-
-<details>
-<summary><strong>Why a built-in multiplexer?</strong></summary>
-
-Box needs session persistence — the ability to detach from a running process and reattach later. Rather than requiring tmux or screen as external dependencies, box includes a purpose-built terminal multiplexer that:
-
-- Requires zero configuration — works out of the box
-- Provides a consistent UI across all sessions (header bar, scrollback, COMMAND mode)
-- Handles the client-server architecture for session persistence transparently
-- Supports mouse scroll and a visual scrollbar for navigating output history
 
 </details>
 
