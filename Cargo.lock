@@ -153,9 +153,10 @@ dependencies = [
 
 [[package]]
 name = "box-cli"
-version = "0.0.31"
+version = "0.0.32"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "crossterm",

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use super::protocol::{self, ClientMsg, ServerMsg};
 use super::terminal::{
-    self, scrollback_line_count, DrawFrameParams, InputAction, InputState, ScrollState,
+    self, osc52_copy, scrollback_line_count, DrawFrameParams, InputAction, InputState, ScrollState,
 };
 use crate::session;
 
@@ -451,6 +451,7 @@ pub fn run(
     let header_color = super::color_for_session(session_name);
     let prefix_key = crate::config::load_mux_prefix_key();
     let mut input_state = InputState::new(prefix_key);
+    let mut copied_flash: Option<std::time::Instant> = None;
 
     // Sidebar state — restore from previous session switch if provided
     let mut sidebar: Option<SidebarState> = initial_sidebar;
@@ -478,6 +479,7 @@ pub fn run(
             command_mode: false,
             hover_close: false,
             header_color,
+            copied_flash: false,
         };
         {
             use std::io::Write;
@@ -636,6 +638,36 @@ pub fn run(
                             });
                             dirty = true;
                         }
+                        InputAction::CopyScreen => {
+                            let (pty_rows, pty_cols) = parser.screen().size();
+                            let mut lines: Vec<String> = Vec::new();
+                            for row in 0..pty_rows {
+                                let mut line = String::new();
+                                for col in 0..pty_cols {
+                                    if let Some(cell) = parser.screen().cell(row, col) {
+                                        let c = cell.contents();
+                                        if c.is_empty() {
+                                            line.push(' ');
+                                        } else {
+                                            line.push_str(c.as_str());
+                                        }
+                                    } else {
+                                        line.push(' ');
+                                    }
+                                }
+                                lines.push(line.trim_end().to_string());
+                            }
+                            // Trim trailing empty lines
+                            while lines.last().is_some_and(|l| l.is_empty()) {
+                                lines.pop();
+                            }
+                            let text = lines.join("\n");
+                            if !text.is_empty() {
+                                osc52_copy(tty_fd, &text);
+                            }
+                            copied_flash = Some(std::time::Instant::now());
+                            dirty = true;
+                        }
                     }
                 }
             }
@@ -692,6 +724,14 @@ pub fn run(
                     }
                 }
 
+                // Expire the copied flash after 1.5 seconds
+                if let Some(t) = copied_flash {
+                    if t.elapsed() >= Duration::from_millis(1500) {
+                        copied_flash = None;
+                        dirty = true;
+                    }
+                }
+
                 if dirty {
                     let max_scrollback = scrollback_line_count(&mut parser);
 
@@ -714,6 +754,7 @@ pub fn run(
                         command_mode: input_state.command_mode,
                         hover_close: input_state.hover_close,
                         header_color,
+                        copied_flash: copied_flash.is_some(),
                     };
                     let sidebar_ref = sidebar.as_ref();
                     // Write BSU/ESU through the same BufWriter as the

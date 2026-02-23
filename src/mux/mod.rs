@@ -355,6 +355,34 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         InputAction::OpenSidebar => {
                             // Sidebar not available in standalone mode
                         }
+                        InputAction::CopyScreen => {
+                            let (pty_rows, pty_cols) = parser.screen().size();
+                            let mut lines: Vec<String> = Vec::new();
+                            for row in 0..pty_rows {
+                                let mut line = String::new();
+                                for col in 0..pty_cols {
+                                    if let Some(cell) = parser.screen().cell(row, col) {
+                                        let c = cell.contents();
+                                        if c.is_empty() {
+                                            line.push(' ');
+                                        } else {
+                                            line.push_str(c.as_str());
+                                        }
+                                    } else {
+                                        line.push(' ');
+                                    }
+                                }
+                                lines.push(line.trim_end().to_string());
+                            }
+                            while lines.last().is_some_and(|l| l.is_empty()) {
+                                lines.pop();
+                            }
+                            let text = lines.join("\n");
+                            if !text.is_empty() {
+                                terminal::osc52_copy(tty_fd, &text);
+                            }
+                            dirty = true;
+                        }
                     }
                 }
             }
@@ -438,6 +466,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         command_mode: input_state.command_mode,
                         hover_close: input_state.hover_close,
                         header_color,
+                        copied_flash: false,
                     };
                     terminal::begin_sync_update(tty_fd);
                     term.draw(|f| {

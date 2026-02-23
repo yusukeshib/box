@@ -244,6 +244,7 @@ pub struct DrawFrameParams<'a> {
     pub command_mode: bool,
     pub hover_close: bool,
     pub header_color: Option<Color>,
+    pub copied_flash: bool,
 }
 
 /// Pick white or black foreground based on perceived brightness of the background.
@@ -314,15 +315,17 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) 
         format!(" {} > {} ", project_name, session_name)
     };
 
-    // Right side: optional scroll indicator + close button
-    let scroll_text = if scrolled_up {
+    // Right side: optional scroll indicator / copied flash + close button
+    let scroll_text = if params.copied_flash {
+        " [copied] ".to_string()
+    } else if scrolled_up {
         format!(" [{}/{}] ", scroll_offset, max_scrollback)
     } else {
         String::new()
     };
 
     let help_hint = if command_mode {
-        " a sessions  ^P/^N scroll  ^Q detach  ^X stop  Esc exit "
+        " a sessions  y copy  ^P/^N scroll  ^Q detach  ^X stop  Esc exit "
     } else {
         ""
     };
@@ -425,6 +428,8 @@ pub enum InputAction {
     Redraw,
     /// Open the session switcher sidebar
     OpenSidebar,
+    /// Copy visible screen text to clipboard via OSC 52
+    CopyScreen,
 }
 
 struct SgrMouseEvent {
@@ -673,6 +678,15 @@ impl InputState {
                     i += 1;
                     continue;
                 }
+                // 'y' — copy visible screen to clipboard
+                if b == b'y' {
+                    self.command_mode = false;
+                    self.scroll_offset = 0;
+                    actions.push(InputAction::CopyScreen);
+                    actions.push(InputAction::Redraw);
+                    i += 1;
+                    continue;
+                }
                 // Ctrl+P — scroll up 1 line
                 if b == 0x10 {
                     self.scroll_offset = (self.scroll_offset + 1).min(max_scrollback);
@@ -815,6 +829,16 @@ pub fn begin_sync_update(tty_fd: i32) {
 /// End DEC synchronized update mode (DECRM 2026).
 pub fn end_sync_update(tty_fd: i32) {
     tty_write(tty_fd, b"\x1b[?2026l");
+}
+
+/// Copy text to the system clipboard via the OSC 52 escape sequence.
+/// Works in all modern terminals (iTerm2, Alacritty, WezTerm, kitty, etc.)
+/// and over SSH sessions.
+pub fn osc52_copy(tty_fd: i32, text: &str) {
+    use base64::Engine;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(text);
+    let seq = format!("\x1b]52;c;{}\x07", encoded);
+    tty_write(tty_fd, seq.as_bytes());
 }
 
 pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
