@@ -126,7 +126,10 @@ impl<'a> Widget for TerminalWidget<'a> {
 
                 if let Some(sel) = self.selection {
                     if sel.contains(y as u16, x as u16) {
-                        style = style.add_modifier(Modifier::REVERSED);
+                        style = style
+                            .fg(Color::White)
+                            .bg(Color::DarkGray)
+                            .remove_modifier(Modifier::REVERSED);
                     }
                 }
 
