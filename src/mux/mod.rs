@@ -437,7 +437,6 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         scroll: &scroll,
                         command_mode: input_state.command_mode,
                         hover_close: input_state.hover_close,
-                        hide_scrollbar: input_state.hide_scrollbar,
                         header_color,
                     };
                     terminal::begin_sync_update(tty_fd);

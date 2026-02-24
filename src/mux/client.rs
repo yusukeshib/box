@@ -477,7 +477,6 @@ pub fn run(
             scroll: &scroll,
             command_mode: false,
             hover_close: false,
-            hide_scrollbar: false,
             header_color,
         };
         {
@@ -714,7 +713,6 @@ pub fn run(
                         scroll: &scroll,
                         command_mode: input_state.command_mode,
                         hover_close: input_state.hover_close,
-                        hide_scrollbar: input_state.hide_scrollbar,
                         header_color,
                     };
                     let sidebar_ref = sidebar.as_ref();

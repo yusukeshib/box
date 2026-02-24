@@ -229,7 +229,7 @@ pub fn scrollback_line_count(parser: &mut vt100::Parser) -> usize {
     count
 }
 
-/// Scrollback state passed to `draw_frame` for rendering the scrollbar.
+/// Scrollback state passed to `draw_frame` for rendering the scroll indicator.
 pub struct ScrollState {
     pub offset: usize,
     pub max: usize,
@@ -243,7 +243,6 @@ pub struct DrawFrameParams<'a> {
     pub scroll: &'a ScrollState,
     pub command_mode: bool,
     pub hover_close: bool,
-    pub hide_scrollbar: bool,
     pub header_color: Option<Color>,
 }
 
@@ -362,42 +361,6 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) 
         show_cursor: !scrolled_up,
     };
     f.render_widget(widget, grid_area);
-
-    // Render scrollbar when there is scrollback content (hidden during drag/shift)
-    if max_scrollback > 0 && grid_area.height > 0 && !params.hide_scrollbar {
-        let track_height = grid_area.height as usize;
-        // Thumb size: at least 1 row, proportional to visible / total
-        let total_lines = max_scrollback + track_height;
-        let thumb_size = (track_height * track_height / total_lines).max(1);
-        // Thumb position: 0 = bottom (scroll_offset 0), top = max scroll
-        let max_thumb_top = track_height.saturating_sub(thumb_size);
-        let thumb_top = if max_scrollback > 0 {
-            scroll_offset * max_thumb_top / max_scrollback
-        } else {
-            0
-        };
-        // Invert: scroll_offset=max means thumb at top (y=0)
-        let thumb_y_start = max_thumb_top - thumb_top;
-
-        let scrollbar_x = grid_area.x + grid_area.width.saturating_sub(1);
-        let track_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
-        let thumb_style = Style::default().fg(Color::White).bg(Color::White);
-
-        for row in 0..track_height {
-            let y = grid_area.y + row as u16;
-            if scrollbar_x >= f.area().width || y >= f.area().height {
-                continue;
-            }
-            let cell = &mut f.buffer_mut()[(scrollbar_x, y)];
-            if row >= thumb_y_start && row < thumb_y_start + thumb_size {
-                cell.set_symbol("\u{2588}"); // █ (full block)
-                cell.set_style(thumb_style);
-            } else {
-                cell.set_symbol("\u{2502}"); // │ (thin vertical line)
-                cell.set_style(track_style);
-            }
-        }
-    }
 }
 
 /// Input processing state machine for COMMAND mode and scroll.
@@ -408,10 +371,6 @@ pub struct InputState {
     prefix_key: u8,
     /// True when the mouse is hovering over the header close button.
     pub hover_close: bool,
-    /// True while the user is click-dragging the scrollbar thumb.
-    dragging_scrollbar: bool,
-    /// True while the scrollbar should be hidden (during mouse drag or Shift held).
-    pub hide_scrollbar: bool,
     /// Bytes from an incomplete escape sequence carried over from the
     /// previous read.  Combined with the next input in `process()`.
     pending: Vec<u8>,
@@ -486,8 +445,6 @@ impl InputState {
             scroll_offset: 0,
             prefix_key,
             hover_close: false,
-            dragging_scrollbar: false,
-            hide_scrollbar: false,
             pending: Vec::new(),
         }
     }
@@ -511,7 +468,7 @@ impl InputState {
 
     /// Process raw input bytes, returning actions to perform.
     /// `current_inner_rows` is used for PgUp/PgDn scroll step.
-    /// `term_cols` is the terminal width (for scrollbar click detection).
+    /// `term_cols` is the terminal width (for header click detection).
     /// `max_scrollback` is from `parser.screen().scrollback()`.
     pub fn process(
         &mut self,
@@ -565,19 +522,8 @@ impl InputState {
                 }
             }
 
-            // Gate 1: Always intercept SGR mouse events for scrollback / scrollbar
+            // Gate 1: Always intercept SGR mouse events for scrollback
             if let Some((mouse, consumed)) = parse_sgr_mouse(data, i) {
-                // Detect Shift modifier (bit 2 of SGR button value).
-                // Hide scrollbar so Shift+click text selection is clean.
-                if mouse.button & 4 != 0 {
-                    if !self.hide_scrollbar {
-                        self.hide_scrollbar = true;
-                        actions.push(InputAction::Redraw);
-                    }
-                    i += consumed;
-                    continue;
-                }
-
                 // Update hover state for the close button area.
                 // Close button " x " occupies the last 4 columns of the header (row 1).
                 let in_close_area = mouse.row == 1
@@ -586,13 +532,10 @@ impl InputState {
                     && mouse.col <= term_cols;
                 // Motion events (button 35 = motion with no button pressed,
                 // button 32 = motion with left button held)
-                if mouse.button == 35 || (mouse.button == 32 && !self.dragging_scrollbar) {
+                if mouse.button == 35 || mouse.button == 32 {
                     let was_hover = self.hover_close;
                     self.hover_close = in_close_area;
-                    // Hide scrollbar during left-drag (text selection)
-                    let prev_hide = self.hide_scrollbar;
-                    self.hide_scrollbar = mouse.button == 32;
-                    if self.hover_close != was_hover || self.hide_scrollbar != prev_hide {
+                    if self.hover_close != was_hover {
                         actions.push(InputAction::Redraw);
                     }
                     i += consumed;
@@ -626,40 +569,6 @@ impl InputState {
                         // Scroll wheel down
                         self.scroll_offset = self.scroll_offset.saturating_sub(3);
                         actions.push(InputAction::Redraw);
-                    }
-                    // Left click on scrollbar column (SGR coords are 1-indexed)
-                    0 if mouse.pressed
-                        && max_scrollback > 0
-                        && mouse.col == term_cols
-                        && mouse.row >= 2 =>
-                    {
-                        let grid_row = (mouse.row - 2) as usize;
-                        let track_height = current_inner_rows as usize;
-                        if grid_row < track_height && track_height > 1 {
-                            self.scroll_offset =
-                                max_scrollback * (track_height - 1 - grid_row) / (track_height - 1);
-                            self.dragging_scrollbar = true;
-                            actions.push(InputAction::Redraw);
-                        }
-                    }
-                    // Left button drag while scrollbar is held
-                    32 if mouse.pressed && self.dragging_scrollbar && max_scrollback > 0 => {
-                        let track_height = current_inner_rows as usize;
-                        if track_height > 1 {
-                            let grid_row =
-                                (mouse.row.saturating_sub(2) as usize).min(track_height - 1);
-                            self.scroll_offset =
-                                max_scrollback * (track_height - 1 - grid_row) / (track_height - 1);
-                            actions.push(InputAction::Redraw);
-                        }
-                    }
-                    // Left button release — stop drag, restore scrollbar
-                    0 if !mouse.pressed => {
-                        self.dragging_scrollbar = false;
-                        if self.hide_scrollbar {
-                            self.hide_scrollbar = false;
-                            actions.push(InputAction::Redraw);
-                        }
                     }
                     _ => {} // consume other mouse events
                 }
