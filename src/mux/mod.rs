@@ -14,7 +14,8 @@ use ratatui::style::Color;
 use crate::session;
 
 use terminal::{
-    scrollback_line_count, DrawFrameParams, InputAction, InputState, RawModeGuard, ScrollState,
+    extract_selection_text, scrollback_line_count, write_osc52_clipboard, DrawFrameParams,
+    InputAction, InputState, RawModeGuard, ScrollState,
 };
 
 /// Acquire an exclusive lock on a session-specific lockfile.
@@ -355,6 +356,16 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         InputAction::OpenSidebar => {
                             // Sidebar not available in standalone mode
                         }
+                        InputAction::CopyToClipboard => {
+                            if let Some(ref sel) = input_state.selection {
+                                parser.set_scrollback(input_state.scroll_offset);
+                                let text = extract_selection_text(parser.screen(), sel);
+                                parser.set_scrollback(0);
+                                if !text.is_empty() {
+                                    write_osc52_clipboard(tty_fd, &text);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -410,6 +421,8 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                             term.clear()?;
                         }
                         input_state.scroll_offset = 0;
+                        input_state.selection = None;
+                        input_state.drag_start = None;
                         dirty = true;
                     }
                 }
@@ -438,6 +451,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         command_mode: input_state.command_mode,
                         hover_close: input_state.hover_close,
                         header_color,
+                        selection: input_state.selection.as_ref(),
                     };
                     terminal::begin_sync_update(tty_fd);
                     term.draw(|f| {

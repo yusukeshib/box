@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use super::protocol::{self, ClientMsg, ServerMsg};
 use super::terminal::{
-    self, scrollback_line_count, DrawFrameParams, InputAction, InputState, ScrollState,
+    self, extract_selection_text, scrollback_line_count, write_osc52_clipboard, DrawFrameParams,
+    InputAction, InputState, ScrollState,
 };
 use crate::session;
 
@@ -478,6 +479,7 @@ pub fn run(
             command_mode: false,
             hover_close: false,
             header_color,
+            selection: None,
         };
         {
             use std::io::Write;
@@ -629,12 +631,24 @@ pub fn run(
                             dirty = true;
                         }
                         InputAction::OpenSidebar => {
+                            input_state.selection = None;
+                            input_state.drag_start = None;
                             let (entries, selected) = build_sidebar_entries(session_name);
                             sidebar = Some(SidebarState {
                                 sessions: entries,
                                 selected,
                             });
                             dirty = true;
+                        }
+                        InputAction::CopyToClipboard => {
+                            if let Some(ref sel) = input_state.selection {
+                                parser.set_scrollback(input_state.scroll_offset);
+                                let text = extract_selection_text(parser.screen(), sel);
+                                parser.set_scrollback(0);
+                                if !text.is_empty() {
+                                    write_osc52_clipboard(tty_fd, &text);
+                                }
+                            }
                         }
                     }
                 }
@@ -688,6 +702,8 @@ pub fn run(
                             terminal.clear()?;
                         }
                         input_state.scroll_offset = 0;
+                        input_state.selection = None;
+                        input_state.drag_start = None;
                         dirty = true;
                     }
                 }
@@ -714,6 +730,7 @@ pub fn run(
                         command_mode: input_state.command_mode,
                         hover_close: input_state.hover_close,
                         header_color,
+                        selection: input_state.selection.as_ref(),
                     };
                     let sidebar_ref = sidebar.as_ref();
                     // Write BSU/ESU through the same BufWriter as the

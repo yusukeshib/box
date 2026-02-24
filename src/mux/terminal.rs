@@ -66,6 +66,7 @@ impl Drop for RawModeGuard {
 pub struct TerminalWidget<'a> {
     pub screen: &'a vt100::Screen,
     pub show_cursor: bool,
+    pub selection: Option<&'a Selection>,
 }
 
 impl<'a> Widget for TerminalWidget<'a> {
@@ -120,6 +121,15 @@ impl<'a> Widget for TerminalWidget<'a> {
                 if let Some((cr, cc)) = cursor_pos {
                     if y == cr as usize && x == cc as usize {
                         style = style.add_modifier(Modifier::REVERSED);
+                    }
+                }
+
+                if let Some(sel) = self.selection {
+                    if sel.contains(y as u16, x as u16) {
+                        style = style
+                            .fg(Color::White)
+                            .bg(Color::DarkGray)
+                            .remove_modifier(Modifier::REVERSED);
                     }
                 }
 
@@ -229,6 +239,44 @@ pub fn scrollback_line_count(parser: &mut vt100::Parser) -> usize {
     count
 }
 
+/// A rectangular text selection on the terminal grid (0-indexed, grid-relative).
+#[derive(Clone, Debug)]
+pub struct Selection {
+    pub start_row: u16,
+    pub start_col: u16,
+    pub end_row: u16,
+    pub end_col: u16,
+}
+
+impl Selection {
+    /// Return (top_row, left_col, bottom_row, right_col) in reading order.
+    pub fn ordered(&self) -> (u16, u16, u16, u16) {
+        if (self.start_row, self.start_col) <= (self.end_row, self.end_col) {
+            (self.start_row, self.start_col, self.end_row, self.end_col)
+        } else {
+            (self.end_row, self.end_col, self.start_row, self.start_col)
+        }
+    }
+
+    /// Check if a (row, col) cell falls within the selection range.
+    pub fn contains(&self, row: u16, col: u16) -> bool {
+        let (top_row, top_col, bot_row, bot_col) = self.ordered();
+        if row < top_row || row > bot_row {
+            return false;
+        }
+        if row == top_row && row == bot_row {
+            return col >= top_col && col <= bot_col;
+        }
+        if row == top_row {
+            return col >= top_col;
+        }
+        if row == bot_row {
+            return col <= bot_col;
+        }
+        true
+    }
+}
+
 /// Scrollback state passed to `draw_frame` for rendering the scrollbar.
 pub struct ScrollState {
     pub offset: usize,
@@ -244,6 +292,7 @@ pub struct DrawFrameParams<'a> {
     pub command_mode: bool,
     pub hover_close: bool,
     pub header_color: Option<Color>,
+    pub selection: Option<&'a Selection>,
 }
 
 /// Pick white or black foreground based on perceived brightness of the background.
@@ -359,6 +408,7 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) 
     let widget = TerminalWidget {
         screen,
         show_cursor: !scrolled_up,
+        selection: params.selection,
     };
     f.render_widget(widget, grid_area);
 
@@ -412,6 +462,11 @@ pub struct InputState {
     /// Bytes from an incomplete escape sequence carried over from the
     /// previous read.  Combined with the next input in `process()`.
     pending: Vec<u8>,
+    /// Active text selection (mouse drag).
+    pub selection: Option<Selection>,
+    /// Grid cell where the left mouse button went down (row, col; 0-indexed).
+    /// Used to distinguish a click from a drag.
+    pub drag_start: Option<(u16, u16)>,
 }
 
 pub enum InputAction {
@@ -425,6 +480,8 @@ pub enum InputAction {
     Redraw,
     /// Open the session switcher sidebar
     OpenSidebar,
+    /// Copy the current selection to clipboard via OSC 52
+    CopyToClipboard,
 }
 
 struct SgrMouseEvent {
@@ -485,6 +542,8 @@ impl InputState {
             hover_close: false,
             dragging_scrollbar: false,
             pending: Vec::new(),
+            selection: None,
+            drag_start: None,
         }
     }
 
@@ -571,11 +630,38 @@ impl InputState {
                     && mouse.col <= term_cols;
                 // Motion events (button 35 = motion with no button pressed,
                 // button 32 = motion with left button held)
-                if mouse.button == 35 || (mouse.button == 32 && !self.dragging_scrollbar) {
+                if mouse.button == 35 {
                     let was_hover = self.hover_close;
                     self.hover_close = in_close_area;
                     if self.hover_close != was_hover {
                         actions.push(InputAction::Redraw);
+                    }
+                    i += consumed;
+                    continue;
+                }
+                // Left-drag: update selection or hover (not scrollbar)
+                if mouse.button == 32 && !self.dragging_scrollbar {
+                    if let Some((start_row, start_col)) = self.drag_start {
+                        // Convert SGR 1-indexed coords to 0-indexed grid coords
+                        // Grid starts at row 2 (1-indexed), so grid_row = mouse.row - 2
+                        let grid_row = mouse.row.saturating_sub(2);
+                        let grid_col = mouse.col.saturating_sub(1);
+                        // Only create selection if we've moved to a different cell
+                        if grid_row != start_row || grid_col != start_col {
+                            self.selection = Some(Selection {
+                                start_row,
+                                start_col,
+                                end_row: grid_row,
+                                end_col: grid_col,
+                            });
+                            actions.push(InputAction::Redraw);
+                        }
+                    } else {
+                        let was_hover = self.hover_close;
+                        self.hover_close = in_close_area;
+                        if self.hover_close != was_hover {
+                            actions.push(InputAction::Redraw);
+                        }
                     }
                     i += consumed;
                     continue;
@@ -600,12 +686,16 @@ impl InputState {
                         return actions;
                     }
                     64 => {
-                        // Scroll wheel up
+                        // Scroll wheel up — clear selection
+                        self.selection = None;
+                        self.drag_start = None;
                         self.scroll_offset = (self.scroll_offset + 3).min(max_scrollback);
                         actions.push(InputAction::Redraw);
                     }
                     65 => {
-                        // Scroll wheel down
+                        // Scroll wheel down — clear selection
+                        self.selection = None;
+                        self.drag_start = None;
                         self.scroll_offset = self.scroll_offset.saturating_sub(3);
                         actions.push(InputAction::Redraw);
                     }
@@ -624,6 +714,16 @@ impl InputState {
                             actions.push(InputAction::Redraw);
                         }
                     }
+                    // Left click on grid area (not header, not scrollbar) → start drag
+                    0 if mouse.pressed && mouse.row >= 2 => {
+                        let had_selection = self.selection.is_some();
+                        self.selection = None;
+                        self.drag_start =
+                            Some((mouse.row.saturating_sub(2), mouse.col.saturating_sub(1)));
+                        if had_selection {
+                            actions.push(InputAction::Redraw);
+                        }
+                    }
                     // Left button drag while scrollbar is held
                     32 if mouse.pressed && self.dragging_scrollbar && max_scrollback > 0 => {
                         let track_height = current_inner_rows as usize;
@@ -635,9 +735,13 @@ impl InputState {
                             actions.push(InputAction::Redraw);
                         }
                     }
-                    // Left button release — stop drag
+                    // Left button release — stop drag, copy selection
                     0 if !mouse.pressed => {
                         self.dragging_scrollbar = false;
+                        if self.selection.is_some() {
+                            actions.push(InputAction::CopyToClipboard);
+                        }
+                        self.drag_start = None;
                     }
                     _ => {} // consume other mouse events
                 }
@@ -747,9 +851,19 @@ impl InputState {
             // Gate 3: prefix key enters COMMAND mode
             if b == self.prefix_key {
                 self.command_mode = true;
+                // Clear selection on keyboard input
+                self.selection = None;
+                self.drag_start = None;
                 actions.push(InputAction::Redraw);
                 i += 1;
                 continue;
+            }
+
+            // Clear selection on keyboard input (Gate 4)
+            if self.selection.is_some() {
+                self.selection = None;
+                self.drag_start = None;
+                actions.push(InputAction::Redraw);
             }
 
             // Gate 4: Normal input — batch forward until prefix_key or ESC
@@ -826,6 +940,69 @@ pub fn set_mouse_tracking(tty_fd: i32, enable: bool) {
         b"\x1b[?1006l\x1b[?1003l"
     };
     tty_write(tty_fd, seq);
+}
+
+/// Write text to the system clipboard via the OSC 52 escape sequence.
+/// The terminal emulator intercepts this and sets the clipboard contents.
+pub fn write_osc52_clipboard(tty_fd: i32, text: &str) {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let src = text.as_bytes();
+    let mut encoded = Vec::with_capacity(4 * (src.len() + 2) / 3);
+    for chunk in src.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        encoded.push(B64[((n >> 18) & 0x3f) as usize]);
+        encoded.push(B64[((n >> 12) & 0x3f) as usize]);
+        if chunk.len() > 1 {
+            encoded.push(B64[((n >> 6) & 0x3f) as usize]);
+        } else {
+            encoded.push(b'=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(B64[(n & 0x3f) as usize]);
+        } else {
+            encoded.push(b'=');
+        }
+    }
+    // \x1b]52;c;<base64>\x07
+    let mut seq = Vec::with_capacity(7 + encoded.len() + 1);
+    seq.extend_from_slice(b"\x1b]52;c;");
+    seq.extend_from_slice(&encoded);
+    seq.push(0x07);
+    tty_write(tty_fd, &seq);
+}
+
+/// Extract the text covered by `selection` from a vt100 screen.
+/// Trims trailing whitespace per line and joins with newlines.
+pub fn extract_selection_text(screen: &vt100::Screen, selection: &Selection) -> String {
+    let (top_row, top_col, bot_row, bot_col) = selection.ordered();
+    let cols = screen.size().1;
+    let mut lines: Vec<String> = Vec::new();
+    for row in top_row..=bot_row {
+        let col_start = if row == top_row { top_col } else { 0 };
+        let col_end = if row == bot_row { bot_col } else { cols - 1 };
+        let mut line = String::new();
+        for col in col_start..=col_end {
+            if let Some(cell) = screen.cell(row, col) {
+                let contents = cell.contents();
+                if contents.is_empty() {
+                    line.push(' ');
+                } else {
+                    line.push_str(contents.as_str());
+                }
+            } else {
+                line.push(' ');
+            }
+        }
+        lines.push(line.trim_end().to_string());
+    }
+    // Remove trailing empty lines
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.join("\n")
 }
 
 /// Install a panic hook that restores terminal state.
