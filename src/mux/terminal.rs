@@ -243,6 +243,7 @@ pub struct DrawFrameParams<'a> {
     pub scroll: &'a ScrollState,
     pub command_mode: bool,
     pub hover_close: bool,
+    pub hide_scrollbar: bool,
     pub header_color: Option<Color>,
 }
 
@@ -362,8 +363,8 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) 
     };
     f.render_widget(widget, grid_area);
 
-    // Render scrollbar when there is scrollback content
-    if max_scrollback > 0 && grid_area.height > 0 {
+    // Render scrollbar when there is scrollback content (hidden during drag/shift)
+    if max_scrollback > 0 && grid_area.height > 0 && !params.hide_scrollbar {
         let track_height = grid_area.height as usize;
         // Thumb size: at least 1 row, proportional to visible / total
         let total_lines = max_scrollback + track_height;
@@ -409,6 +410,8 @@ pub struct InputState {
     pub hover_close: bool,
     /// True while the user is click-dragging the scrollbar thumb.
     dragging_scrollbar: bool,
+    /// True while the scrollbar should be hidden (during mouse drag or Shift held).
+    pub hide_scrollbar: bool,
     /// Bytes from an incomplete escape sequence carried over from the
     /// previous read.  Combined with the next input in `process()`.
     pending: Vec<u8>,
@@ -484,6 +487,7 @@ impl InputState {
             prefix_key,
             hover_close: false,
             dragging_scrollbar: false,
+            hide_scrollbar: false,
             pending: Vec::new(),
         }
     }
@@ -563,6 +567,17 @@ impl InputState {
 
             // Gate 1: Always intercept SGR mouse events for scrollback / scrollbar
             if let Some((mouse, consumed)) = parse_sgr_mouse(data, i) {
+                // Detect Shift modifier (bit 2 of SGR button value).
+                // Hide scrollbar so Shift+click text selection is clean.
+                if mouse.button & 4 != 0 {
+                    if !self.hide_scrollbar {
+                        self.hide_scrollbar = true;
+                        actions.push(InputAction::Redraw);
+                    }
+                    i += consumed;
+                    continue;
+                }
+
                 // Update hover state for the close button area.
                 // Close button " x " occupies the last 4 columns of the header (row 1).
                 let in_close_area = mouse.row == 1
@@ -574,7 +589,10 @@ impl InputState {
                 if mouse.button == 35 || (mouse.button == 32 && !self.dragging_scrollbar) {
                     let was_hover = self.hover_close;
                     self.hover_close = in_close_area;
-                    if self.hover_close != was_hover {
+                    // Hide scrollbar during left-drag (text selection)
+                    let prev_hide = self.hide_scrollbar;
+                    self.hide_scrollbar = mouse.button == 32;
+                    if self.hover_close != was_hover || self.hide_scrollbar != prev_hide {
                         actions.push(InputAction::Redraw);
                     }
                     i += consumed;
@@ -635,9 +653,13 @@ impl InputState {
                             actions.push(InputAction::Redraw);
                         }
                     }
-                    // Left button release — stop drag
+                    // Left button release — stop drag, restore scrollbar
                     0 if !mouse.pressed => {
                         self.dragging_scrollbar = false;
+                        if self.hide_scrollbar {
+                            self.hide_scrollbar = false;
+                            actions.push(InputAction::Redraw);
+                        }
                     }
                     _ => {} // consume other mouse events
                 }
