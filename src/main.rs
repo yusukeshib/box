@@ -7,7 +7,6 @@ mod tui;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
-use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -16,7 +15,7 @@ use std::path::Path;
 #[command(
     name = "box",
     about = "Sandboxed Docker environments for git repos (supports --local mode)",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box my-feature                               # shortcut for `box create my-feature`\n  box create my-feature                        # create a new session\n  box create my-feature --image ubuntu -- bash # create with options\n  box create my-feature --local                # create a local session (no Docker)\n  box resume my-feature                        # resume a session\n  box resume my-feature -d                     # resume in background\n  box stop my-feature                          # stop a running session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box list -q --running                        # names of running sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box create my-feature                        # create a new session\n  box create my-feature --image ubuntu -- bash # create with options\n  box create my-feature --local                # create a local session (no Docker)\n  box resume my-feature                        # resume a session\n  box resume my-feature -d                     # resume in background\n  box stop my-feature                          # stop a running session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box list -q --running                        # names of running sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -57,9 +56,6 @@ enum Commands {
         #[command(subcommand)]
         shell: ConfigShell,
     },
-    /// Shortcut: `box <name>` is equivalent to `box create <name>`
-    #[command(external_subcommand)]
-    External(Vec<OsString>),
 }
 
 #[derive(clap::Args, Debug)]
@@ -240,101 +236,6 @@ fn main() {
             ConfigShell::Zsh => cmd_config_zsh(),
             ConfigShell::Bash => cmd_config_bash(),
         },
-        Some(Commands::External(args)) => {
-            // Prevent infinite recursion: if we're already inside a mux PTY,
-            // don't create or resume sessions.
-            if std::env::var_os("BOX_SESSION").is_some() {
-                eprintln!(
-                    "Error: cannot nest box sessions (already inside session {:?})",
-                    std::env::var("BOX_SESSION").unwrap_or_default()
-                );
-                std::process::exit(1);
-            }
-            let name = args[0].to_string_lossy().to_string();
-            let has_docker = args[1..].iter().any(|a| a == "--docker");
-            let has_local = args[1..].iter().any(|a| a == "--local");
-            let local = if has_docker {
-                false
-            } else {
-                has_local || is_local_mode()
-            };
-            let color = args[1..]
-                .iter()
-                .find_map(|a| {
-                    a.to_string_lossy()
-                        .strip_prefix("--color=")
-                        .map(|v| v.to_string())
-                })
-                .or_else(|| {
-                    let mut it = args[1..].iter();
-                    while let Some(a) = it.next() {
-                        if a == "--color" {
-                            return it.next().map(|v| v.to_string_lossy().to_string());
-                        }
-                    }
-                    None
-                });
-            let strategy = args[1..]
-                .iter()
-                .find_map(|a| {
-                    a.to_string_lossy()
-                        .strip_prefix("--strategy=")
-                        .map(|v| v.to_string())
-                })
-                .or_else(|| {
-                    let mut it = args[1..].iter();
-                    while let Some(a) = it.next() {
-                        if a == "--strategy" {
-                            return it.next().map(|v| v.to_string_lossy().to_string());
-                        }
-                    }
-                    None
-                });
-            let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
-            if session::session_exists(&name).unwrap_or(false) {
-                cmd_resume(&name, &docker_args, false)
-            } else {
-                // Filter known flags and their values, then extract command after "--"
-                let mut filtered = Vec::new();
-                let mut skip_next = false;
-                for a in &args[1..] {
-                    if skip_next {
-                        skip_next = false;
-                        continue;
-                    }
-                    let s = a.to_string_lossy();
-                    if s == "--local"
-                        || s == "--docker"
-                        || s.starts_with("--color=")
-                        || s.starts_with("--strategy=")
-                    {
-                        continue;
-                    }
-                    if s == "--color" || s == "--strategy" {
-                        skip_next = true;
-                        continue;
-                    }
-                    filtered.push(a);
-                }
-                let cmd: Vec<String> = filtered
-                    .iter()
-                    .skip_while(|a| **a != "--")
-                    .skip(1)
-                    .map(|a| a.to_string_lossy().to_string())
-                    .collect();
-                let cmd = if cmd.is_empty() { None } else { Some(cmd) };
-                cmd_create(
-                    &name,
-                    None,
-                    &docker_args,
-                    cmd,
-                    false,
-                    local,
-                    color,
-                    strategy,
-                )
-            }
-        }
         None => cmd_list(),
     };
 
@@ -965,7 +866,21 @@ _box() {{
 
     case $state in
         subcmd)
-            __box_sessions
+            local -a subcmds
+            subcmds=(
+                'create:Create a new session'
+                'resume:Resume an existing session'
+                'remove:Remove a session'
+                'stop:Stop a running session'
+                'exec:Run a command in a running session'
+                'list:List sessions'
+                'cd:Print the host project directory for a session'
+                'path:Print workspace path for a session'
+                'origin:Navigate back to the original project directory'
+                'upgrade:Self-update to the latest version'
+                'config:Output shell configuration'
+            )
+            _describe 'subcommand' subcmds
             ;;
         args)
             case $words[1] in
@@ -1049,11 +964,7 @@ fn cmd_config_bash() -> Result<i32> {
     local session_cmds="resume remove stop exec cd path"
 
     if [[ $cword -eq 1 ]]; then
-        local sessions=""
-        if [[ -d "$HOME/.box/sessions" ]]; then
-            sessions=$(command ls "$HOME/.box/sessions" 2>/dev/null)
-        fi
-        COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+        COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
         return
     fi
 
@@ -1670,17 +1581,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -- bare name shortcut (external subcommand) --
+    // -- bare name is rejected (subcommand required) --
 
     #[test]
-    fn test_bare_name_parsed_as_external() {
-        let cli = parse(&["my-session"]);
-        match cli.command {
-            Some(Commands::External(args)) => {
-                assert_eq!(args.len(), 1);
-                assert_eq!(args[0], "my-session");
-            }
-            other => panic!("expected External, got {:?}", other),
-        }
+    fn test_bare_name_rejected() {
+        let result = try_parse(&["my-session"]);
+        assert!(result.is_err());
     }
 }
