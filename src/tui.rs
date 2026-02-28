@@ -5,6 +5,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Cell, Row, Table, TableState};
 use ratatui::{TerminalOptions, Viewport};
 use std::io;
+use std::path::PathBuf;
 
 use crate::config;
 use crate::docker;
@@ -183,6 +184,121 @@ fn color_name_to_ratatui(name: &str) -> Option<Color> {
     }
 }
 
+const HISTORY_MAX: usize = 100;
+
+struct InputHistory {
+    entries: Vec<String>,
+    position: usize, // points past end when not navigating
+    draft: String,
+}
+
+impl InputHistory {
+    fn load(path: &PathBuf) -> Self {
+        let entries = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect();
+        Self {
+            entries,
+            position: 0,
+            draft: String::new(),
+        }
+    }
+
+    fn save(&self, path: &PathBuf) {
+        let _ = std::fs::write(path, self.entries.join("\n") + "\n");
+    }
+
+    fn push(&mut self, entry: &str) {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return;
+        }
+        self.entries.retain(|e| e != entry);
+        self.entries.push(entry.to_string());
+        if self.entries.len() > HISTORY_MAX {
+            self.entries.remove(0);
+        }
+    }
+
+    fn reset_position(&mut self) {
+        self.position = self.entries.len();
+        self.draft.clear();
+    }
+
+    /// Navigate up (older). Returns the entry to display, or None if empty.
+    fn up(&mut self, current_text: &str) -> Option<&str> {
+        if self.entries.is_empty() {
+            return None;
+        }
+        if self.position == self.entries.len() {
+            // Save current text as draft before navigating
+            self.draft = current_text.to_string();
+        }
+        if self.position > 0 {
+            self.position -= 1;
+        }
+        Some(&self.entries[self.position])
+    }
+
+    /// Navigate down (newer). Returns the entry to display, or the draft.
+    fn down(&mut self, _current_text: &str) -> Option<&str> {
+        if self.position >= self.entries.len() {
+            return None;
+        }
+        self.position += 1;
+        if self.position == self.entries.len() {
+            Some(&self.draft)
+        } else {
+            Some(&self.entries[self.position])
+        }
+    }
+}
+
+fn box_dir() -> Option<PathBuf> {
+    config::home_dir()
+        .ok()
+        .map(|h| PathBuf::from(h).join(".box"))
+}
+
+fn last_color_path() -> Option<PathBuf> {
+    box_dir().map(|d| d.join("last_color"))
+}
+
+fn name_history_path() -> Option<PathBuf> {
+    box_dir().map(|d| d.join("name_history"))
+}
+
+fn command_history_path() -> Option<PathBuf> {
+    box_dir().map(|d| d.join("command_history"))
+}
+
+fn load_last_color_index() -> usize {
+    let path = match last_color_path() {
+        Some(p) => p,
+        None => return 0,
+    };
+    let name = match std::fs::read_to_string(&path) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return 0,
+    };
+    COLOR_PALETTE
+        .iter()
+        .position(|(n, _)| *n == name)
+        .unwrap_or(0)
+}
+
+fn save_last_color(index: usize) {
+    if let Some(path) = last_color_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, COLOR_PALETTE[index].0);
+    }
+}
+
 pub fn session_manager<F>(sessions: &[SessionSummary], delete_fn: F) -> Result<TuiAction>
 where
     F: Fn(&str) -> Result<()>,
@@ -214,7 +330,23 @@ where
     let mut new_image: Option<String> = None;
     let mut new_local = false;
     let mut new_command: Option<Vec<String>> = None;
-    let mut color_index: usize = 0;
+    let mut new_command_text = String::new();
+    let default_color_index = load_last_color_index();
+    let mut color_index: usize = default_color_index;
+    let mut name_history = name_history_path()
+        .map(|p| InputHistory::load(&p))
+        .unwrap_or_else(|| InputHistory {
+            entries: vec![],
+            position: 0,
+            draft: String::new(),
+        });
+    let mut command_history = command_history_path()
+        .map(|p| InputHistory::load(&p))
+        .unwrap_or_else(|| InputHistory {
+            entries: vec![],
+            position: 0,
+            draft: String::new(),
+        });
 
     loop {
         terminal.draw(|f| {
@@ -403,6 +535,7 @@ where
                             if let Some(i) = state.selected() {
                                 if i == new_row_idx {
                                     input = TextInput::new();
+                                    name_history.reset_position();
                                     mode = Mode::InputName;
                                 } else {
                                     let name = items[i - 1].name.clone();
@@ -496,6 +629,7 @@ where
                             new_local = true;
                             let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
                             input = TextInput::with_text(default_cmd);
+                            command_history.reset_position();
                             mode = Mode::InputCommand;
                         } else {
                             new_name = name;
@@ -507,6 +641,16 @@ where
                     }
                     KeyCode::Esc => {
                         mode = Mode::Normal;
+                    }
+                    KeyCode::Up => {
+                        if let Some(entry) = name_history.up(&input.text) {
+                            input = TextInput::with_text(entry.to_string());
+                        }
+                    }
+                    KeyCode::Down => {
+                        if let Some(entry) = name_history.down(&input.text) {
+                            input = TextInput::with_text(entry.to_string());
+                        }
                     }
                     _ => {
                         input.handle_key(key.code);
@@ -522,6 +666,7 @@ where
                         };
                         let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
                         input = TextInput::with_text(default_cmd);
+                        command_history.reset_position();
                         mode = Mode::InputCommand;
                     }
                     KeyCode::Esc => {
@@ -534,6 +679,7 @@ where
                 Mode::InputCommand => match key.code {
                     KeyCode::Enter => {
                         let cmd_text = input.text.trim().to_string();
+                        new_command_text = cmd_text.clone();
                         let command = if cmd_text.is_empty() {
                             Some(vec![])
                         } else {
@@ -548,11 +694,21 @@ where
                             }
                         };
                         new_command = command;
-                        color_index = 0;
+                        color_index = default_color_index;
                         mode = Mode::InputColor;
                     }
                     KeyCode::Esc => {
                         mode = Mode::Normal;
+                    }
+                    KeyCode::Up => {
+                        if let Some(entry) = command_history.up(&input.text) {
+                            input = TextInput::with_text(entry.to_string());
+                        }
+                    }
+                    KeyCode::Down => {
+                        if let Some(entry) = command_history.down(&input.text) {
+                            input = TextInput::with_text(entry.to_string());
+                        }
                     }
                     _ => {
                         input.handle_key(key.code);
@@ -579,6 +735,17 @@ where
                         } else {
                             Some(COLOR_PALETTE[color_index].0.to_string())
                         };
+                        save_last_color(color_index);
+                        name_history.push(&new_name);
+                        if let Some(p) = name_history_path() {
+                            name_history.save(&p);
+                        }
+                        if !new_command_text.is_empty() {
+                            command_history.push(&new_command_text);
+                        }
+                        if let Some(p) = command_history_path() {
+                            command_history.save(&p);
+                        }
                         clear_viewport(&mut terminal, viewport_height)?;
                         return Ok(TuiAction::New {
                             name: new_name,
@@ -690,5 +857,85 @@ mod tests {
         input.handle_key(KeyCode::Char('b'));
         assert_eq!(input.text, "abc");
         assert_eq!(input.cursor, 2);
+    }
+
+    fn make_history(entries: Vec<&str>) -> InputHistory {
+        let entries: Vec<String> = entries.into_iter().map(String::from).collect();
+        let position = entries.len();
+        InputHistory {
+            entries,
+            position,
+            draft: String::new(),
+        }
+    }
+
+    #[test]
+    fn test_history_up_down() {
+        let mut h = make_history(vec!["alpha", "beta", "gamma"]);
+        assert_eq!(h.up(""), Some("gamma"));
+        assert_eq!(h.up(""), Some("beta"));
+        assert_eq!(h.up(""), Some("alpha"));
+        // Already at oldest, stays there
+        assert_eq!(h.up(""), Some("alpha"));
+        // Navigate back down
+        assert_eq!(h.down(""), Some("beta"));
+        assert_eq!(h.down(""), Some("gamma"));
+        // Past newest returns draft
+        assert_eq!(h.down(""), Some(""));
+        // Past draft returns None
+        assert_eq!(h.down(""), None);
+    }
+
+    #[test]
+    fn test_history_draft_preservation() {
+        let mut h = make_history(vec!["old"]);
+        // User is typing "new" then presses Up
+        assert_eq!(h.up("new"), Some("old"));
+        // Press Down to return to draft
+        assert_eq!(h.down("old"), Some("new"));
+    }
+
+    #[test]
+    fn test_history_empty() {
+        let mut h = make_history(vec![]);
+        assert_eq!(h.up("text"), None);
+        assert_eq!(h.down("text"), None);
+    }
+
+    #[test]
+    fn test_history_push_dedup() {
+        let mut h = make_history(vec!["alpha", "beta"]);
+        h.push("alpha"); // duplicate
+        assert_eq!(h.entries, vec!["beta", "alpha"]);
+    }
+
+    #[test]
+    fn test_history_push_empty_ignored() {
+        let mut h = make_history(vec!["alpha"]);
+        h.push("");
+        h.push("   ");
+        assert_eq!(h.entries, vec!["alpha"]);
+    }
+
+    #[test]
+    fn test_history_push_cap() {
+        let mut h = make_history(vec![]);
+        for i in 0..110 {
+            h.push(&format!("entry-{}", i));
+        }
+        assert_eq!(h.entries.len(), HISTORY_MAX);
+        assert_eq!(h.entries[0], "entry-10");
+        assert_eq!(h.entries[HISTORY_MAX - 1], "entry-109");
+    }
+
+    #[test]
+    fn test_history_reset_position() {
+        let mut h = make_history(vec!["alpha", "beta"]);
+        h.up("x");
+        h.up("x");
+        assert_eq!(h.position, 0);
+        h.reset_position();
+        assert_eq!(h.position, 2);
+        assert!(h.draft.is_empty());
     }
 }
