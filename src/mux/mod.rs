@@ -122,6 +122,13 @@ pub fn run(session_name: &str) -> Result<i32> {
     }
 }
 
+fn display_name_for_session(session_name: &str) -> String {
+    session::load(session_name)
+        .ok()
+        .map(|s| s.display_name().to_string())
+        .unwrap_or_else(|| session_name.to_string())
+}
+
 fn project_name_for_session(session_name: &str) -> String {
     session::load(session_name)
         .ok()
@@ -303,6 +310,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         }
     });
 
+    let display_name = display_name_for_session(&config.session_name);
     let project_name = project_name_for_session(&config.session_name);
     let header_color = color_for_session(&config.session_name);
     let mut input_state = InputState::new(config.prefix_key);
@@ -445,7 +453,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                     };
                     let params = DrawFrameParams {
                         screen,
-                        session_name: &config.session_name,
+                        session_name: &display_name,
                         project_name: &project_name,
                         scroll: &scroll,
                         command_mode: input_state.command_mode,

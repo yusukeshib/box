@@ -453,7 +453,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
 
     if args.quiet {
         for s in &sessions {
-            println!("{}", s.name);
+            println!("{}", s.display_name());
         }
         return Ok(0);
     }
@@ -468,7 +468,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     // Compute column widths
     let name_w = sessions
         .iter()
-        .map(|s| s.name.len())
+        .map(|s| s.display_name().len())
         .max()
         .unwrap_or(0)
         .max(4);
@@ -516,7 +516,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         };
         println!(
             "{}{:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
-            color_prefix, s.name, project, mode, status, s.command, s.image, s.created_at,
+            color_prefix, s.display_name(), project, mode, status, s.command, s.image, s.created_at,
         );
     }
 
@@ -534,6 +534,14 @@ fn cmd_create(
     color: Option<String>,
     strategy: Option<String>,
 ) -> Result<i32> {
+    let normalized = session::normalize_name(name);
+    let label = if normalized != name {
+        Some(name.to_string())
+    } else {
+        None
+    };
+    let name = &normalized;
+
     session::validate_name(name)?;
 
     if session::session_exists(name)? {
@@ -554,6 +562,7 @@ fn cmd_create(
 
     let cfg = config::resolve(config::BoxConfigInput {
         name: name.to_string(),
+        label,
         image,
         mount_path: None,
         project_dir,
@@ -564,8 +573,10 @@ fn cmd_create(
         strategy,
     })?;
 
+    let display = cfg.label.as_deref().unwrap_or(&cfg.name);
+
     if local {
-        eprintln!("\x1b[2msession:\x1b[0m {}", cfg.name);
+        eprintln!("\x1b[2msession:\x1b[0m {}", display);
         eprintln!("\x1b[2mmode:\x1b[0m local");
         eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
         if !cfg.command.is_empty() {
@@ -588,7 +599,7 @@ fn cmd_create(
 
     docker::check()?;
 
-    eprintln!("\x1b[2msession:\x1b[0m {}", cfg.name);
+    eprintln!("\x1b[2msession:\x1b[0m {}", display);
     eprintln!("\x1b[2mimage:\x1b[0m {}", cfg.image);
     eprintln!("\x1b[2mmount:\x1b[0m {}", cfg.mount_path);
     eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);

@@ -261,7 +261,7 @@ where
                     };
                     let row = Row::new([
                         color_cell,
-                        Cell::from(s.name.as_str()),
+                        Cell::from(s.display_name().to_string()),
                         Cell::from(s.project_dir.as_str()),
                         Cell::from(session_mode),
                         Cell::from(status),
@@ -279,7 +279,7 @@ where
 
                 let name_w = items
                     .iter()
-                    .map(|s| s.name.len())
+                    .map(|s| s.display_name().len())
                     .max()
                     .unwrap_or(0)
                     .max("New box...".len())
@@ -350,7 +350,7 @@ where
                     let name = state
                         .selected()
                         .and_then(|i| items.get(i.saturating_sub(1)))
-                        .map(|s| s.name.as_str())
+                        .map(|s| s.display_name())
                         .unwrap_or("");
                     Line::from(format!("Delete '{}'? [y/n]", name)).style(Style::default().dim())
                 }
@@ -477,7 +477,8 @@ where
                 },
                 Mode::InputName => match key.code {
                     KeyCode::Enter => {
-                        let name = input.text.trim().to_string();
+                        let raw_name = input.text.trim().to_string();
+                        let name = session::normalize_name(&raw_name);
                         if let Err(e) = session::validate_name(&name) {
                             footer_msg = e.to_string();
                             mode = Mode::Normal;

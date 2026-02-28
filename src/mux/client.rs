@@ -26,6 +26,7 @@ pub(super) struct SidebarState {
 
 pub(super) struct SidebarEntry {
     pub(super) name: String,
+    pub(super) display_name: String,
     running: bool,
     local: bool,
 }
@@ -47,8 +48,10 @@ fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
             } else {
                 false
             };
+            let display_name = s.display_name().to_string();
             SidebarEntry {
                 name: s.name,
+                display_name,
                 running,
                 local: s.local,
             }
@@ -58,6 +61,7 @@ fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
     if entries.is_empty() {
         entries.push(SidebarEntry {
             name: current_session.to_string(),
+            display_name: current_session.to_string(),
             running: true,
             local: true,
         });
@@ -71,7 +75,11 @@ fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
 
 /// Calculate sidebar width from entries (min 20, max 40).
 fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
-    let max_name = entries.iter().map(|e| e.name.len()).max().unwrap_or(8);
+    let max_name = entries
+        .iter()
+        .map(|e| e.display_name.len())
+        .max()
+        .unwrap_or(8);
     // " name " → 1 + name + 1 = name + 2
     let w = (max_name + 2).clamp(30, 50);
     w as u16
@@ -110,7 +118,7 @@ fn draw_sidebar(
         }
 
         let is_selected = idx == sidebar.selected;
-        let line = format!(" {} ", entry.name);
+        let line = format!(" {} ", entry.display_name);
 
         let style = if is_selected {
             Style::default().bg(Color::White).fg(Color::Black)
@@ -448,6 +456,7 @@ pub fn run(
     // first draw() will output every cell as a full diff — no clear() needed.
     let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
 
+    let display_name = super::display_name_for_session(session_name);
     let project_name = super::project_name_for_session(session_name);
     let header_color = super::color_for_session(session_name);
     let prefix_key = crate::config::load_mux_prefix_key();
@@ -473,7 +482,7 @@ pub fn run(
         };
         let params = DrawFrameParams {
             screen,
-            session_name,
+            session_name: &display_name,
             project_name: &project_name,
             scroll: &scroll,
             command_mode: false,
