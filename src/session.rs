@@ -10,6 +10,7 @@ use crate::config;
 #[derive(Debug, Clone)]
 pub struct Session {
     pub name: String,
+    pub label: Option<String>,
     pub project_dir: String,
     pub image: String,
     pub mount_path: String,
@@ -20,10 +21,17 @@ pub struct Session {
     pub strategy: String,
 }
 
+impl Session {
+    pub fn display_name(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
+}
+
 impl From<config::BoxConfig> for Session {
     fn from(cfg: config::BoxConfig) -> Self {
         Session {
             name: cfg.name,
+            label: cfg.label,
             project_dir: cfg.project_dir,
             image: cfg.image,
             mount_path: cfg.mount_path,
@@ -40,6 +48,7 @@ impl From<config::BoxConfig> for Session {
 #[allow(dead_code)]
 pub struct SessionSummary {
     pub name: String,
+    pub label: Option<String>,
     pub project_dir: String,
     pub image: String,
     pub command: String,
@@ -50,11 +59,38 @@ pub struct SessionSummary {
     pub strategy: String,
 }
 
+impl SessionSummary {
+    pub fn display_name(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
+}
+
 pub fn sessions_dir() -> Result<PathBuf> {
     let dir = PathBuf::from(config::home_dir()?)
         .join(".box")
         .join("sessions");
     Ok(dir)
+}
+
+pub fn normalize_name(name: &str) -> String {
+    let normalized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let mut result = String::new();
+    for c in normalized.chars() {
+        if c == '-' && result.ends_with('-') {
+            continue;
+        }
+        result.push(c);
+    }
+    result.trim_matches('-').to_string()
 }
 
 const RESERVED_NAMES: &[&str] = &[
@@ -119,6 +155,11 @@ pub fn save(session: &Session) -> Result<()> {
     } else {
         let _ = fs::remove_file(dir.join("env"));
     }
+    if let Some(ref label) = session.label {
+        fs::write(dir.join("label"), label)?;
+    } else {
+        let _ = fs::remove_file(dir.join("label"));
+    }
     if let Some(ref color) = session.color {
         fs::write(dir.join("color"), color)?;
     } else {
@@ -170,6 +211,11 @@ pub fn load(name: &str) -> Result<Session> {
         .map(|s| s.trim() == "local")
         .unwrap_or(false);
 
+    let label = fs::read_to_string(dir.join("label"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     let color = fs::read_to_string(dir.join("color"))
         .ok()
         .map(|s| s.trim().to_string())
@@ -181,6 +227,7 @@ pub fn load(name: &str) -> Result<Session> {
 
     Ok(Session {
         name: name.to_string(),
+        label,
         project_dir,
         image,
         mount_path,
@@ -243,6 +290,11 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             .map(|s| s.trim() == "local")
             .unwrap_or(false);
 
+        let label = fs::read_to_string(session_path.join("label"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let color = fs::read_to_string(session_path.join("color"))
             .ok()
             .map(|s| s.trim().to_string())
@@ -254,6 +306,7 @@ pub fn list() -> Result<Vec<SessionSummary>> {
 
         sessions.push(SessionSummary {
             name,
+            label,
             project_dir,
             image,
             command,
@@ -409,6 +462,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "test-session".to_string(),
+                label: None,
                 project_dir: "/tmp/myproject".to_string(),
                 image: "ubuntu:latest".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -434,6 +488,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "full-session".to_string(),
+                label: None,
                 project_dir: "/tmp/project".to_string(),
                 image: "box-full:latest".to_string(),
                 mount_path: "/src".to_string(),
@@ -459,6 +514,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "meta-test".to_string(),
+                label: None,
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine:latest".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -525,6 +581,7 @@ mod tests {
 
             let sess = Session {
                 name: "exists-test".to_string(),
+                label: None,
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine:latest".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -553,6 +610,7 @@ mod tests {
             for name in &["alpha", "beta", "gamma"] {
                 let sess = Session {
                     name: name.to_string(),
+                    label: None,
                     project_dir: format!("/tmp/{}", name),
                     image: "alpine:latest".to_string(),
                     mount_path: "/workspace".to_string(),
@@ -579,6 +637,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "list-meta".to_string(),
+                label: None,
                 project_dir: "/home/user/project".to_string(),
                 image: "ubuntu:22.04".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -603,6 +662,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "to-remove".to_string(),
+                label: None,
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine:latest".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -633,6 +693,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "resume-test".to_string(),
+                label: None,
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine:latest".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -673,6 +734,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "cmd-format".to_string(),
+                label: None,
                 project_dir: "/tmp/p".to_string(),
                 image: "alpine:latest".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -695,6 +757,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "env-test".to_string(),
+                label: None,
                 project_dir: "/tmp/project".to_string(),
                 image: "alpine:latest".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -720,6 +783,7 @@ mod tests {
         with_temp_home(|_| {
             let sess = Session {
                 name: "no-env".to_string(),
+                label: None,
                 project_dir: "/tmp/project".to_string(),
                 image: "alpine:latest".to_string(),
                 mount_path: "/workspace".to_string(),
@@ -736,6 +800,95 @@ mod tests {
 
             let loaded = load("no-env").unwrap();
             assert!(loaded.env.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_normalize_name() {
+        assert_eq!(normalize_name("yusuke/feature-1"), "yusuke-feature-1");
+        assert_eq!(normalize_name("feature (1)"), "feature-1");
+        assert_eq!(normalize_name("my.branch.name"), "my-branch-name");
+        assert_eq!(normalize_name("fix#123"), "fix-123");
+        assert_eq!(normalize_name("test$var!"), "test-var");
+        assert_eq!(normalize_name("!!!"), "");
+        assert_eq!(normalize_name("a--b"), "a-b"); // consecutive hyphens collapse
+        assert_eq!(normalize_name("hello world"), "hello-world");
+        assert_eq!(normalize_name("a/b/c"), "a-b-c");
+        assert_eq!(normalize_name("already-valid"), "already-valid");
+        assert_eq!(normalize_name("under_score"), "under_score");
+        assert_eq!(normalize_name("---leading"), "leading");
+        assert_eq!(normalize_name("trailing---"), "trailing");
+    }
+
+    #[test]
+    fn test_save_and_load_with_label() {
+        with_temp_home(|_| {
+            let sess = Session {
+                name: "normalized-name".to_string(),
+                label: Some("original/name".to_string()),
+                project_dir: "/tmp/p".to_string(),
+                image: "alpine:latest".to_string(),
+                mount_path: "/workspace".to_string(),
+                command: vec![],
+                env: vec![],
+                local: false,
+                color: None,
+                strategy: "clone".to_string(),
+            };
+            save(&sess).unwrap();
+
+            let loaded = load("normalized-name").unwrap();
+            assert_eq!(loaded.name, "normalized-name");
+            assert_eq!(loaded.label.as_deref(), Some("original/name"));
+            assert_eq!(loaded.display_name(), "original/name");
+        });
+    }
+
+    #[test]
+    fn test_save_and_load_without_label() {
+        with_temp_home(|_| {
+            let sess = Session {
+                name: "no-label".to_string(),
+                label: None,
+                project_dir: "/tmp/p".to_string(),
+                image: "alpine:latest".to_string(),
+                mount_path: "/workspace".to_string(),
+                command: vec![],
+                env: vec![],
+                local: false,
+                color: None,
+                strategy: "clone".to_string(),
+            };
+            save(&sess).unwrap();
+
+            let loaded = load("no-label").unwrap();
+            assert_eq!(loaded.label, None);
+            assert_eq!(loaded.display_name(), "no-label");
+        });
+    }
+
+    #[test]
+    fn test_list_with_label() {
+        with_temp_home(|_| {
+            let sess = Session {
+                name: "labeled-session".to_string(),
+                label: Some("user/feature".to_string()),
+                project_dir: "/tmp/p".to_string(),
+                image: "alpine:latest".to_string(),
+                mount_path: "/workspace".to_string(),
+                command: vec![],
+                env: vec![],
+                local: false,
+                color: None,
+                strategy: "clone".to_string(),
+            };
+            save(&sess).unwrap();
+
+            let sessions = list().unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].name, "labeled-session");
+            assert_eq!(sessions[0].label.as_deref(), Some("user/feature"));
+            assert_eq!(sessions[0].display_name(), "user/feature");
         });
     }
 }
