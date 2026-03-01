@@ -158,12 +158,7 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
 }
 
 /// Draw the sidebar as a full-height left panel with grouped workspace headers.
-fn draw_sidebar(
-    f: &mut ratatui::Frame,
-    sidebar: &SidebarState,
-    area: Rect,
-    _current_session: &str,
-) {
+fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -261,10 +256,7 @@ fn draw_sidebar(
         if entry.kind == SidebarEntryKind::Session {
             let x_pos = area.x + content_width - 2;
             if x_pos < buf.area().width && row_y < buf.area().height {
-                let is_current = entry.full_name == _current_session;
-                let x_style = if is_current {
-                    Style::default().bg(Color::Indexed(238)).fg(Color::Black)
-                } else if is_selected && focused {
+                let x_style = if is_selected && focused {
                     Style::default().bg(Color::White).fg(Color::DarkGray)
                 } else {
                     Style::default().bg(Color::Black).fg(Color::DarkGray)
@@ -484,7 +476,7 @@ fn process_sidebar_input(
         // x → delete selected session
         if b == b'x' {
             let entry = &sidebar.entries[sidebar.selected];
-            if entry.kind == SidebarEntryKind::Session && entry.full_name != current_session {
+            if entry.kind == SidebarEntryKind::Session {
                 return SidebarAction::DeleteSession(entry.full_name.clone());
             }
             i += 1;
@@ -564,10 +556,7 @@ fn parse_sidebar_mouse(
                         // Click on "x" button (last 2 chars before border)
                         let content_width = sb_width.saturating_sub(1);
                         let x_col = content_width; // 1-indexed col of the "x"
-                        if col >= x_col.saturating_sub(1)
-                            && col <= x_col
-                            && entry.full_name != current_session
-                        {
+                        if col >= x_col.saturating_sub(1) && col <= x_col {
                             sidebar.selected = entry_idx;
                             return Some((
                                 SidebarAction::DeleteSession(entry.full_name.clone()),
@@ -795,6 +784,25 @@ pub fn run(
                         }
                         SidebarAction::DeleteSession(name) => {
                             delete_session(&name);
+                            if name == session_name {
+                                // Deleted the current session — switch or exit
+                                let ws = session::workspace_name(&name);
+                                let next = session::workspace_sessions(ws)
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|s| format!("{}/{}", ws, s))
+                                    .find(|n| session::is_local_running(n));
+                                match next {
+                                    Some(next_session) => {
+                                        unsafe { libc::close(tty_input_fd) };
+                                        return Ok(ClientResult::SwitchSession(next_session, None));
+                                    }
+                                    None => {
+                                        unsafe { libc::close(tty_input_fd) };
+                                        return Ok(ClientResult::Exit(0));
+                                    }
+                                }
+                            }
                             let (entries, selected) = build_sidebar_entries(session_name);
                             sidebar.entries = entries;
                             sidebar.selected = selected;
@@ -856,6 +864,24 @@ pub fn run(
                         }
                         SidebarAction::DeleteSession(name) => {
                             delete_session(&name);
+                            if name == session_name {
+                                let ws = session::workspace_name(&name);
+                                let next = session::workspace_sessions(ws)
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|s| format!("{}/{}", ws, s))
+                                    .find(|n| session::is_local_running(n));
+                                match next {
+                                    Some(next_session) => {
+                                        unsafe { libc::close(tty_input_fd) };
+                                        return Ok(ClientResult::SwitchSession(next_session, None));
+                                    }
+                                    None => {
+                                        unsafe { libc::close(tty_input_fd) };
+                                        return Ok(ClientResult::Exit(0));
+                                    }
+                                }
+                            }
                             let (entries, selected) = build_sidebar_entries(session_name);
                             sidebar.entries = entries;
                             sidebar.selected = selected;
@@ -1022,7 +1048,7 @@ pub fn run(
                                 width: right_width,
                                 height: full.height,
                             };
-                            draw_sidebar(f, &sidebar, sb_area, session_name);
+                            draw_sidebar(f, &sidebar, sb_area);
                             terminal::draw_frame(f, &params, right_area);
                         })
                         .context("Failed to draw terminal frame")?;
