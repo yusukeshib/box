@@ -4,6 +4,7 @@ use std::process::Command;
 
 use crate::config;
 use crate::mux;
+use crate::session;
 
 /// Create a workspace directory on the host for the session.
 /// Dispatches to clone or worktree strategy based on the `strategy` parameter.
@@ -161,19 +162,18 @@ pub struct DockerRunConfig<'a> {
 
 /// Build the docker run argument list without executing. Used by run_container and tests.
 pub fn build_run_args(cfg: &DockerRunConfig) -> Result<Vec<String>> {
-    let workspace_dir = Path::new(cfg.home)
-        .join(".box")
-        .join("workspaces")
-        .join(cfg.name);
+    let ws = session::workspace_name(cfg.name);
+    let workspace_dir = Path::new(cfg.home).join(".box").join("workspaces").join(ws);
     let workspace_dir = workspace_dir.to_string_lossy();
+    let container_name = format!("box-{}", cfg.name.replace('/', "-"));
     let interactive_flag = if cfg.detach { "-d" } else { "-it" };
     let mut args: Vec<String> = vec![
         "run".into(),
         interactive_flag.into(),
         "--name".into(),
-        format!("box-{}", cfg.name),
+        container_name.clone(),
         "--hostname".into(),
-        format!("box-{}", cfg.name),
+        container_name,
         "-v".into(),
         format!("{}:{}", workspace_dir, cfg.mount_path),
         "-w".into(),
@@ -213,7 +213,8 @@ pub fn build_run_args(cfg: &DockerRunConfig) -> Result<Vec<String>> {
 }
 
 pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
-    ensure_workspace(cfg.home, cfg.name, cfg.project_dir, cfg.strategy)?;
+    let ws = session::workspace_name(cfg.name);
+    ensure_workspace(cfg.home, ws, cfg.project_dir, cfg.strategy)?;
 
     let args = build_run_args(cfg)?;
     eprintln!("\x1b[2mrunning container:\x1b[0m");
@@ -241,9 +242,14 @@ pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
     }
 }
 
+/// Docker container name for a session (replaces / with -).
+fn container_label(name: &str) -> String {
+    format!("box-{}", name.replace('/', "-"))
+}
+
 pub fn container_exists(name: &str) -> bool {
     Command::new("docker")
-        .args(["container", "inspect", &format!("box-{}", name)])
+        .args(["container", "inspect", &container_label(name)])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -258,7 +264,7 @@ pub fn container_is_running(name: &str) -> bool {
             "inspect",
             "-f",
             "{{.State.Running}}",
-            &format!("box-{}", name),
+            &container_label(name),
         ])
         .stderr(std::process::Stdio::null())
         .output();
@@ -269,6 +275,7 @@ pub fn container_is_running(name: &str) -> bool {
 }
 
 /// Return the set of session names whose containers are currently running.
+/// Container names are `box-workspace-session` format; maps back to `workspace/session`.
 pub fn running_sessions() -> std::collections::HashSet<String> {
     let output = Command::new("docker")
         .args(["ps", "--filter", "name=box-", "--format", "{{.Names}}"])
@@ -288,8 +295,9 @@ pub fn start_container(name: &str) -> Result<i32> {
     // Start container in background first, then attach separately.
     // This avoids the PTY size race condition that `docker start -ai` has,
     // where the terminal inside may not receive the correct dimensions.
+    let label = container_label(name);
     let status = Command::new("docker")
-        .args(["start", &format!("box-{}", name)])
+        .args(["start", &label])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
         .status()?;
@@ -302,24 +310,22 @@ pub fn start_container(name: &str) -> Result<i32> {
 }
 
 pub fn attach_container(name: &str) -> Result<i32> {
+    let label = container_label(name);
     mux::run_standalone(mux::MuxConfig {
         session_name: name.to_string(),
-        command: vec![
-            "docker".to_string(),
-            "attach".to_string(),
-            format!("box-{}", name),
-        ],
+        command: vec!["docker".to_string(), "attach".to_string(), label],
         working_dir: None,
         prefix_key: crate::config::load_mux_prefix_key(),
     })
 }
 
 pub fn exec_container(name: &str, cmd: &[String]) -> Result<i32> {
+    let label = container_label(name);
     let mut docker_cmd = vec![
         "docker".to_string(),
         "exec".to_string(),
         "-it".to_string(),
-        format!("box-{}", name),
+        label,
     ];
     docker_cmd.extend(cmd.iter().cloned());
 
@@ -332,15 +338,16 @@ pub fn exec_container(name: &str, cmd: &[String]) -> Result<i32> {
 }
 
 pub fn start_container_detached(name: &str) -> Result<i32> {
+    let label = container_label(name);
     let status = Command::new("docker")
-        .args(["start", &format!("box-{}", name)])
+        .args(["start", &label])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
         .status()?;
 
     if status.success() {
-        println!("Container box-{} started in background.", name);
-        println!("Run `box {}` to attach.", name);
+        println!("Container {} started in background.", label);
+        println!("Run `box resume {}` to attach.", name);
         Ok(0)
     } else {
         Ok(status.code().unwrap_or(1))
@@ -348,8 +355,9 @@ pub fn start_container_detached(name: &str) -> Result<i32> {
 }
 
 pub fn stop_container(name: &str) -> Result<i32> {
+    let label = container_label(name);
     let status = Command::new("docker")
-        .args(["stop", &format!("box-{}", name)])
+        .args(["stop", &label])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
         .status()?;
@@ -363,8 +371,9 @@ pub fn stop_container(name: &str) -> Result<i32> {
 }
 
 pub fn remove_container(name: &str) {
+    let label = container_label(name);
     let _ = Command::new("docker")
-        .args(["rm", "-f", &format!("box-{}", name)])
+        .args(["rm", "-f", &label])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
@@ -376,7 +385,7 @@ mod tests {
 
     fn default_config<'a>() -> DockerRunConfig<'a> {
         DockerRunConfig {
-            name: "sess",
+            name: "sess/default",
             project_dir: "/tmp/project",
             image: "alpine:latest",
             mount_path: "/workspace",
@@ -392,7 +401,7 @@ mod tests {
     #[test]
     fn test_build_run_args_basic() {
         let args = build_run_args(&DockerRunConfig {
-            name: "test-session",
+            name: "test-session/default",
             ..default_config()
         })
         .unwrap();
@@ -400,9 +409,9 @@ mod tests {
         assert_eq!(args[0], "run");
         assert_eq!(args[1], "-it");
         assert_eq!(args[2], "--name");
-        assert_eq!(args[3], "box-test-session");
+        assert_eq!(args[3], "box-test-session-default");
         assert_eq!(args[4], "--hostname");
-        assert_eq!(args[5], "box-test-session");
+        assert_eq!(args[5], "box-test-session-default");
         assert_eq!(args[6], "-v");
         assert_eq!(
             args[7],
@@ -515,12 +524,12 @@ mod tests {
     #[test]
     fn test_build_run_args_hostname() {
         let args = build_run_args(&DockerRunConfig {
-            name: "my-session",
+            name: "my-session/default",
             ..default_config()
         })
         .unwrap();
 
-        assert!(args.contains(&"box-my-session".to_string()));
+        assert!(args.contains(&"box-my-session-default".to_string()));
     }
 
     #[test]
@@ -533,13 +542,13 @@ mod tests {
     #[test]
     fn test_build_run_args_has_name() {
         let args = build_run_args(&DockerRunConfig {
-            name: "my-session",
+            name: "my-session/default",
             ..default_config()
         })
         .unwrap();
 
         let name_pos = args.iter().position(|a| a == "--name").unwrap();
-        assert_eq!(args[name_pos + 1], "box-my-session");
+        assert_eq!(args[name_pos + 1], "box-my-session-default");
     }
 
     #[test]

@@ -317,14 +317,17 @@ fn resolve_project_dir(
             .join("workspaces");
         if let Ok(workspaces) = std::fs::canonicalize(&workspaces) {
             if cwd.starts_with(&workspaces) {
-                // Extract the session name (first component after workspaces/)
-                if let Some(name) = cwd.strip_prefix(&workspaces).ok().and_then(|r| {
+                // Extract the workspace name (first component after workspaces/)
+                if let Some(ws_name) = cwd.strip_prefix(&workspaces).ok().and_then(|r| {
                     r.components()
                         .next()
                         .map(|c| c.as_os_str().to_string_lossy().to_string())
                 }) {
-                    // Find the session's project_dir
-                    if let Some(s) = sessions.iter().find(|s| s.name == name) {
+                    // Find any session in this workspace's project_dir
+                    if let Some(s) = sessions
+                        .iter()
+                        .find(|s| session::workspace_name(&s.name) == ws_name)
+                    {
                         return Some(s.project_dir.clone());
                     }
                 }
@@ -345,7 +348,8 @@ fn cmd_list() -> Result<i32> {
         let running = docker::running_sessions();
         for s in &mut sessions {
             if !s.local {
-                s.running = running.contains(&s.name);
+                // Docker container names use - instead of /
+                s.running = running.contains(&s.name.replace('/', "-"));
             }
         }
     }
@@ -356,12 +360,19 @@ fn cmd_list() -> Result<i32> {
     }
 
     let delete_fn = |name: &str| -> Result<()> {
-        let sess = session::load(name)?;
+        let full = session::full_name(name);
+        let ws = session::workspace_name(&full);
+        let sess = session::load(&full)?;
         if !sess.local {
-            docker::remove_container(name);
+            docker::remove_container(&full);
         }
-        docker::remove_workspace(name, &sess.strategy);
-        session::remove_dir(name)?;
+        session::remove_dir(&full)?;
+        // If no sessions remain in the workspace, remove the workspace too
+        let remaining = session::workspace_sessions(ws).unwrap_or_default();
+        if remaining.is_empty() {
+            docker::remove_workspace(ws, &sess.strategy);
+            let _ = session::remove_workspace_dir(ws);
+        }
         Ok(())
     };
 
@@ -424,7 +435,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         let running = docker::running_sessions();
         for s in &mut sessions {
             if !s.local {
-                s.running = running.contains(&s.name);
+                s.running = running.contains(&s.name.replace('/', "-"));
             }
         }
     }
@@ -544,33 +555,50 @@ fn cmd_create(
 
     session::validate_name(name)?;
 
-    if session::session_exists(name)? {
+    let full = session::full_name(name);
+    let (ws, _sess_part) = session::parse_name(name);
+
+    if session::session_exists(&full)? {
         bail!(
             "Session '{}' already exists. Use `box resume {}` to resume it.",
-            name,
-            name
+            full,
+            full
         );
     }
 
-    let cwd =
-        fs::canonicalize(".").map_err(|_| anyhow::anyhow!("Cannot resolve current directory."))?;
-
-    let project_dir = git::find_root(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("'{}' is not inside a git repository.", cwd.display()))?
-        .to_string_lossy()
-        .to_string();
+    // If workspace already exists, inherit settings from the first session
+    let (project_dir, inherited_image, inherited_strategy) = if session::workspace_exists(ws)? {
+        let ws_sessions = session::workspace_sessions(ws)?;
+        if let Some(first) = ws_sessions.first() {
+            let parent = session::load(&format!("{}/{}", ws, first))?;
+            (
+                parent.project_dir.clone(),
+                Some(parent.image.clone()),
+                Some(parent.strategy.clone()),
+            )
+        } else {
+            return Err(anyhow::anyhow!("Workspace '{}' has no sessions.", ws));
+        }
+    } else {
+        let cwd = fs::canonicalize(".")
+            .map_err(|_| anyhow::anyhow!("Cannot resolve current directory."))?;
+        let project_dir = git::find_root(&cwd)
+            .ok_or_else(|| anyhow::anyhow!("'{}' is not inside a git repository.", cwd.display()))?
+            .to_string_lossy()
+            .to_string();
+        (project_dir, None, None)
+    };
 
     let cfg = config::resolve(config::BoxConfigInput {
-        name: name.to_string(),
-        label,
-        image,
+        name: full.clone(),
+        image: image.or(inherited_image),
         mount_path: None,
         project_dir,
         command: cmd,
         env: vec![],
         local,
         color,
-        strategy,
+        strategy: strategy.or(inherited_strategy),
     })?;
 
     let display = cfg.label.as_deref().unwrap_or(&cfg.name);
@@ -588,7 +616,7 @@ fn cmd_create(
         session::save(&sess)?;
 
         let home = config::home_dir()?;
-        let workspace = docker::ensure_workspace(&home, name, &sess.project_dir, &sess.strategy)?;
+        let workspace = docker::ensure_workspace(&home, ws, &sess.project_dir, &sess.strategy)?;
         output_cd_path(&workspace);
 
         if !sess.command.is_empty() {
@@ -621,9 +649,9 @@ fn cmd_create(
         Some(docker_args)
     };
 
-    docker::remove_container(name);
+    docker::remove_container(&full);
     docker::run_container(&docker::DockerRunConfig {
-        name,
+        name: &full,
         project_dir: &sess.project_dir,
         image: &sess.image,
         mount_path: &sess.mount_path,
@@ -639,42 +667,44 @@ fn cmd_create(
 fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
     session::validate_name(name)?;
 
-    let sess = session::load(name)?;
+    let full = session::full_name(name);
+    let ws = session::workspace_name(&full);
+    let sess = session::load(&full)?;
 
     if !Path::new(&sess.project_dir).is_dir() {
         bail!("Project directory '{}' no longer exists.", sess.project_dir);
     }
 
     if sess.local {
-        session::touch_resumed_at(name)?;
+        session::touch_resumed_at(&full)?;
         let home = config::home_dir()?;
-        let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
+        let workspace = Path::new(&home).join(".box").join("workspaces").join(ws);
         output_cd_path(&workspace.to_string_lossy());
 
         if !sess.command.is_empty() {
-            return run_local_command(name);
+            return run_local_command(&full);
         }
         return Ok(0);
     }
 
     docker::check()?;
 
-    if docker::container_is_running(name) {
+    if docker::container_is_running(&full) {
         if detach {
-            println!("Session '{}' is already running.", name);
+            println!("Session '{}' is already running.", full);
             return Ok(0);
         }
-        return docker::attach_container(name);
+        return docker::attach_container(&full);
     }
 
-    println!("Resuming session '{}'...", name);
-    session::touch_resumed_at(name)?;
+    println!("Resuming session '{}'...", full);
+    session::touch_resumed_at(&full)?;
 
-    if docker::container_exists(name) {
+    if docker::container_exists(&full) {
         if detach {
-            docker::start_container_detached(name)
+            docker::start_container_detached(&full)
         } else {
-            docker::start_container(name)
+            docker::start_container(&full)
         }
     } else {
         let home = config::home_dir()?;
@@ -684,9 +714,9 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
             Some(docker_args)
         };
 
-        docker::remove_container(name);
+        docker::remove_container(&full);
         docker::run_container(&docker::DockerRunConfig {
-            name,
+            name: &full,
             project_dir: &sess.project_dir,
             image: &sess.image,
             mount_path: &sess.mount_path,
@@ -703,87 +733,167 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
 fn cmd_remove(name: &str) -> Result<i32> {
     session::validate_name(name)?;
 
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
+    // If no '/' in name, remove entire workspace (all sessions)
+    if !name.contains('/') {
+        let ws = name;
+        if !session::workspace_exists(ws)? {
+            bail!("Workspace '{}' not found.", ws);
+        }
+        let ws_sessions = session::workspace_sessions(ws)?;
+        let mut strategy = String::from("clone");
+        let mut project_dir = String::new();
+
+        // Check all sessions are stopped
+        for sess_name in &ws_sessions {
+            let full = format!("{}/{}", ws, sess_name);
+            let sess = session::load(&full)?;
+            if project_dir.is_empty() {
+                project_dir = sess.project_dir.clone();
+                strategy = sess.strategy.clone();
+            }
+            if sess.local {
+                if session::is_local_running(&full) {
+                    bail!(
+                        "Session '{}' is still running. Stop it first with `box stop {}`.",
+                        full,
+                        full
+                    );
+                }
+            } else {
+                docker::check()?;
+                if docker::container_is_running(&full) {
+                    bail!(
+                        "Session '{}' is still running. Stop it first with `box stop {}`.",
+                        full,
+                        full
+                    );
+                }
+            }
+        }
+
+        // Remove all sessions and containers
+        for sess_name in &ws_sessions {
+            let full = format!("{}/{}", ws, sess_name);
+            let sess = session::load(&full)?;
+            if !sess.local {
+                docker::remove_container(&full);
+            }
+        }
+
+        docker::remove_workspace(ws, &strategy);
+        session::remove_workspace_dir(ws)?;
+
+        if !project_dir.is_empty() {
+            output_cd_path(&project_dir);
+        }
+        println!(
+            "Workspace '{}' removed ({} session(s)).",
+            ws,
+            ws_sessions.len()
+        );
+        return Ok(0);
     }
 
-    let sess = session::load(name)?;
+    // Individual session removal
+    let full = session::full_name(name);
+    let ws = session::workspace_name(&full);
+
+    if !session::session_exists(&full)? {
+        bail!("Session '{}' not found.", full);
+    }
+
+    let sess = session::load(&full)?;
 
     if sess.local {
-        if session::is_local_running(name) {
+        if session::is_local_running(&full) {
             bail!(
                 "Session '{}' is still running. Stop it first with `box stop {}`.",
-                name,
-                name
+                full,
+                full
             );
         }
-        docker::remove_workspace(name, &sess.strategy);
-        session::remove_dir(name)?;
+        session::remove_dir(&full)?;
+        // If last session in workspace, remove workspace too
+        let remaining = session::workspace_sessions(ws).unwrap_or_default();
+        if remaining.is_empty() {
+            docker::remove_workspace(ws, &sess.strategy);
+            let _ = session::remove_workspace_dir(ws);
+        }
         output_cd_path(&sess.project_dir);
-        println!("Session '{}' removed.", name);
+        println!("Session '{}' removed.", full);
         return Ok(0);
     }
 
     docker::check()?;
 
-    if docker::container_is_running(name) {
+    if docker::container_is_running(&full) {
         bail!(
             "Session '{}' is still running. Stop it first with `box stop {}`.",
-            name,
-            name
+            full,
+            full
         );
     }
 
-    docker::remove_container(name);
-    docker::remove_workspace(name, &sess.strategy);
-    session::remove_dir(name)?;
+    docker::remove_container(&full);
+    session::remove_dir(&full)?;
+    // If last session in workspace, remove workspace too
+    let remaining = session::workspace_sessions(ws).unwrap_or_default();
+    if remaining.is_empty() {
+        docker::remove_workspace(ws, &sess.strategy);
+        let _ = session::remove_workspace_dir(ws);
+    }
 
     output_cd_path(&sess.project_dir);
-    println!("Session '{}' removed.", name);
+    println!("Session '{}' removed.", full);
     Ok(0)
 }
 
 fn cmd_stop(name: &str) -> Result<i32> {
     session::validate_name(name)?;
 
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
+    let full = session::full_name(name);
+
+    if !session::session_exists(&full)? {
+        bail!("Session '{}' not found.", full);
     }
 
-    let sess = session::load(name)?;
+    let sess = session::load(&full)?;
 
     if sess.local {
-        if !session::is_local_running(name) {
-            bail!("Session '{}' is not running.", name);
+        if !session::is_local_running(&full) {
+            bail!("Session '{}' is not running.", full);
         }
-        mux::send_kill(name)?;
-        println!("Session '{}' stopped.", name);
+        mux::send_kill(&full)?;
+        println!("Session '{}' stopped.", full);
         return Ok(0);
     }
 
     docker::check()?;
 
-    if !docker::container_is_running(name) {
-        bail!("Session '{}' is not running.", name);
+    if !docker::container_is_running(&full) {
+        bail!("Session '{}' is not running.", full);
     }
 
-    docker::stop_container(name)
+    docker::stop_container(&full)
 }
 
 fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     session::validate_name(name)?;
 
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
+    let full = session::full_name(name);
+    let ws = session::workspace_name(&full);
+
+    if !session::session_exists(&full)? {
+        bail!("Session '{}' not found.", full);
     }
 
-    let sess = session::load(name)?;
+    let sess = session::load(&full)?;
 
     if sess.local {
         let home = config::home_dir()?;
-        let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
+        let workspace = Path::new(&home).join(".box").join("workspaces").join(ws);
         return mux::run_standalone(mux::MuxConfig {
-            session_name: name.to_string(),
+            session_name: full.clone(),
             command: cmd.to_vec(),
             working_dir: Some(workspace.to_string_lossy().to_string()),
             prefix_key: config::load_mux_prefix_key(),
@@ -792,31 +902,35 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
 
     docker::check()?;
 
-    if !docker::container_is_running(name) {
-        bail!("Session '{}' is not running.", name);
+    if !docker::container_is_running(&full) {
+        bail!("Session '{}' is not running.", full);
     }
 
-    docker::exec_container(name, cmd)
+    docker::exec_container(&full, cmd)
 }
 
 fn cmd_cd(name: &str) -> Result<i32> {
     session::validate_name(name)?;
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
+    let full = session::full_name(name);
+    let ws = session::workspace_name(&full);
+    if !session::session_exists(&full)? {
+        bail!("Session '{}' not found.", full);
     }
     let home = config::home_dir()?;
-    let path = Path::new(&home).join(".box").join("workspaces").join(name);
+    let path = Path::new(&home).join(".box").join("workspaces").join(ws);
     output_cd_path(&path.to_string_lossy());
     Ok(0)
 }
 
 fn cmd_path(name: &str) -> Result<i32> {
     session::validate_name(name)?;
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
+    let full = session::full_name(name);
+    let ws = session::workspace_name(&full);
+    if !session::session_exists(&full)? {
+        bail!("Session '{}' not found.", full);
     }
     let home = config::home_dir()?;
-    let path = Path::new(&home).join(".box").join("workspaces").join(name);
+    let path = Path::new(&home).join(".box").join("workspaces").join(ws);
     println!("{}", path.display());
     Ok(0)
 }
@@ -828,22 +942,27 @@ fn cmd_origin() -> Result<i32> {
     let workspaces = std::fs::canonicalize(&workspaces).unwrap_or(workspaces);
     let cwd_canon = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
 
-    let name = cwd_canon
+    let ws_name = cwd_canon
         .strip_prefix(&workspaces)
         .ok()
         .and_then(|rel| rel.components().next())
         .map(|c| c.as_os_str().to_string_lossy().to_string());
 
-    let name = match name {
+    let ws_name = match ws_name {
         Some(n) => n,
         None => bail!("Not inside a box workspace."),
     };
 
-    if !session::session_exists(&name)? {
-        bail!("Session '{}' not found.", name);
+    if !session::workspace_exists(&ws_name)? {
+        bail!("Workspace '{}' not found.", ws_name);
     }
 
-    let sess = session::load(&name)?;
+    // Load any session in the workspace to get the project_dir
+    let ws_sessions = session::workspace_sessions(&ws_name)?;
+    let first = ws_sessions
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Workspace '{}' has no sessions.", ws_name))?;
+    let sess = session::load(&format!("{}/{}", ws_name, first))?;
     output_cd_path(&sess.project_dir);
     Ok(0)
 }
@@ -853,13 +972,18 @@ fn cmd_config_zsh() -> Result<i32> {
         r#"__box_sessions() {{
     local -a sessions
     if [[ -d "$HOME/.box/sessions" ]]; then
-        for s in "$HOME/.box/sessions"/*(N:t); do
-            local desc=""
-            if [[ -f "$HOME/.box/sessions/$s/project_dir" ]]; then
-                desc=$(< "$HOME/.box/sessions/$s/project_dir")
-                desc=${{desc/#$HOME/\~}}
-            fi
-            sessions+=("$s:[$desc]")
+        for ws in "$HOME/.box/sessions"/*(N/); do
+            local ws_name=${{ws:t}}
+            for sess in "$ws"/*(N/); do
+                if [[ -f "$sess/project_dir" ]]; then
+                    local sess_name=${{sess:t}}
+                    local full_name="$ws_name/$sess_name"
+                    local desc=""
+                    desc=$(< "$sess/project_dir")
+                    desc=${{desc/#$HOME/\~}}
+                    sessions+=("$full_name:[$desc]")
+                fi
+            done
         done
     fi
     if (( ${{#sessions}} )); then
@@ -998,7 +1122,12 @@ fn cmd_config_bash() -> Result<i32> {
                     if [[ $cword -eq 2 ]]; then
                         local sessions=""
                         if [[ -d "$HOME/.box/sessions" ]]; then
-                            sessions=$(command ls "$HOME/.box/sessions" 2>/dev/null)
+                            for ws in "$HOME/.box/sessions"/*/; do
+                                local ws_name=$(basename "$ws")
+                                for sess in "$ws"*/; do
+                                    [[ -f "$sess/project_dir" ]] && sessions+=" $ws_name/$(basename "$sess")"
+                                done
+                            done
                         fi
                         COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
                     fi
@@ -1009,7 +1138,12 @@ fn cmd_config_bash() -> Result<i32> {
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
-                    sessions=$(command ls "$HOME/.box/sessions" 2>/dev/null)
+                    for ws in "$HOME/.box/sessions"/*/; do
+                        local ws_name=$(basename "$ws")
+                        for sess in "$ws"*/; do
+                            [[ -f "$sess/project_dir" ]] && sessions+=" $ws_name/$(basename "$sess")"
+                        done
+                    done
                 fi
                 COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
             fi
@@ -1025,7 +1159,12 @@ fn cmd_config_bash() -> Result<i32> {
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
-                    sessions=$(command ls "$HOME/.box/sessions" 2>/dev/null)
+                    for ws in "$HOME/.box/sessions"/*/; do
+                        local ws_name=$(basename "$ws")
+                        for sess in "$ws"*/; do
+                            [[ -f "$sess/project_dir" ]] && sessions+=" $ws_name/$(basename "$sess")"
+                        done
+                    done
                 fi
                 COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
             fi

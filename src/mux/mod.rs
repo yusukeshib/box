@@ -118,15 +118,82 @@ pub fn run(session_name: &str) -> Result<i32> {
                 sidebar_state = sb;
                 current = next;
             }
+            client::ClientResult::NewSession(command) => {
+                use std::io::Write;
+                let _ = tty.write_all(b"\x1b[H\x1b[2J");
+                let _ = tty.flush();
+
+                let ws = session::workspace_name(&current);
+                let new_session = create_sub_session(ws, &command)?;
+                sidebar_state = None;
+                current = new_session;
+            }
         }
     }
 }
 
-fn display_name_for_session(session_name: &str) -> String {
-    session::load(session_name)
-        .ok()
-        .map(|s| s.display_name().to_string())
-        .unwrap_or_else(|| session_name.to_string())
+/// Create a new sub-session within a workspace.
+/// Generates a session name from the command and starts the mux server.
+fn create_sub_session(workspace: &str, command: &str) -> Result<String> {
+    // Parse the command to get a basename for the session name
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    let basename = parts
+        .first()
+        .map(|s| {
+            std::path::Path::new(s)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| s.to_string())
+        })
+        .unwrap_or_else(|| "shell".to_string());
+
+    // Sanitize the basename
+    let basename: String = basename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+
+    // Find a unique name
+    let existing = session::workspace_sessions(workspace)?;
+    let mut name = basename.clone();
+    let mut counter = 2;
+    while existing.contains(&name) {
+        name = format!("{}-{}", basename, counter);
+        counter += 1;
+    }
+
+    let full_name = format!("{}/{}", workspace, name);
+
+    // Load the workspace's first session to inherit settings
+    let first_session = existing
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Workspace '{}' has no sessions.", workspace))?;
+    let parent = session::load(&format!("{}/{}", workspace, first_session))?;
+
+    // Parse command into argv
+    let cmd_parts: Vec<String> =
+        shell_words::split(command).unwrap_or_else(|_| vec![command.to_string()]);
+
+    let sess = session::Session {
+        name: full_name.clone(),
+        project_dir: parent.project_dir.clone(),
+        image: parent.image.clone(),
+        mount_path: parent.mount_path.clone(),
+        command: cmd_parts,
+        env: parent.env.clone(),
+        local: parent.local,
+        color: parent.color.clone(),
+        strategy: parent.strategy.clone(),
+    };
+    session::save(&sess)?;
+
+    Ok(full_name)
 }
 
 fn project_name_for_session(session_name: &str) -> String {
@@ -361,8 +428,8 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         InputAction::Redraw => {
                             dirty = true;
                         }
-                        InputAction::OpenSidebar => {
-                            // Sidebar not available in standalone mode
+                        InputAction::OpenSidebar | InputAction::NewSession => {
+                            // Sidebar/new session not available in standalone mode
                         }
                         InputAction::CopyToClipboard => {
                             if let Some(ref sel) = input_state.selection {

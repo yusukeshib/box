@@ -478,8 +478,10 @@ pub enum InputAction {
     Kill,
     /// Screen needs redraw
     Redraw,
-    /// Open the session switcher sidebar
+    /// Refresh the session switcher sidebar
     OpenSidebar,
+    /// Create a new session in the same workspace
+    NewSession,
     /// Copy the current selection to clipboard via OSC 52
     CopyToClipboard,
 }
@@ -667,17 +669,7 @@ impl InputState {
                     continue;
                 }
 
-                // Title text area on the header (row 1, before the right-side controls).
-                // Clicking it opens the session sidebar.
-                let in_title_area = mouse.row == 1 && mouse.col >= 1 && !in_close_area;
-
                 match mouse.button {
-                    // Left click on header title → open sidebar
-                    0 if mouse.pressed && in_title_area => {
-                        actions.push(InputAction::OpenSidebar);
-                        i += consumed;
-                        continue;
-                    }
                     // Left click on header close button (SGR coords are 1-indexed)
                     // " x " spans last 4 columns of the header
                     0 if mouse.pressed && in_close_area => {
@@ -764,10 +756,17 @@ impl InputState {
                     actions.push(InputAction::Detach);
                     return actions;
                 }
-                // 'a' or Ctrl+A — open session sidebar
+                // 'a' or Ctrl+A — refresh session sidebar
                 if b == b'a' || b == 0x01 {
                     self.command_mode = false;
                     actions.push(InputAction::OpenSidebar);
+                    i += 1;
+                    continue;
+                }
+                // 'n' — create new session in same workspace
+                if b == b'n' {
+                    self.command_mode = false;
+                    actions.push(InputAction::NewSession);
                     i += 1;
                     continue;
                 }
