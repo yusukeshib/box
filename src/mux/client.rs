@@ -54,6 +54,24 @@ enum ClientEvent {
     ServerDisconnected,
 }
 
+/// Default command for new sessions: $BOX_DEFAULT_CMD, then $SHELL for local mode.
+fn default_new_session_cmd(sidebar: &SidebarState) -> String {
+    if let Ok(val) = std::env::var("BOX_DEFAULT_CMD") {
+        if !val.is_empty() {
+            return val;
+        }
+    }
+    let is_local = sidebar
+        .entries
+        .iter()
+        .any(|e| e.kind == SidebarEntryKind::Session && e.local);
+    if is_local {
+        std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
+    } else {
+        String::new()
+    }
+}
+
 /// Delete a session: stop if running, remove container and session directory.
 /// If the workspace becomes empty, remove it too.
 fn delete_session(name: &str) {
@@ -669,9 +687,8 @@ fn parse_sidebar_mouse(
                             let content_width = sb_width.saturating_sub(1);
                             let plus_col = content_width;
                             if col >= plus_col.saturating_sub(1) && col <= plus_col {
-                                sidebar.new_session_input = Some(
-                                std::env::var("BOX_DEFAULT_CMD").unwrap_or_default(),
-                            );
+                                sidebar.new_session_input =
+                                Some(default_new_session_cmd(sidebar));
                                 return Some((SidebarAction::Redraw, consumed));
                             }
                             return Some((SidebarAction::None, consumed));
@@ -1044,9 +1061,8 @@ pub fn run(
                             dirty = true;
                         }
                         InputAction::NewSession => {
-                            sidebar.new_session_input = Some(
-                                std::env::var("BOX_DEFAULT_CMD").unwrap_or_default(),
-                            );
+                            sidebar.new_session_input =
+                                Some(default_new_session_cmd(&sidebar));
                             dirty = true;
                         }
                         InputAction::CopyToClipboard => {
