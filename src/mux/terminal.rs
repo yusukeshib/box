@@ -449,25 +449,35 @@ impl InputState {
         current_inner_rows: u16,
         term_cols: u16,
         max_scrollback: usize,
+        col_offset: u16,
     ) -> Vec<InputAction> {
         if self.pending.is_empty() {
             return Vec::new();
         }
         let data = std::mem::take(&mut self.pending);
         // Process without buffering — treat whatever we have as final.
-        self.process_inner(&data, current_inner_rows, term_cols, max_scrollback, false)
+        self.process_inner(
+            &data,
+            current_inner_rows,
+            term_cols,
+            max_scrollback,
+            false,
+            col_offset,
+        )
     }
 
     /// Process raw input bytes, returning actions to perform.
     /// `current_inner_rows` is used for PgUp/PgDn scroll step.
     /// `term_cols` is the terminal width (for scrollbar click detection).
     /// `max_scrollback` is from `parser.screen().scrollback()`.
+    /// `col_offset` is subtracted from mouse column coords (e.g. sidebar width).
     pub fn process(
         &mut self,
         new_data: &[u8],
         current_inner_rows: u16,
         term_cols: u16,
         max_scrollback: usize,
+        col_offset: u16,
     ) -> Vec<InputAction> {
         // Combine any pending bytes from a previous incomplete sequence.
         let combined;
@@ -479,7 +489,14 @@ impl InputState {
             combined = buf;
             &combined
         };
-        self.process_inner(data, current_inner_rows, term_cols, max_scrollback, true)
+        self.process_inner(
+            data,
+            current_inner_rows,
+            term_cols,
+            max_scrollback,
+            true,
+            col_offset,
+        )
     }
 
     fn process_inner(
@@ -489,6 +506,7 @@ impl InputState {
         term_cols: u16,
         max_scrollback: usize,
         allow_buffer: bool,
+        col_offset: u16,
     ) -> Vec<InputAction> {
         let mut actions = Vec::new();
         let mut i = 0;
@@ -515,7 +533,9 @@ impl InputState {
             }
 
             // Gate 1: Always intercept SGR mouse events for scrollback / scrollbar
-            if let Some((mouse, consumed)) = parse_sgr_mouse(data, i) {
+            if let Some((mut mouse, consumed)) = parse_sgr_mouse(data, i) {
+                // Adjust column for sidebar offset (absolute → pane-relative)
+                mouse.col = mouse.col.saturating_sub(col_offset);
                 // Motion events (button 35 = motion with no button pressed)
                 if mouse.button == 35 {
                     i += consumed;

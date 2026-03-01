@@ -354,7 +354,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
             Ok(StandaloneEvent::InputBytes(data)) => {
                 let max_scrollback = scrollback_line_count(&mut parser);
                 let actions =
-                    input_state.process(&data, current_inner_rows, last_cols, max_scrollback);
+                    input_state.process(&data, current_inner_rows, last_cols, max_scrollback, 0);
                 for action in actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -403,7 +403,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                 // (e.g. bare ESC that wasn't followed by more bytes).
                 let max_scrollback = scrollback_line_count(&mut parser);
                 let pending_actions =
-                    input_state.flush_pending(current_inner_rows, last_cols, max_scrollback);
+                    input_state.flush_pending(current_inner_rows, last_cols, max_scrollback, 0);
                 for action in pending_actions {
                     match action {
                         InputAction::Forward(bytes) => {

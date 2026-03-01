@@ -922,8 +922,14 @@ pub fn run(
                 }
 
                 let max_scrollback = scrollback_line_count(&mut parser);
-                let actions =
-                    input_state.process(&data, current_inner_rows, last_cols, max_scrollback);
+                let content_cols = last_cols.saturating_sub(sb_width);
+                let actions = input_state.process(
+                    &data,
+                    current_inner_rows,
+                    content_cols,
+                    max_scrollback,
+                    sb_width,
+                );
                 for action in actions {
                     match action {
                         InputAction::Forward(bytes) => {
@@ -978,8 +984,14 @@ pub fn run(
                 // Flush any buffered incomplete escape sequence
                 if sidebar.new_session_input.is_none() {
                     let max_scrollback = scrollback_line_count(&mut parser);
-                    let pending_actions =
-                        input_state.flush_pending(current_inner_rows, last_cols, max_scrollback);
+                    let sb_w = sidebar_width(&sidebar.entries);
+                    let content_cols = last_cols.saturating_sub(sb_w);
+                    let pending_actions = input_state.flush_pending(
+                        current_inner_rows,
+                        content_cols,
+                        max_scrollback,
+                        sb_w,
+                    );
                     for action in pending_actions {
                         match action {
                             InputAction::Forward(bytes) => {
