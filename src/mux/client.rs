@@ -304,7 +304,13 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             SidebarEntryKind::Session => {
                 let line = format!("   {}", entry.display);
                 let style = if is_selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
+                    if focused {
+                        Style::default().add_modifier(Modifier::REVERSED)
+                    } else {
+                        Style::default()
+                            .add_modifier(Modifier::REVERSED)
+                            .add_modifier(Modifier::DIM)
+                    }
                 } else if entry.running {
                     if focused {
                         Style::default()
