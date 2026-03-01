@@ -308,8 +308,6 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
                         Style::default().add_modifier(Modifier::REVERSED)
                     } else {
                         Style::default()
-                            .add_modifier(Modifier::REVERSED)
-                            .add_modifier(Modifier::DIM)
                     }
                 } else if entry.running {
                     if focused {
@@ -329,7 +327,11 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             if x < buf.area().width && row_y < buf.area().height {
                 let cell = &mut buf[(x, row_y)];
                 cell.set_symbol(" ");
-                cell.set_style(if is_selected { fg_style } else { bg_style });
+                cell.set_style(if is_selected && focused {
+                    fg_style
+                } else {
+                    bg_style
+                });
             }
         }
         // Write text (not dimmed for active entries)
