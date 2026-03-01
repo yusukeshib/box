@@ -106,7 +106,26 @@ pub fn run(session_name: &str) -> Result<i32> {
     loop {
         let socket_path = ensure_server(&current)?;
         match client::run(&current, &socket_path, tty_fd, sidebar_state.take())? {
-            client::ClientResult::Exit(code) => return Ok(code),
+            client::ClientResult::Quit => return Ok(0),
+            client::ClientResult::Exit(code) => {
+                // If another session in the same workspace is running, switch to it
+                let ws = session::workspace_name(&current);
+                let next = session::workspace_sessions(ws)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|s| format!("{}/{}", ws, s))
+                    .find(|name| name != &current && session::is_local_running(name));
+                match next {
+                    Some(next_session) => {
+                        use std::io::Write;
+                        let _ = tty.write_all(b"\x1b[H\x1b[2J");
+                        let _ = tty.flush();
+                        sidebar_state = None;
+                        current = next_session;
+                    }
+                    None => return Ok(code),
+                }
+            }
             client::ClientResult::SwitchSession(next, sb) => {
                 // Clear the physical screen between sessions so the new
                 // client's first ratatui draw is guaranteed to repaint
@@ -428,7 +447,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         InputAction::Redraw => {
                             dirty = true;
                         }
-                        InputAction::OpenSidebar | InputAction::NewSession => {
+                        InputAction::FocusSidebar | InputAction::NewSession => {
                             // Sidebar/new session not available in standalone mode
                         }
                         InputAction::CopyToClipboard => {

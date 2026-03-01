@@ -67,12 +67,12 @@ pub fn run(session_name: &str) -> Result<()> {
         anyhow::bail!("Session '{}' has no command configured.", session_name);
     }
 
-    // Derive workspace path
+    // Derive workspace path (use workspace name, not full session name)
     let home = config::home_dir()?;
     let workspace = Path::new(&home)
         .join(".box")
         .join("workspaces")
-        .join(session_name);
+        .join(session::workspace_name(session_name));
 
     // Ensure session directory has restricted permissions before creating socket
     let sess_dir = session::sessions_dir()?.join(session_name);

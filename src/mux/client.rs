@@ -13,8 +13,10 @@ use super::terminal::{
 use crate::session;
 
 pub enum ClientResult {
-    /// Normal exit (detach or session exited)
+    /// Session process exited (may fall through to another session)
     Exit(i32),
+    /// User explicitly quit (Ctrl+P,Q or close button) — always exit box
+    Quit,
     /// User requested switch to another session (name, sidebar state to restore)
     SwitchSession(String, Option<SidebarState>),
     /// User requested creating a new session with the given command
@@ -32,6 +34,8 @@ pub(super) struct SidebarState {
     pub(super) selected: usize,
     /// Input buffer for new session command (Some = input mode active)
     pub(super) new_session_input: Option<String>,
+    /// When true, keyboard input is routed to the sidebar for navigation
+    pub(super) focused: bool,
 }
 
 pub(super) struct SidebarEntry {
@@ -122,7 +126,7 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
         .iter()
         .map(|e| match e.kind {
             SidebarEntryKind::WorkspaceHeader => e.display.len() + 1, // " ws"
-            SidebarEntryKind::Session => e.display.len() + 5,         // "   ● name"
+            SidebarEntryKind::Session => e.display.len() + 3,         // "   name"
         })
         .max()
         .unwrap_or(8);
@@ -142,7 +146,12 @@ fn draw_sidebar(
     }
 
     let buf = f.buffer_mut();
-    let bg_style = Style::default().bg(Color::Black).fg(Color::White);
+    let focused = sidebar.focused;
+    let bg_style = if focused {
+        Style::default().bg(Color::Black).fg(Color::White)
+    } else {
+        Style::default().bg(Color::Black).fg(Color::DarkGray)
+    };
 
     // Fill background
     for y in area.y..area.y + area.height {
@@ -167,20 +176,19 @@ fn draw_sidebar(
         let (line, style) = match entry.kind {
             SidebarEntryKind::WorkspaceHeader => {
                 let line = format!(" {}", entry.display);
-                let style = Style::default().bg(Color::Black).fg(Color::DarkGray);
+                let style = Style::default().bg(Color::Black).fg(Color::Indexed(238));
                 (line, style)
             }
             SidebarEntryKind::Session => {
-                let indicator = if entry.running || entry.local {
-                    "\u{25cf}"
-                } else {
-                    "\u{25cb}"
-                }; // ● or ○
-                let line = format!("   {} {}", indicator, entry.display);
+                let line = format!("   {}", entry.display);
                 let style = if is_selected {
-                    Style::default().bg(Color::White).fg(Color::Black)
+                    if focused {
+                        Style::default().bg(Color::White).fg(Color::Black)
+                    } else {
+                        Style::default().bg(Color::Indexed(238)).fg(Color::White)
+                    }
                 } else {
-                    bg_style
+                    Style::default().bg(Color::Black).fg(Color::White)
                 };
                 (line, style)
             }
@@ -260,6 +268,8 @@ enum SidebarAction {
     },
     /// Create a new session with the given command
     NewSession(String),
+    /// Return focus to the main pane
+    Unfocus,
     Redraw,
     None,
 }
@@ -340,7 +350,6 @@ fn process_sidebar_input(
 
     let mut i = 0;
     let mut result = SidebarAction::None;
-    let mut pending_switch: Option<String> = None;
     while i < data.len() {
         let b = data[i];
 
@@ -349,38 +358,16 @@ fn process_sidebar_input(
             if i + 2 < data.len() && data[i + 1] == b'[' {
                 match data[i + 2] {
                     b'A' => {
-                        // Up arrow — move and switch
-                        if sidebar_move_up(sidebar) {
-                            let entry = &sidebar.entries[sidebar.selected];
-                            if entry.full_name != current_session && (entry.running || entry.local)
-                            {
-                                pending_switch = Some(entry.full_name.clone());
-                                result = SidebarAction::Switch {
-                                    name: entry.full_name.clone(),
-                                    keep_sidebar: true,
-                                };
-                            } else {
-                                result = SidebarAction::Redraw;
-                            }
-                        }
+                        // Up arrow — move selection
+                        sidebar_move_up(sidebar);
+                        result = SidebarAction::Redraw;
                         i += 3;
                         continue;
                     }
                     b'B' => {
-                        // Down arrow — move and switch
-                        if sidebar_move_down(sidebar) {
-                            let entry = &sidebar.entries[sidebar.selected];
-                            if entry.full_name != current_session && (entry.running || entry.local)
-                            {
-                                pending_switch = Some(entry.full_name.clone());
-                                result = SidebarAction::Switch {
-                                    name: entry.full_name.clone(),
-                                    keep_sidebar: true,
-                                };
-                            } else {
-                                result = SidebarAction::Redraw;
-                            }
-                        }
+                        // Down arrow — move selection
+                        sidebar_move_down(sidebar);
+                        result = SidebarAction::Redraw;
                         i += 3;
                         continue;
                     }
@@ -405,54 +392,40 @@ fn process_sidebar_input(
                     }
                 }
             }
-            // Bare ESC — ignore (sidebar always visible)
-            i += 1;
-            continue;
+            // Bare ESC — unfocus sidebar, return to main pane
+            sidebar.focused = false;
+            return SidebarAction::Unfocus;
         }
-        // j → down and switch
+        // j → move down
         if b == b'j' {
-            if sidebar_move_down(sidebar) {
-                let entry = &sidebar.entries[sidebar.selected];
-                if entry.full_name != current_session && (entry.running || entry.local) {
-                    pending_switch = Some(entry.full_name.clone());
-                    result = SidebarAction::Switch {
-                        name: entry.full_name.clone(),
-                        keep_sidebar: true,
-                    };
-                } else {
-                    result = SidebarAction::Redraw;
-                }
-            }
+            sidebar_move_down(sidebar);
+            result = SidebarAction::Redraw;
             i += 1;
             continue;
         }
-        // k → up and switch
+        // k → move up
         if b == b'k' {
-            if sidebar_move_up(sidebar) {
-                let entry = &sidebar.entries[sidebar.selected];
-                if entry.full_name != current_session && (entry.running || entry.local) {
-                    pending_switch = Some(entry.full_name.clone());
-                    result = SidebarAction::Switch {
-                        name: entry.full_name.clone(),
-                        keep_sidebar: true,
-                    };
-                } else {
-                    result = SidebarAction::Redraw;
-                }
-            }
+            sidebar_move_up(sidebar);
+            result = SidebarAction::Redraw;
             i += 1;
             continue;
         }
-        // Enter → switch-and-close if a switch is pending
+        // Enter → switch to selected session and unfocus
         if b == b'\r' || b == b'\n' {
-            if let Some(name) = pending_switch {
+            let entry = &sidebar.entries[sidebar.selected];
+            if entry.kind == SidebarEntryKind::Session
+                && entry.full_name != current_session
+                && (entry.running || entry.local)
+            {
+                sidebar.focused = false;
                 return SidebarAction::Switch {
-                    name,
-                    keep_sidebar: false,
+                    name: entry.full_name.clone(),
+                    keep_sidebar: true,
                 };
             }
-            i += 1;
-            continue;
+            // If current session or not switchable, just unfocus
+            sidebar.focused = false;
+            return SidebarAction::Unfocus;
         }
         i += 1;
     }
@@ -541,6 +514,19 @@ pub fn run(
         anyhow::bail!("Terminal too small");
     }
 
+    // Build sidebar early so we know its width for the initial resize.
+    let mut sidebar: SidebarState = initial_sidebar.unwrap_or_else(|| {
+        let (entries, selected) = build_sidebar_entries(session_name);
+        SidebarState {
+            entries,
+            selected,
+            new_session_input: None,
+            focused: false,
+        }
+    });
+    let sb_w = sidebar_width(&sidebar.entries);
+    let content_cols = term_cols.saturating_sub(sb_w);
+
     // Connect to server
     let sock = UnixStream::connect(socket_path).context("Failed to connect to mux server")?;
     let mut sock_writer = sock.try_clone().context("Failed to clone socket")?;
@@ -549,11 +535,11 @@ pub fn run(
     // indefinitely if the server is slow to read.
     let _ = sock_writer.set_write_timeout(Some(Duration::from_secs(5)));
 
-    // Send initial Resize to server
+    // Send initial Resize to server (subtract sidebar width)
     protocol::write_client_msg(
         &mut sock_writer,
         &ClientMsg::Resize {
-            cols: term_cols,
+            cols: content_cols,
             rows: inner_rows,
         },
     )?;
@@ -598,17 +584,6 @@ pub fn run(
     let header_color = super::color_for_session(session_name);
     let prefix_key = crate::config::load_mux_prefix_key();
     let mut input_state = InputState::new(prefix_key);
-
-    // Sidebar is always visible. Restore from previous session switch if provided,
-    // otherwise build fresh.
-    let mut sidebar: SidebarState = initial_sidebar.unwrap_or_else(|| {
-        let (entries, selected) = build_sidebar_entries(session_name);
-        SidebarState {
-            entries,
-            selected,
-            new_session_input: None,
-        }
-    });
 
     // Draw the first frame immediately so the user sees content right
     // after a session switch instead of a blank screen.
@@ -705,9 +680,9 @@ pub fn run(
                 // Sidebar always handles mouse events in its area
                 let sb_width = sidebar_width(&sidebar.entries);
 
-                // Check if input should go to sidebar (mouse in sidebar area
-                // or when new_session_input is active)
-                if sidebar.new_session_input.is_some() {
+                // Check if input should go to sidebar (focused, new_session_input,
+                // or mouse in sidebar area)
+                if sidebar.focused || sidebar.new_session_input.is_some() {
                     match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
                         SidebarAction::Switch {
                             name: next,
@@ -720,7 +695,7 @@ pub fn run(
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::NewSession(cmd));
                         }
-                        SidebarAction::Redraw => {
+                        SidebarAction::Unfocus | SidebarAction::Redraw => {
                             dirty = true;
                         }
                         SidebarAction::None => {}
@@ -774,7 +749,7 @@ pub fn run(
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::NewSession(cmd));
                         }
-                        SidebarAction::Redraw => {
+                        SidebarAction::Unfocus | SidebarAction::Redraw => {
                             dirty = true;
                         }
                         SidebarAction::None => {}
@@ -794,7 +769,7 @@ pub fn run(
                             );
                         }
                         InputAction::Detach => {
-                            return Ok(ClientResult::Exit(0));
+                            return Ok(ClientResult::Quit);
                         }
                         InputAction::Kill => {
                             let _ = protocol::write_client_msg(&mut sock_writer, &ClientMsg::Kill);
@@ -802,8 +777,8 @@ pub fn run(
                         InputAction::Redraw => {
                             dirty = true;
                         }
-                        InputAction::OpenSidebar => {
-                            // Sidebar is always visible; this action refreshes the list
+                        InputAction::FocusSidebar => {
+                            // Refresh the list and focus the sidebar
                             input_state.selection = None;
                             input_state.drag_start = None;
                             let (entries, selected) = build_sidebar_entries(session_name);
@@ -811,6 +786,7 @@ pub fn run(
                                 entries,
                                 selected,
                                 new_session_input: None,
+                                focused: true,
                             };
                             dirty = true;
                         }
@@ -863,16 +839,18 @@ pub fn run(
                         last_cols = cols;
                         last_rows = rows;
                         let new_inner = rows.saturating_sub(1);
-                        if new_inner > 0 && cols > 0 {
+                        let sb_w = sidebar_width(&sidebar.entries);
+                        let content_cols = cols.saturating_sub(sb_w);
+                        if new_inner > 0 && content_cols > 0 {
                             current_inner_rows = new_inner;
                             let _ = protocol::write_client_msg(
                                 &mut sock_writer,
                                 &ClientMsg::Resize {
-                                    cols,
+                                    cols: content_cols,
                                     rows: new_inner,
                                 },
                             );
-                            parser.set_size(new_inner, cols);
+                            parser.set_size(new_inner, content_cols);
                             if cols_changed {
                                 parser.process(b"\x1b[H\x1b[2J");
                             }

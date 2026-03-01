@@ -479,7 +479,7 @@ pub enum InputAction {
     /// Screen needs redraw
     Redraw,
     /// Refresh the session switcher sidebar
-    OpenSidebar,
+    FocusSidebar,
     /// Create a new session in the same workspace
     NewSession,
     /// Copy the current selection to clipboard via OSC 52
@@ -759,7 +759,7 @@ impl InputState {
                 // 'a' or Ctrl+A — refresh session sidebar
                 if b == b'a' || b == 0x01 {
                     self.command_mode = false;
-                    actions.push(InputAction::OpenSidebar);
+                    actions.push(InputAction::FocusSidebar);
                     i += 1;
                     continue;
                 }
