@@ -355,10 +355,9 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, comm
 /// Process raw input bytes when the sidebar is open.
 /// Returns Some(action) if the sidebar produces a result, None to keep it open.
 enum SidebarAction {
-    /// Switch to another session. `keep_sidebar` = true keeps sidebar open (keyboard nav).
+    /// Switch to another session.
     Switch {
         name: String,
-        keep_sidebar: bool,
     },
     /// Create a new session with the given command
     NewSession(String),
@@ -405,20 +404,50 @@ fn process_sidebar_input(
     // Handle new session input mode
     if let Some(ref mut input) = sidebar.new_session_input {
         let mut i = 0;
+        let mut needs_redraw = false;
         while i < data.len() {
             let b = data[i];
             match b {
-                // ESC — check if it's a mouse sequence; if so, skip it
+                // ESC — check if it's a CSI/mouse sequence; if so, skip it
                 0x1b => {
-                    if i + 2 < data.len() && data[i + 1] == b'[' && data[i + 2] == b'<' {
-                        // SGR mouse sequence — skip until terminator
-                        let mut j = i + 3;
-                        while j < data.len() && data[j] != b'M' && data[j] != b'm' {
+                    if i + 1 < data.len() && data[i + 1] == b'[' {
+                        if i + 2 < data.len() && data[i + 2] == b'<' {
+                            // SGR mouse sequence — skip parameter bytes
+                            // (digits + semicolons) then the terminator M/m.
+                            // Stop at any other byte so we don't accidentally
+                            // consume unrelated input (like ENTER).
+                            let mut j = i + 3;
+                            while j < data.len() {
+                                match data[j] {
+                                    b'0'..=b'9' | b';' => j += 1,
+                                    b'M' | b'm' => {
+                                        j += 1;
+                                        break;
+                                    }
+                                    _ => break, // not part of mouse event
+                                }
+                            }
+                            i = j;
+                            continue;
+                        }
+                        // Other CSI sequence — skip until final byte (>= 0x40)
+                        let mut j = i + 2;
+                        while j < data.len() && data[j] >= 0x20 && data[j] < 0x40 {
                             j += 1;
                         }
-                        i = j + 1;
+                        if j < data.len() && data[j] >= 0x40 {
+                            j += 1; // include final byte
+                        }
+                        i = j;
                         continue;
                     }
+                    // Lone ESC at end of buffer — likely an incomplete
+                    // escape sequence split across reads (e.g. from mouse
+                    // tracking).  Ignore it rather than canceling input.
+                    if i + 1 >= data.len() {
+                        break;
+                    }
+                    // Bare ESC followed by non-'[': cancel input mode
                     sidebar.new_session_input = None;
                     return SidebarAction::Redraw;
                 }
@@ -434,23 +463,27 @@ fn process_sidebar_input(
                 // Backspace
                 0x7f | 0x08 => {
                     input.pop();
-                    return SidebarAction::Redraw;
+                    needs_redraw = true;
                 }
                 // Ctrl+U → clear input
                 0x15 => {
                     input.clear();
-                    return SidebarAction::Redraw;
+                    needs_redraw = true;
                 }
                 // Printable ASCII
                 0x20..=0x7e => {
                     input.push(b as char);
-                    return SidebarAction::Redraw;
+                    needs_redraw = true;
                 }
                 _ => {}
             }
             i += 1;
         }
-        return SidebarAction::None;
+        return if needs_redraw {
+            SidebarAction::Redraw
+        } else {
+            SidebarAction::None
+        };
     }
 
     let mut i = 0;
@@ -459,8 +492,12 @@ fn process_sidebar_input(
         let b = data[i];
 
         if b == 0x1b {
-            // Check if it's a CSI sequence (arrow keys)
-            if i + 2 < data.len() && data[i + 1] == b'[' {
+            // Check if it's a CSI sequence (arrow keys, mouse, etc.)
+            if i + 1 < data.len() && data[i + 1] == b'[' {
+                if i + 2 >= data.len() {
+                    // Incomplete CSI — ignore and wait for more data
+                    break;
+                }
                 match data[i + 2] {
                     b'A' => {
                         // Up arrow — move selection
@@ -487,17 +524,44 @@ fn process_sidebar_input(
                                 other => return other,
                             }
                         }
-                        i += 3;
+                        // Incomplete/rejected mouse sequence — skip only
+                        // valid mouse parameter bytes so we don't consume
+                        // unrelated input (like ENTER).
+                        let mut j = i + 3;
+                        while j < data.len() {
+                            match data[j] {
+                                b'0'..=b'9' | b';' => j += 1,
+                                b'M' | b'm' => {
+                                    j += 1;
+                                    break;
+                                }
+                                _ => break,
+                            }
+                        }
+                        i = j;
                         continue;
                     }
                     _ => {
-                        // Skip unknown CSI
-                        i += 3;
+                        // Skip unknown CSI — consume until final byte (>= 0x40)
+                        let mut j = i + 2;
+                        while j < data.len() && data[j] >= 0x20 && data[j] < 0x40 {
+                            j += 1;
+                        }
+                        if j < data.len() && data[j] >= 0x40 {
+                            j += 1; // include final byte
+                        }
+                        i = j;
                         continue;
                     }
                 }
             }
-            // Bare ESC — unfocus sidebar, return to main pane
+            // Lone ESC at end of buffer — likely an incomplete escape
+            // sequence split across reads (e.g. from mouse tracking).
+            // Ignore it rather than unfocusing the sidebar.
+            if i + 1 >= data.len() {
+                break;
+            }
+            // Bare ESC followed by non-'[' — unfocus sidebar
             sidebar.focused = false;
             return SidebarAction::Unfocus;
         }
@@ -534,7 +598,6 @@ fn process_sidebar_input(
                 sidebar.focused = false;
                 return SidebarAction::Switch {
                     name: entry.full_name.clone(),
-                    keep_sidebar: true,
                 };
             }
             // If current session or not switchable, just unfocus
@@ -616,7 +679,6 @@ fn parse_sidebar_mouse(
                         return Some((
                             SidebarAction::Switch {
                                 name: entry.full_name.clone(),
-                                keep_sidebar: false,
                             },
                             consumed,
                         ));
@@ -770,9 +832,6 @@ pub fn run(
     });
 
     let mut dirty = true;
-    // Deferred session switch — set by sidebar Switch action so we repaint
-    // (showing the updated selection highlight) before actually switching.
-    let mut pending_switch: Option<(String, bool)> = None;
     let mut last_sidebar_refresh = std::time::Instant::now();
 
     let mut last_cols = term_cols;
@@ -818,12 +877,12 @@ pub fn run(
                 // or mouse in sidebar area)
                 if sidebar.focused || sidebar.new_session_input.is_some() {
                     match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
-                        SidebarAction::Switch {
-                            name: next,
-                            keep_sidebar,
-                        } => {
-                            pending_switch = Some((next, keep_sidebar));
-                            dirty = true;
+                        SidebarAction::Switch { name: next } => {
+                            // Return immediately — the new session will
+                            // inherit the sidebar state and draw its own
+                            // first frame with the correct content.
+                            unsafe { libc::close(tty_input_fd) };
+                            return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
                         }
                         SidebarAction::NewSession(cmd) => {
                             unsafe { libc::close(tty_input_fd) };
@@ -891,12 +950,9 @@ pub fn run(
 
                 if is_sidebar_mouse {
                     match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
-                        SidebarAction::Switch {
-                            name: next,
-                            keep_sidebar,
-                        } => {
-                            pending_switch = Some((next, keep_sidebar));
-                            dirty = true;
+                        SidebarAction::Switch { name: next } => {
+                            unsafe { libc::close(tty_input_fd) };
+                            return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
                         }
                         SidebarAction::NewSession(cmd) => {
                             unsafe { libc::close(tty_input_fd) };
@@ -1122,14 +1178,6 @@ pub fn run(
                     }
                     parser.set_scrollback(0);
                     dirty = false;
-
-                    // Process deferred switch after repaint so the user
-                    // sees the updated selection highlight.
-                    if let Some((next, _keep_sidebar)) = pending_switch.take() {
-                        unsafe { libc::close(tty_input_fd) };
-                        // Always pass sidebar state to the next session
-                        return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
-                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {

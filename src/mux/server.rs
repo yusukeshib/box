@@ -312,24 +312,28 @@ pub fn run(session_name: &str) -> Result<()> {
                                     rows: pty_rows,
                                 },
                             )));
-                            // Replay raw PTY history so the client builds up
-                            // the same scrollback buffer, then send a formatted
-                            // screen dump to ensure the visible area matches exactly.
-                            // Always send at least one Output (even if empty) so
-                            // the client handshake read doesn't block waiting.
+                            // Replay raw PTY history + formatted screen dump as
+                            // a single Output message so the client's synchronous
+                            // handshake read consumes everything in one shot.
+                            // The history rebuilds scrollback and the screen dump
+                            // ensures the visible area matches exactly.
                             //
                             // make_contiguous() arranges the VecDeque in-place
-                            // (no heap alloc) so we can serialise from a borrow
-                            // instead of cloning the entire history.
-                            if !history.is_empty() {
-                                let _ = client.tx.send(Arc::from(
-                                    protocol::serialize_output_slice(history.make_contiguous()),
-                                ));
-                            }
+                            // (no heap alloc) so we can borrow without cloning.
                             let contents = parser.screen().contents_formatted();
-                            let _ = client.tx.send(Arc::from(protocol::serialize_server_msg(
-                                &ServerMsg::Output(contents),
-                            )));
+                            if !history.is_empty() {
+                                let hist = history.make_contiguous();
+                                let mut combined = Vec::with_capacity(hist.len() + contents.len());
+                                combined.extend_from_slice(hist);
+                                combined.extend_from_slice(&contents);
+                                let _ = client
+                                    .tx
+                                    .send(Arc::from(protocol::serialize_output_slice(&combined)));
+                            } else {
+                                let _ = client.tx.send(Arc::from(protocol::serialize_server_msg(
+                                    &ServerMsg::Output(contents),
+                                )));
+                            }
                         }
 
                         // Recalculate effective size
