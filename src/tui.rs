@@ -4,7 +4,6 @@ use crossterm::{cursor, execute, terminal};
 use ratatui::prelude::*;
 use ratatui::{TerminalOptions, Viewport};
 use std::io;
-use std::path::PathBuf;
 
 use crate::config;
 use crate::session;
@@ -199,8 +198,7 @@ pub fn create_session() -> Result<TuiAction> {
             match mode {
                 Mode::Name => match key.code {
                     KeyCode::Enter => {
-                        let raw_name = input.text.trim().to_string();
-                        let name = session::normalize_name(&raw_name);
+                        let name = input.text.trim().to_string();
                         if let Err(e) = session::validate_name(&name) {
                             footer_msg = e.to_string();
                             input = TextInput::new();
@@ -229,16 +227,6 @@ pub fn create_session() -> Result<TuiAction> {
                         clear_viewport(&mut terminal, viewport_height)?;
                         return Ok(TuiAction::Quit);
                     }
-                    KeyCode::Up => {
-                        if let Some(entry) = name_history.up(&input.text) {
-                            input = TextInput::with_text(entry.to_string());
-                        }
-                    }
-                    KeyCode::Down => {
-                        if let Some(entry) = name_history.down(&input.text) {
-                            input = TextInput::with_text(entry.to_string());
-                        }
-                    }
                     _ => {
                         input.handle_key(key.code);
                     }
@@ -266,7 +254,6 @@ pub fn create_session() -> Result<TuiAction> {
                 Mode::Command => match key.code {
                     KeyCode::Enter => {
                         let cmd_text = input.text.trim().to_string();
-                        new_command_text = cmd_text.clone();
                         let command = if cmd_text.is_empty() {
                             Some(vec![])
                         } else {
@@ -291,16 +278,6 @@ pub fn create_session() -> Result<TuiAction> {
                     KeyCode::Esc => {
                         clear_viewport(&mut terminal, viewport_height)?;
                         return Ok(TuiAction::Quit);
-                    }
-                    KeyCode::Up => {
-                        if let Some(entry) = command_history.up(&input.text) {
-                            input = TextInput::with_text(entry.to_string());
-                        }
-                    }
-                    KeyCode::Down => {
-                        if let Some(entry) = command_history.down(&input.text) {
-                            input = TextInput::with_text(entry.to_string());
-                        }
                     }
                     _ => {
                         input.handle_key(key.code);
@@ -402,85 +379,5 @@ mod tests {
         input.handle_key(KeyCode::Char('b'));
         assert_eq!(input.text, "abc");
         assert_eq!(input.cursor, 2);
-    }
-
-    fn make_history(entries: Vec<&str>) -> InputHistory {
-        let entries: Vec<String> = entries.into_iter().map(String::from).collect();
-        let position = entries.len();
-        InputHistory {
-            entries,
-            position,
-            draft: String::new(),
-        }
-    }
-
-    #[test]
-    fn test_history_up_down() {
-        let mut h = make_history(vec!["alpha", "beta", "gamma"]);
-        assert_eq!(h.up(""), Some("gamma"));
-        assert_eq!(h.up(""), Some("beta"));
-        assert_eq!(h.up(""), Some("alpha"));
-        // Already at oldest, stays there
-        assert_eq!(h.up(""), Some("alpha"));
-        // Navigate back down
-        assert_eq!(h.down(""), Some("beta"));
-        assert_eq!(h.down(""), Some("gamma"));
-        // Past newest returns draft
-        assert_eq!(h.down(""), Some(""));
-        // Past draft returns None
-        assert_eq!(h.down(""), None);
-    }
-
-    #[test]
-    fn test_history_draft_preservation() {
-        let mut h = make_history(vec!["old"]);
-        // User is typing "new" then presses Up
-        assert_eq!(h.up("new"), Some("old"));
-        // Press Down to return to draft
-        assert_eq!(h.down("old"), Some("new"));
-    }
-
-    #[test]
-    fn test_history_empty() {
-        let mut h = make_history(vec![]);
-        assert_eq!(h.up("text"), None);
-        assert_eq!(h.down("text"), None);
-    }
-
-    #[test]
-    fn test_history_push_dedup() {
-        let mut h = make_history(vec!["alpha", "beta"]);
-        h.push("alpha"); // duplicate
-        assert_eq!(h.entries, vec!["beta", "alpha"]);
-    }
-
-    #[test]
-    fn test_history_push_empty_ignored() {
-        let mut h = make_history(vec!["alpha"]);
-        h.push("");
-        h.push("   ");
-        assert_eq!(h.entries, vec!["alpha"]);
-    }
-
-    #[test]
-    fn test_history_push_cap() {
-        let mut h = make_history(vec![]);
-        for i in 0..110 {
-            h.push(&format!("entry-{}", i));
-        }
-        assert_eq!(h.entries.len(), HISTORY_MAX);
-        assert_eq!(h.entries[0], "entry-10");
-        assert_eq!(h.entries[HISTORY_MAX - 1], "entry-109");
-    }
-
-    #[test]
-    fn test_history_reset_position() {
-        let mut h = make_history(vec!["alpha", "beta"]);
-        h.up("x");
-        h.up("x");
-        assert_eq!(h.position, 0);
-        h.reset_position();
-        assert_eq!(h.position, 2);
-        assert!(h.draft.is_empty());
     }
 }

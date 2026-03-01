@@ -10,7 +10,6 @@ use crate::config;
 #[derive(Debug, Clone)]
 pub struct Session {
     pub name: String,
-    pub label: Option<String>,
     pub project_dir: String,
     pub image: String,
     pub mount_path: String,
@@ -20,17 +19,10 @@ pub struct Session {
     pub strategy: String,
 }
 
-impl Session {
-    pub fn display_name(&self) -> &str {
-        self.label.as_deref().unwrap_or(&self.name)
-    }
-}
-
 impl From<config::BoxConfig> for Session {
     fn from(cfg: config::BoxConfig) -> Self {
         Session {
             name: cfg.name,
-            label: cfg.label,
             project_dir: cfg.project_dir,
             image: cfg.image,
             mount_path: cfg.mount_path,
@@ -46,7 +38,6 @@ impl From<config::BoxConfig> for Session {
 #[allow(dead_code)]
 pub struct SessionSummary {
     pub name: String,
-    pub label: Option<String>,
     pub project_dir: String,
     pub image: String,
     pub command: String,
@@ -56,38 +47,11 @@ pub struct SessionSummary {
     pub strategy: String,
 }
 
-impl SessionSummary {
-    pub fn display_name(&self) -> &str {
-        self.label.as_deref().unwrap_or(&self.name)
-    }
-}
-
 pub fn sessions_dir() -> Result<PathBuf> {
     let dir = PathBuf::from(config::home_dir()?)
         .join(".box")
         .join("sessions");
     Ok(dir)
-}
-
-pub fn normalize_name(name: &str) -> String {
-    let normalized: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    let mut result = String::new();
-    for c in normalized.chars() {
-        if c == '-' && result.ends_with('-') {
-            continue;
-        }
-        result.push(c);
-    }
-    result.trim_matches('-').to_string()
 }
 
 const RESERVED_NAMES: &[&str] = &[

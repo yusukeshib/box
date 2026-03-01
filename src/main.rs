@@ -410,7 +410,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
 
     if args.quiet {
         for s in &sessions {
-            println!("{}", s.display_name());
+            println!("{}", s.name);
         }
         return Ok(0);
     }
@@ -425,7 +425,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     // Compute column widths
     let name_w = sessions
         .iter()
-        .map(|s| s.display_name().len())
+        .map(|s| s.name.len())
         .max()
         .unwrap_or(0)
         .max(4);
@@ -481,14 +481,6 @@ fn cmd_create(
     local: bool,
     strategy: Option<String>,
 ) -> Result<i32> {
-    let normalized = session::normalize_name(name);
-    let label = if normalized != name {
-        Some(name.to_string())
-    } else {
-        None
-    };
-    let name = &normalized;
-
     session::validate_name(name)?;
 
     let (ws, _sess_part) = session::parse_name(name);
@@ -555,7 +547,7 @@ fn cmd_create(
     }
 
     if local {
-        eprintln!("\x1b[2msession:\x1b[0m {}", display);
+        eprintln!("\x1b[2msession:\x1b[0m {}", full);
         eprintln!("\x1b[2mmode:\x1b[0m local");
         eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
         if !cfg.command.is_empty() {
@@ -578,7 +570,7 @@ fn cmd_create(
 
     docker::check()?;
 
-    eprintln!("\x1b[2msession:\x1b[0m {}", display);
+    eprintln!("\x1b[2msession:\x1b[0m {}", full);
     eprintln!("\x1b[2mimage:\x1b[0m {}", cfg.image);
     eprintln!("\x1b[2mmount:\x1b[0m {}", cfg.mount_path);
     eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
