@@ -77,6 +77,16 @@ fn delete_session(name: &str) {
     }
 }
 
+/// Find any running session across all workspaces, excluding `exclude`.
+fn find_any_running_session(exclude: &str) -> Option<String> {
+    session::list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.local && s.name != exclude)
+        .map(|s| s.name)
+        .find(|n| session::is_local_running(n))
+}
+
 /// Build the sidebar session list with workspace grouping.
 /// Returns entries and the index of the current session.
 fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
@@ -153,7 +163,7 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
         })
         .max()
         .unwrap_or(8);
-    let w = (max_name + 2).clamp(20, 40);
+    let w = (max_name + 2).clamp(20, 30);
     w as u16
 }
 
@@ -194,7 +204,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, comm
         let (line, style) = match entry.kind {
             SidebarEntryKind::WorkspaceHeader => {
                 let line = format!(" {}", entry.display);
-                let style = Style::default().bg(Color::Black).fg(Color::Indexed(238));
+                let style = Style::default().bg(Color::Black).fg(Color::Indexed(245));
                 (line, style)
             }
             SidebarEntryKind::Session => {
@@ -248,6 +258,12 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, comm
             if plus_pos < buf.area().width && row_y < buf.area().height {
                 let cell = &mut buf[(plus_pos, row_y)];
                 cell.set_symbol("+");
+                cell.set_style(plus_style);
+            }
+            let trail_pos = area.x + content_width - 1;
+            if trail_pos < buf.area().width && row_y < buf.area().height {
+                let cell = &mut buf[(trail_pos, row_y)];
+                cell.set_symbol(" ");
                 cell.set_style(plus_style);
             }
         }
@@ -757,6 +773,7 @@ pub fn run(
     // Deferred session switch — set by sidebar Switch action so we repaint
     // (showing the updated selection highlight) before actually switching.
     let mut pending_switch: Option<(String, bool)> = None;
+    let mut last_sidebar_refresh = std::time::Instant::now();
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
@@ -786,6 +803,10 @@ pub fn run(
                     dirty = true;
                 }
                 ServerMsg::Exited(code) => {
+                    if let Some(next) = find_any_running_session(session_name) {
+                        unsafe { libc::close(tty_input_fd) };
+                        return Ok(ClientResult::SwitchSession(next, None));
+                    }
                     return Ok(ClientResult::Exit(code));
                 }
             },
@@ -811,14 +832,7 @@ pub fn run(
                         SidebarAction::DeleteSession(name) => {
                             delete_session(&name);
                             if name == session_name {
-                                // Deleted the current session — switch or exit
-                                let ws = session::workspace_name(&name);
-                                let next = session::workspace_sessions(ws)
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|s| format!("{}/{}", ws, s))
-                                    .find(|n| session::is_local_running(n));
-                                match next {
+                                match find_any_running_session(&name) {
                                     Some(next_session) => {
                                         unsafe { libc::close(tty_input_fd) };
                                         return Ok(ClientResult::SwitchSession(next_session, None));
@@ -891,13 +905,7 @@ pub fn run(
                         SidebarAction::DeleteSession(name) => {
                             delete_session(&name);
                             if name == session_name {
-                                let ws = session::workspace_name(&name);
-                                let next = session::workspace_sessions(ws)
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|s| format!("{}/{}", ws, s))
-                                    .find(|n| session::is_local_running(n));
-                                match next {
+                                match find_any_running_session(&name) {
                                     Some(next_session) => {
                                         unsafe { libc::close(tty_input_fd) };
                                         return Ok(ClientResult::SwitchSession(next_session, None));
@@ -1005,6 +1013,23 @@ pub fn run(
                             }
                             _ => {}
                         }
+                    }
+                }
+
+                // Periodically refresh sidebar to pick up running-state changes
+                if last_sidebar_refresh.elapsed() >= Duration::from_secs(1) {
+                    last_sidebar_refresh = std::time::Instant::now();
+                    let (entries, selected) = build_sidebar_entries(session_name);
+                    if entries.iter().map(|e| e.running).collect::<Vec<_>>()
+                        != sidebar
+                            .entries
+                            .iter()
+                            .map(|e| e.running)
+                            .collect::<Vec<_>>()
+                    {
+                        sidebar.entries = entries;
+                        sidebar.selected = selected;
+                        dirty = true;
                     }
                 }
 
