@@ -200,8 +200,8 @@ fn draw_command_bar(
     }
     let buf = f.buffer_mut();
     let bar_style = Style::default()
-        .bg(Color::Indexed(236))
-        .fg(Color::Indexed(245));
+        .add_modifier(Modifier::REVERSED)
+        .add_modifier(Modifier::DIM);
 
     // Fill the entire bar with background
     for x in area.x..area.x + area.width {
@@ -213,8 +213,8 @@ fn draw_command_bar(
     }
 
     // Determine content as styled spans: (text, style) pairs
-    let key_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
-    let input_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
+    let key_style = Style::default().add_modifier(Modifier::REVERSED);
+    let input_style = Style::default().add_modifier(Modifier::REVERSED);
     let spans: Vec<(&str, Style)> = if sidebar.new_session_input.is_some() {
         // Built below from formatted string
         vec![]
@@ -275,9 +275,9 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
     let buf = f.buffer_mut();
     let focused = sidebar.focused;
     let bg_style = if focused {
-        Style::default().bg(Color::Black).fg(Color::White)
+        Style::default()
     } else {
-        Style::default().bg(Color::Black).fg(Color::DarkGray)
+        Style::default().add_modifier(Modifier::DIM)
     };
 
     // Fill background
@@ -303,21 +303,23 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
         let (line, style) = match entry.kind {
             SidebarEntryKind::WorkspaceHeader => {
                 let line = format!(" {}", entry.display);
-                let style = Style::default().bg(Color::Black).fg(Color::Indexed(245));
+                let style = Style::default().add_modifier(Modifier::DIM);
                 (line, style)
             }
             SidebarEntryKind::Session => {
                 let line = format!("   {}", entry.display);
                 let style = if is_selected {
                     if focused {
-                        Style::default().bg(Color::White).fg(Color::Black)
+                        Style::default().add_modifier(Modifier::REVERSED)
                     } else {
-                        Style::default().bg(Color::Indexed(238)).fg(Color::White)
+                        Style::default()
+                            .add_modifier(Modifier::REVERSED)
+                            .add_modifier(Modifier::DIM)
                     }
                 } else if entry.running {
-                    Style::default().bg(Color::Black).fg(Color::White)
+                    Style::default()
                 } else {
-                    Style::default().bg(Color::Black).fg(Color::DarkGray)
+                    Style::default().add_modifier(Modifier::DIM)
                 };
                 (line, style)
             }
@@ -346,7 +348,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
 
         // Draw "+" button for workspace headers (" +")
         if entry.kind == SidebarEntryKind::WorkspaceHeader {
-            let plus_style = Style::default().bg(Color::Black).fg(Color::White);
+            let plus_style = Style::default();
             let space_pos = area.x + content_width - 3;
             let plus_pos = area.x + content_width - 2;
             if space_pos < buf.area().width && row_y < buf.area().height {
@@ -371,12 +373,10 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
         if entry.kind == SidebarEntryKind::Session {
             let x_pos = area.x + content_width - 2;
             if x_pos < buf.area().width && row_y < buf.area().height {
-                let x_style = if is_selected && focused {
-                    Style::default().bg(Color::White).fg(Color::Black)
-                } else if is_selected {
-                    Style::default().bg(Color::Indexed(238)).fg(Color::Black)
+                let x_style = if is_selected {
+                    Style::default().add_modifier(Modifier::REVERSED)
                 } else {
-                    Style::default().bg(Color::Black).fg(Color::DarkGray)
+                    Style::default().add_modifier(Modifier::DIM)
                 };
                 let cell = &mut buf[(x_pos, row_y)];
                 cell.set_symbol("x");
@@ -388,7 +388,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
     // Right border
     let border_x = area.x + area.width - 1;
     if border_x < buf.area().width {
-        let border_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
+        let border_style = Style::default().add_modifier(Modifier::DIM);
         for y in area.y..area.y + area.height {
             if y < buf.area().height {
                 let cell = &mut buf[(border_x, y)];

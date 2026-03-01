@@ -126,10 +126,7 @@ impl<'a> Widget for TerminalWidget<'a> {
 
                 if let Some(sel) = self.selection {
                     if sel.contains(y as u16, x as u16) {
-                        style = style
-                            .fg(Color::White)
-                            .bg(Color::DarkGray)
-                            .remove_modifier(Modifier::REVERSED);
+                        style = style.add_modifier(Modifier::REVERSED);
                     }
                 }
 
@@ -324,8 +321,8 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) 
         let thumb_y_start = max_thumb_top - thumb_top;
 
         let scrollbar_x = grid_area.x + grid_area.width.saturating_sub(1);
-        let track_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
-        let thumb_style = Style::default().fg(Color::White).bg(Color::White);
+        let track_style = Style::default().add_modifier(Modifier::DIM);
+        let thumb_style = Style::default().add_modifier(Modifier::REVERSED);
 
         for row in 0..track_height {
             let y = grid_area.y + row as u16;
