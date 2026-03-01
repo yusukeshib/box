@@ -161,17 +161,17 @@ fn create_sub_session(workspace: &str, command: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Workspace '{}' has no sessions.", workspace))?;
     let parent = session::load(&format!("{}/{}", workspace, first_session))?;
 
-    // If no command given, default to $BOX_DEFAULT_CMD or $SHELL (local only)
+    // If no command given, default to $SHELL for local, $BOX_DEFAULT_CMD for Docker
     let command = if command.is_empty() {
-        let default = std::env::var("BOX_DEFAULT_CMD")
-            .ok()
-            .filter(|s| !s.is_empty());
-        if let Some(cmd) = default {
-            cmd
-        } else if parent.local {
+        if parent.local {
             std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
         } else {
-            anyhow::bail!("No command specified. Set $BOX_DEFAULT_CMD for Docker sessions.");
+            std::env::var("BOX_DEFAULT_CMD")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("No command specified. Set $BOX_DEFAULT_CMD for Docker sessions.")
+                })?
         }
     } else {
         command.to_string()
