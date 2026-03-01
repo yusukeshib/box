@@ -409,17 +409,36 @@ fn process_sidebar_input(
         while i < data.len() {
             let b = data[i];
             match b {
-                // ESC — check if it's a mouse sequence; if so, skip it
+                // ESC — check if it's a CSI/mouse sequence; if so, skip it
                 0x1b => {
-                    if i + 2 < data.len() && data[i + 1] == b'[' && data[i + 2] == b'<' {
-                        // SGR mouse sequence — skip until terminator
-                        let mut j = i + 3;
-                        while j < data.len() && data[j] != b'M' && data[j] != b'm' {
+                    if i + 1 < data.len() && data[i + 1] == b'[' {
+                        if i + 2 < data.len() && data[i + 2] == b'<' {
+                            // SGR mouse sequence — skip until terminator
+                            let mut j = i + 3;
+                            while j < data.len() && data[j] != b'M' && data[j] != b'm' {
+                                j += 1;
+                            }
+                            i = j + 1;
+                            continue;
+                        }
+                        // Other CSI sequence — skip until final byte (>= 0x40)
+                        let mut j = i + 2;
+                        while j < data.len() && data[j] >= 0x20 && data[j] < 0x40 {
                             j += 1;
                         }
-                        i = j + 1;
+                        if j < data.len() && data[j] >= 0x40 {
+                            j += 1; // include final byte
+                        }
+                        i = j;
                         continue;
                     }
+                    // Lone ESC at end of buffer — likely an incomplete
+                    // escape sequence split across reads (e.g. from mouse
+                    // tracking).  Ignore it rather than canceling input.
+                    if i + 1 >= data.len() {
+                        break;
+                    }
+                    // Bare ESC followed by non-'[': cancel input mode
                     sidebar.new_session_input = None;
                     return SidebarAction::Redraw;
                 }
@@ -464,8 +483,12 @@ fn process_sidebar_input(
         let b = data[i];
 
         if b == 0x1b {
-            // Check if it's a CSI sequence (arrow keys)
-            if i + 2 < data.len() && data[i + 1] == b'[' {
+            // Check if it's a CSI sequence (arrow keys, mouse, etc.)
+            if i + 1 < data.len() && data[i + 1] == b'[' {
+                if i + 2 >= data.len() {
+                    // Incomplete CSI — ignore and wait for more data
+                    break;
+                }
                 match data[i + 2] {
                     b'A' => {
                         // Up arrow — move selection
@@ -492,17 +515,35 @@ fn process_sidebar_input(
                                 other => return other,
                             }
                         }
-                        i += 3;
+                        // Incomplete mouse sequence — skip what we have
+                        let mut j = i + 3;
+                        while j < data.len() && data[j] != b'M' && data[j] != b'm' {
+                            j += 1;
+                        }
+                        i = j + 1;
                         continue;
                     }
                     _ => {
-                        // Skip unknown CSI
-                        i += 3;
+                        // Skip unknown CSI — consume until final byte (>= 0x40)
+                        let mut j = i + 2;
+                        while j < data.len() && data[j] >= 0x20 && data[j] < 0x40 {
+                            j += 1;
+                        }
+                        if j < data.len() && data[j] >= 0x40 {
+                            j += 1; // include final byte
+                        }
+                        i = j;
                         continue;
                     }
                 }
             }
-            // Bare ESC — unfocus sidebar, return to main pane
+            // Lone ESC at end of buffer — likely an incomplete escape
+            // sequence split across reads (e.g. from mouse tracking).
+            // Ignore it rather than unfocusing the sidebar.
+            if i + 1 >= data.len() {
+                break;
+            }
+            // Bare ESC followed by non-'[' — unfocus sidebar
             sidebar.focused = false;
             return SidebarAction::Unfocus;
         }
