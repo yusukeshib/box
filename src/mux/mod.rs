@@ -154,6 +154,32 @@ pub fn run(session_name: &str) -> Result<i32> {
 /// Create a new sub-session within a workspace.
 /// Generates a session name from the command and starts the mux server.
 fn create_sub_session(workspace: &str, command: &str) -> Result<String> {
+    // Load the workspace's first session to inherit settings
+    let existing = session::workspace_sessions(workspace)?;
+    let first_session = existing
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Workspace '{}' has no sessions.", workspace))?;
+    let parent = session::load(&format!("{}/{}", workspace, first_session))?;
+
+    // If no command given, default to $SHELL for local, $BOX_DEFAULT_CMD for Docker
+    let command = if command.is_empty() {
+        if parent.local {
+            std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
+        } else {
+            std::env::var("BOX_DEFAULT_CMD")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "No command specified. Set $BOX_DEFAULT_CMD for Docker sessions."
+                    )
+                })?
+        }
+    } else {
+        command.to_string()
+    };
+    let command = command.as_str();
+
     // Parse the command to get a basename for the session name
     let parts: Vec<&str> = command.split_whitespace().collect();
     let basename = parts
@@ -179,7 +205,6 @@ fn create_sub_session(workspace: &str, command: &str) -> Result<String> {
         .collect();
 
     // Find a unique name
-    let existing = session::workspace_sessions(workspace)?;
     let mut name = basename.clone();
     let mut counter = 2;
     while existing.contains(&name) {
@@ -188,12 +213,6 @@ fn create_sub_session(workspace: &str, command: &str) -> Result<String> {
     }
 
     let full_name = format!("{}/{}", workspace, name);
-
-    // Load the workspace's first session to inherit settings
-    let first_session = existing
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("Workspace '{}' has no sessions.", workspace))?;
-    let parent = session::load(&format!("{}/{}", workspace, first_session))?;
 
     // Parse command into argv
     let cmd_parts: Vec<String> =
