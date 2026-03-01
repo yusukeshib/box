@@ -322,7 +322,7 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) 
 
         let scrollbar_x = grid_area.x + grid_area.width.saturating_sub(1);
         let track_style = Style::default().add_modifier(Modifier::DIM);
-        let thumb_style = Style::default().add_modifier(Modifier::REVERSED);
+        let thumb_style = Style::default();
 
         for row in 0..track_height {
             let y = grid_area.y + row as u16;
