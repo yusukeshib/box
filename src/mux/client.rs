@@ -21,6 +21,8 @@ pub enum ClientResult {
     SwitchSession(String, Option<SidebarState>),
     /// User requested creating a new session with the given command
     NewSession(String),
+    /// Switch to viewing a stopped session's history buffer
+    ViewHistory(String, Option<SidebarState>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -49,6 +51,7 @@ pub(super) struct SidebarEntry {
     pub(super) full_name: String,
     running: bool,
     local: bool,
+    has_history: bool,
 }
 
 enum ClientEvent {
@@ -127,6 +130,7 @@ fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
                 full_name: String::new(),
                 running: false,
                 local: false,
+                has_history: false,
             });
         }
         let running = if s.local {
@@ -134,12 +138,14 @@ fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
         } else {
             false
         };
+        let has_history = !running && session::has_history(&s.name);
         entries.push(SidebarEntry {
             kind: SidebarEntryKind::Session,
             display: sess_part.to_string(),
             full_name: s.name.clone(),
             running,
             local: s.local,
+            has_history,
         });
     }
 
@@ -153,6 +159,7 @@ fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
             full_name: String::new(),
             running: false,
             local: false,
+            has_history: false,
         });
         entries.push(SidebarEntry {
             kind: SidebarEntryKind::Session,
@@ -160,6 +167,7 @@ fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
             full_name: current_session.to_string(),
             running: true,
             local: true,
+            has_history: false,
         });
     }
 
@@ -303,16 +311,22 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             }
             SidebarEntryKind::Session => {
                 let line = format!("   {}", entry.display);
-                let style = if is_selected {
-                    if focused {
-                        Style::default().bg(Color::Blue).fg(Color::White)
-                    } else {
-                        Style::default().bg(Color::DarkGray).fg(Color::White)
-                    }
-                } else if focused {
-                    Style::default()
+                let fg = if entry.running {
+                    Color::White
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Color::DarkGray
+                };
+                let style = if is_selected {
+                    let bg = if focused {
+                        Color::Blue
+                    } else {
+                        Color::DarkGray
+                    };
+                    // Avoid invisible text when fg == bg
+                    let sel_fg = if fg == bg { Color::Gray } else { fg };
+                    Style::default().bg(bg).fg(sel_fg)
+                } else {
+                    Style::default().fg(fg)
                 };
                 (line, style)
             }
@@ -629,7 +643,7 @@ fn process_sidebar_input(
             let entry = &sidebar.entries[sidebar.selected];
             if entry.kind == SidebarEntryKind::Session
                 && entry.full_name != current_session
-                && (entry.running || entry.local)
+                && (entry.running || entry.local || entry.has_history)
             {
                 sidebar.focused = false;
                 return SidebarAction::Switch {
@@ -708,7 +722,7 @@ fn parse_sidebar_mouse(
                         if entry.full_name == current_session {
                             return Some((SidebarAction::None, consumed));
                         }
-                        if !entry.running && !entry.local {
+                        if !entry.running && !entry.local && !entry.has_history {
                             return Some((SidebarAction::None, consumed));
                         }
                         sidebar.selected = entry_idx;
@@ -729,6 +743,413 @@ fn parse_sidebar_mouse(
         j += 1;
     }
     None
+}
+
+/// Read-only viewer for a stopped session's history buffer.
+/// No server connection — loads the history file and renders it with scrolling.
+pub fn view_history(
+    session_name: &str,
+    tty_fd: i32,
+    initial_sidebar: Option<SidebarState>,
+) -> Result<ClientResult> {
+    let (term_cols, term_rows) = terminal::get_term_size(tty_fd)?;
+    let inner_rows = term_rows.saturating_sub(1);
+    if inner_rows == 0 || term_cols == 0 {
+        anyhow::bail!("Terminal too small");
+    }
+
+    // Build sidebar
+    let mut sidebar: SidebarState = initial_sidebar.unwrap_or_else(|| {
+        let (entries, selected) = build_sidebar_entries(session_name);
+        SidebarState {
+            entries,
+            selected,
+            new_session_input: None,
+            focused: false,
+            pending_esc: false,
+        }
+    });
+    let sb_w = sidebar_width(&sidebar.entries);
+    let content_cols = term_cols.saturating_sub(sb_w);
+
+    // Load history file and create parser
+    let history_path = session::history_path(session_name)?;
+    let history_data = std::fs::read(&history_path).unwrap_or_default();
+    let mut parser = vt100::Parser::new(inner_rows, content_cols, super::SCROLLBACK_LINES);
+    parser.process(&history_data);
+    // Append a dimmed [stopped] indicator at the end of the buffer
+    parser.process(b"\r\n\x1b[2m[stopped]\x1b[0m");
+
+    let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
+
+    let prefix_key = crate::config::load_mux_prefix_key();
+    let mut input_state = InputState::new(prefix_key);
+
+    terminal::set_mouse_tracking(tty_fd, true);
+    let mut mouse_tracking_on = true;
+
+    // Input reader thread
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let tty_input_fd = unsafe { libc::dup(tty_fd) };
+    if tty_input_fd < 0 {
+        anyhow::bail!("Failed to dup tty fd for input");
+    }
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = unsafe {
+                libc::read(
+                    tty_input_fd,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                )
+            };
+            if n <= 0 {
+                break;
+            }
+            if tx.send(buf[..n as usize].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+
+    let mut dirty = true;
+    let mut last_sidebar_refresh = std::time::Instant::now();
+    let mut last_cols = term_cols;
+    let mut last_rows = term_rows;
+    let mut current_inner_rows = inner_rows;
+
+    loop {
+        let timeout = if dirty {
+            Duration::from_millis(2)
+        } else {
+            Duration::from_millis(50)
+        };
+        let event = rx.recv_timeout(timeout);
+        match event {
+            Ok(data) => {
+                sidebar.pending_esc = false;
+                let sb_width = sidebar_width(&sidebar.entries);
+
+                if sidebar.focused || sidebar.new_session_input.is_some() {
+                    match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
+                        SidebarAction::Switch { name: next } => {
+                            unsafe { libc::close(tty_input_fd) };
+                            // Check if target is running or has history
+                            if session::is_local_running(&next) {
+                                return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
+                            }
+                            if session::has_history(&next) {
+                                return Ok(ClientResult::ViewHistory(next, Some(sidebar)));
+                            }
+                            return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
+                        }
+                        SidebarAction::NewSession(cmd) => {
+                            unsafe { libc::close(tty_input_fd) };
+                            return Ok(ClientResult::NewSession(cmd));
+                        }
+                        SidebarAction::DeleteSession(name) => {
+                            delete_session(&name);
+                            if name == session_name {
+                                match find_any_running_session(&name) {
+                                    Some(next_session) => {
+                                        unsafe { libc::close(tty_input_fd) };
+                                        return Ok(ClientResult::SwitchSession(next_session, None));
+                                    }
+                                    None => {
+                                        unsafe { libc::close(tty_input_fd) };
+                                        return Ok(ClientResult::Exit(0));
+                                    }
+                                }
+                            }
+                            let (entries, selected) = build_sidebar_entries(session_name);
+                            sidebar.entries = entries;
+                            sidebar.selected = selected;
+                            dirty = true;
+                        }
+                        SidebarAction::Unfocus | SidebarAction::Redraw => {
+                            dirty = true;
+                        }
+                        SidebarAction::None => {}
+                    }
+                    continue;
+                }
+
+                // Check for sidebar mouse events
+                let is_sidebar_mouse =
+                    data.len() >= 3 && data[0] == 0x1b && data[1] == b'[' && data[2] == b'<' && {
+                        let mut j = 3usize;
+                        let mut params = [0u32; 3];
+                        let mut pi = 0;
+                        let mut in_sidebar = false;
+                        while j < data.len() {
+                            match data[j] {
+                                b'0'..=b'9' => {
+                                    params[pi] =
+                                        params[pi].saturating_mul(10) + (data[j] - b'0') as u32;
+                                }
+                                b';' => {
+                                    pi += 1;
+                                    if pi >= 3 {
+                                        break;
+                                    }
+                                }
+                                b'M' | b'm' => {
+                                    if pi == 2 {
+                                        in_sidebar = (params[1] as u16) <= sb_width;
+                                    }
+                                    break;
+                                }
+                                _ => break,
+                            }
+                            j += 1;
+                        }
+                        in_sidebar
+                    };
+
+                if is_sidebar_mouse {
+                    match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
+                        SidebarAction::Switch { name: next } => {
+                            unsafe { libc::close(tty_input_fd) };
+                            if session::is_local_running(&next) {
+                                return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
+                            }
+                            if session::has_history(&next) {
+                                return Ok(ClientResult::ViewHistory(next, Some(sidebar)));
+                            }
+                            return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
+                        }
+                        SidebarAction::NewSession(cmd) => {
+                            unsafe { libc::close(tty_input_fd) };
+                            return Ok(ClientResult::NewSession(cmd));
+                        }
+                        SidebarAction::DeleteSession(name) => {
+                            delete_session(&name);
+                            if name == session_name {
+                                match find_any_running_session(&name) {
+                                    Some(next_session) => {
+                                        unsafe { libc::close(tty_input_fd) };
+                                        return Ok(ClientResult::SwitchSession(next_session, None));
+                                    }
+                                    None => {
+                                        unsafe { libc::close(tty_input_fd) };
+                                        return Ok(ClientResult::Exit(0));
+                                    }
+                                }
+                            }
+                            let (entries, selected) = build_sidebar_entries(session_name);
+                            sidebar.entries = entries;
+                            sidebar.selected = selected;
+                            dirty = true;
+                        }
+                        SidebarAction::Unfocus | SidebarAction::Redraw => {
+                            dirty = true;
+                        }
+                        SidebarAction::None => {}
+                    }
+                    continue;
+                }
+
+                // Process input for scrolling/commands only (read-only — no Forward)
+                let max_scrollback = scrollback_line_count(&mut parser);
+                let content_cols = last_cols.saturating_sub(sb_width);
+                let actions = input_state.process(
+                    &data,
+                    current_inner_rows,
+                    content_cols,
+                    max_scrollback,
+                    sb_width,
+                );
+                for action in actions {
+                    match action {
+                        InputAction::Forward(_) => {
+                            // Read-only — ignore keyboard input to PTY
+                        }
+                        InputAction::Detach | InputAction::Kill => {
+                            unsafe { libc::close(tty_input_fd) };
+                            return Ok(ClientResult::Quit);
+                        }
+                        InputAction::Redraw => {
+                            dirty = true;
+                        }
+                        InputAction::FocusSidebar => {
+                            input_state.selection = None;
+                            input_state.drag_start = None;
+                            let (entries, selected) = build_sidebar_entries(session_name);
+                            sidebar = SidebarState {
+                                entries,
+                                selected,
+                                new_session_input: None,
+                                focused: true,
+                                pending_esc: false,
+                            };
+                            dirty = true;
+                        }
+                        InputAction::NewSession => {
+                            sidebar.new_session_input = Some(default_new_session_cmd(&sidebar));
+                            dirty = true;
+                        }
+                        InputAction::CopyToClipboard => {
+                            if let Some(ref sel) = input_state.selection {
+                                parser.set_scrollback(input_state.scroll_offset);
+                                let text = extract_selection_text(parser.screen(), sel);
+                                parser.set_scrollback(0);
+                                if !text.is_empty() {
+                                    write_osc52_clipboard(tty_fd, &text);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Flush pending sidebar ESC
+                if sidebar.pending_esc {
+                    sidebar.pending_esc = false;
+                    if sidebar.focused {
+                        sidebar.focused = false;
+                        dirty = true;
+                    } else if sidebar.new_session_input.is_some() {
+                        sidebar.new_session_input = None;
+                        dirty = true;
+                    }
+                }
+
+                // Flush buffered incomplete escape sequence
+                if sidebar.new_session_input.is_none() {
+                    let max_scrollback = scrollback_line_count(&mut parser);
+                    let sb_w = sidebar_width(&sidebar.entries);
+                    let content_cols = last_cols.saturating_sub(sb_w);
+                    let pending_actions = input_state.flush_pending(
+                        current_inner_rows,
+                        content_cols,
+                        max_scrollback,
+                        sb_w,
+                    );
+                    for action in pending_actions {
+                        if let InputAction::Redraw = action {
+                            dirty = true;
+                        }
+                    }
+                }
+
+                // Periodically refresh sidebar
+                if last_sidebar_refresh.elapsed() >= Duration::from_secs(1) {
+                    last_sidebar_refresh = std::time::Instant::now();
+                    let (entries, selected) = build_sidebar_entries(session_name);
+                    if entries
+                        .iter()
+                        .map(|e| (e.running, e.has_history))
+                        .collect::<Vec<_>>()
+                        != sidebar
+                            .entries
+                            .iter()
+                            .map(|e| (e.running, e.has_history))
+                            .collect::<Vec<_>>()
+                    {
+                        sidebar.entries = entries;
+                        sidebar.selected = selected;
+                        dirty = true;
+                    }
+                }
+
+                // Check for terminal resize
+                if let Ok((cols, rows)) = terminal::get_term_size(tty_fd) {
+                    if cols != last_cols || rows != last_rows {
+                        last_cols = cols;
+                        last_rows = rows;
+                        let new_inner = rows.saturating_sub(1);
+                        let sb_w = sidebar_width(&sidebar.entries);
+                        let content_cols = cols.saturating_sub(sb_w);
+                        if new_inner > 0 && content_cols > 0 {
+                            current_inner_rows = new_inner;
+                            parser.set_size(new_inner, content_cols);
+                            // Re-process history to reflow at new size
+                            parser = vt100::Parser::new(
+                                new_inner,
+                                content_cols,
+                                super::SCROLLBACK_LINES,
+                            );
+                            parser.process(&history_data);
+                            terminal = terminal::create_terminal(tty_fd, cols, rows)?;
+                            terminal.clear()?;
+                        }
+                        input_state.scroll_offset = 0;
+                        input_state.selection = None;
+                        input_state.drag_start = None;
+                        dirty = true;
+                    }
+                }
+
+                if dirty {
+                    let max_scrollback = scrollback_line_count(&mut parser);
+
+                    if !mouse_tracking_on {
+                        mouse_tracking_on = true;
+                        terminal::set_mouse_tracking(tty_fd, true);
+                    }
+
+                    parser.set_scrollback(input_state.scroll_offset);
+                    let screen = parser.screen();
+                    let scroll = ScrollState {
+                        offset: input_state.scroll_offset,
+                        max: max_scrollback,
+                    };
+                    let params = DrawFrameParams {
+                        screen,
+                        scroll: &scroll,
+                        selection: input_state.selection.as_ref(),
+                    };
+                    {
+                        use std::io::Write;
+                        let _ = terminal.backend_mut().write_all(b"\x1b[?2026h");
+                    }
+                    let sb_w = sidebar_width(&sidebar.entries);
+                    terminal
+                        .draw(|f| {
+                            let full = f.area();
+                            let body_height = full.height.saturating_sub(1);
+                            let sb_width = sb_w.min(full.width);
+                            let right_width = full.width.saturating_sub(sb_width);
+                            let sb_area = Rect {
+                                x: full.x,
+                                y: full.y,
+                                width: sb_width,
+                                height: body_height,
+                            };
+                            let right_area = Rect {
+                                x: full.x + sb_width,
+                                y: full.y,
+                                width: right_width,
+                                height: body_height,
+                            };
+                            let bar_area = Rect {
+                                x: full.x,
+                                y: full.y + body_height,
+                                width: full.width,
+                                height: 1,
+                            };
+                            draw_sidebar(f, &sidebar, sb_area);
+                            terminal::draw_frame(f, &params, right_area);
+                            draw_command_bar(f, bar_area, &sidebar, input_state.command_mode);
+                        })
+                        .context("Failed to draw terminal frame")?;
+                    {
+                        use std::io::Write;
+                        let _ = terminal.backend_mut().write_all(b"\x1b[?2026l");
+                        let _ = std::io::Write::flush(terminal.backend_mut());
+                    }
+                    parser.set_scrollback(0);
+                    dirty = false;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        }
+    }
+
+    Ok(ClientResult::Quit)
 }
 
 pub fn run(
@@ -919,10 +1340,10 @@ pub fn run(
                 if sidebar.focused || sidebar.new_session_input.is_some() {
                     match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
                         SidebarAction::Switch { name: next } => {
-                            // Return immediately — the new session will
-                            // inherit the sidebar state and draw its own
-                            // first frame with the correct content.
                             unsafe { libc::close(tty_input_fd) };
+                            if !session::is_local_running(&next) && session::has_history(&next) {
+                                return Ok(ClientResult::ViewHistory(next, Some(sidebar)));
+                            }
                             return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
                         }
                         SidebarAction::NewSession(cmd) => {
@@ -993,6 +1414,9 @@ pub fn run(
                     match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
                         SidebarAction::Switch { name: next } => {
                             unsafe { libc::close(tty_input_fd) };
+                            if !session::is_local_running(&next) && session::has_history(&next) {
+                                return Ok(ClientResult::ViewHistory(next, Some(sidebar)));
+                            }
                             return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
                         }
                         SidebarAction::NewSession(cmd) => {
@@ -1131,11 +1555,14 @@ pub fn run(
                 if last_sidebar_refresh.elapsed() >= Duration::from_secs(1) {
                     last_sidebar_refresh = std::time::Instant::now();
                     let (entries, selected) = build_sidebar_entries(session_name);
-                    if entries.iter().map(|e| e.running).collect::<Vec<_>>()
+                    if entries
+                        .iter()
+                        .map(|e| (e.running, e.has_history))
+                        .collect::<Vec<_>>()
                         != sidebar
                             .entries
                             .iter()
-                            .map(|e| e.running)
+                            .map(|e| (e.running, e.has_history))
                             .collect::<Vec<_>>()
                     {
                         sidebar.entries = entries;
