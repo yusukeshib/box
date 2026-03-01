@@ -763,6 +763,7 @@ pub fn run(
     // Deferred session switch — set by sidebar Switch action so we repaint
     // (showing the updated selection highlight) before actually switching.
     let mut pending_switch: Option<(String, bool)> = None;
+    let mut last_sidebar_refresh = std::time::Instant::now();
 
     let mut last_cols = term_cols;
     let mut last_rows = term_rows;
@@ -1011,6 +1012,19 @@ pub fn run(
                             }
                             _ => {}
                         }
+                    }
+                }
+
+                // Periodically refresh sidebar to pick up running-state changes
+                if last_sidebar_refresh.elapsed() >= Duration::from_secs(1) {
+                    last_sidebar_refresh = std::time::Instant::now();
+                    let (entries, selected) = build_sidebar_entries(session_name);
+                    if entries.iter().map(|e| e.running).collect::<Vec<_>>()
+                        != sidebar.entries.iter().map(|e| e.running).collect::<Vec<_>>()
+                    {
+                        sidebar.entries = entries;
+                        sidebar.selected = selected;
+                        dirty = true;
                     }
                 }
 
