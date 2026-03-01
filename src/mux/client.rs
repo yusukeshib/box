@@ -412,12 +412,22 @@ fn process_sidebar_input(
                 0x1b => {
                     if i + 1 < data.len() && data[i + 1] == b'[' {
                         if i + 2 < data.len() && data[i + 2] == b'<' {
-                            // SGR mouse sequence — skip until terminator
+                            // SGR mouse sequence — skip parameter bytes
+                            // (digits + semicolons) then the terminator M/m.
+                            // Stop at any other byte so we don't accidentally
+                            // consume unrelated input (like ENTER).
                             let mut j = i + 3;
-                            while j < data.len() && data[j] != b'M' && data[j] != b'm' {
-                                j += 1;
+                            while j < data.len() {
+                                match data[j] {
+                                    b'0'..=b'9' | b';' => j += 1,
+                                    b'M' | b'm' => {
+                                        j += 1;
+                                        break;
+                                    }
+                                    _ => break, // not part of mouse event
+                                }
                             }
-                            i = j + 1;
+                            i = j;
                             continue;
                         }
                         // Other CSI sequence — skip until final byte (>= 0x40)
@@ -514,12 +524,21 @@ fn process_sidebar_input(
                                 other => return other,
                             }
                         }
-                        // Incomplete mouse sequence — skip what we have
+                        // Incomplete/rejected mouse sequence — skip only
+                        // valid mouse parameter bytes so we don't consume
+                        // unrelated input (like ENTER).
                         let mut j = i + 3;
-                        while j < data.len() && data[j] != b'M' && data[j] != b'm' {
-                            j += 1;
+                        while j < data.len() {
+                            match data[j] {
+                                b'0'..=b'9' | b';' => j += 1,
+                                b'M' | b'm' => {
+                                    j += 1;
+                                    break;
+                                }
+                                _ => break,
+                            }
                         }
-                        i = j + 1;
+                        i = j;
                         continue;
                     }
                     _ => {
