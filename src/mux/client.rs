@@ -273,13 +273,9 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
 
     let buf = f.buffer_mut();
     let focused = sidebar.focused;
-    let bg_style = if focused {
-        Style::default()
-    } else {
-        Style::default().add_modifier(Modifier::DIM)
-    };
+    let bg_style = Style::default().add_modifier(Modifier::DIM);
 
-    // Fill background
+    // Fill background (dimmed)
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             if x < buf.area().width && y < buf.area().height {
@@ -299,7 +295,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
         }
 
         let is_selected = idx == sidebar.selected;
-        let (line, style) = match entry.kind {
+        let (line, fg_style) = match entry.kind {
             SidebarEntryKind::WorkspaceHeader => {
                 let line = format!(" {}", entry.display);
                 let style = Style::default().add_modifier(Modifier::DIM);
@@ -308,15 +304,13 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             SidebarEntryKind::Session => {
                 let line = format!("   {}", entry.display);
                 let style = if is_selected {
-                    if focused {
-                        Style::default().add_modifier(Modifier::REVERSED)
-                    } else {
-                        Style::default()
-                            .add_modifier(Modifier::REVERSED)
-                            .add_modifier(Modifier::DIM)
-                    }
+                    Style::default().add_modifier(Modifier::REVERSED)
                 } else if entry.running {
-                    Style::default()
+                    if focused {
+                        Style::default()
+                    } else {
+                        Style::default().add_modifier(Modifier::DIM)
+                    }
                 } else {
                     Style::default().add_modifier(Modifier::DIM)
                 };
@@ -324,15 +318,15 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             }
         };
 
-        // Fill entire row with background first
+        // Fill entire row with dimmed background
         for x in area.x..area.x + content_width {
             if x < buf.area().width && row_y < buf.area().height {
                 let cell = &mut buf[(x, row_y)];
                 cell.set_symbol(" ");
-                cell.set_style(style);
+                cell.set_style(if is_selected { fg_style } else { bg_style });
             }
         }
-        // Write the text
+        // Write text (not dimmed for active entries)
         for (col, ch) in line.chars().enumerate() {
             let x = area.x + col as u16;
             if x >= area.x + content_width {
@@ -341,7 +335,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             if x < buf.area().width && row_y < buf.area().height {
                 let cell = &mut buf[(x, row_y)];
                 cell.set_symbol(&ch.to_string());
-                cell.set_style(style);
+                cell.set_style(fg_style);
             }
         }
 
