@@ -256,7 +256,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
         if entry.kind == SidebarEntryKind::Session {
             let x_pos = area.x + content_width - 2;
             if x_pos < buf.area().width && row_y < buf.area().height {
-                let x_style = if is_selected && focused {
+                let x_style = if is_selected {
                     Style::default().bg(Color::Indexed(238)).fg(Color::Black)
                 } else {
                     Style::default().bg(Color::Black).fg(Color::DarkGray)
