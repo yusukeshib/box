@@ -67,6 +67,9 @@ pub fn run(session_name: &str) -> Result<()> {
         anyhow::bail!("Session '{}' has no command configured.", session_name);
     }
 
+    // Clean stale history from a previous run
+    session::remove_history(session_name);
+
     // Derive workspace path (use workspace name, not full session name)
     let home = config::home_dir()?;
     let workspace = Path::new(&home)
@@ -371,11 +374,22 @@ pub fn run(session_name: &str) -> Result<()> {
                 // Drain remaining PTY output
                 while let Ok(ServerEvent::PtyOutput(data)) = rx.try_recv() {
                     parser.process(&data);
+                    history.extend(data.iter().copied());
                     let msg_bytes: Arc<[u8]> =
                         Arc::from(protocol::serialize_server_msg(&ServerMsg::Output(data)));
                     for client in clients.values() {
                         let _ = client.tx.try_send(msg_bytes.clone());
                     }
+                }
+
+                // Save history + screen contents to disk for the history viewer
+                if let Ok(path) = session::history_path(session_name) {
+                    let contents = parser.screen().contents_formatted();
+                    let hist = history.make_contiguous();
+                    let mut combined = Vec::with_capacity(hist.len() + contents.len());
+                    combined.extend_from_slice(hist);
+                    combined.extend_from_slice(&contents);
+                    let _ = std::fs::write(&path, &combined);
                 }
 
                 // Get exit code
@@ -398,6 +412,16 @@ pub fn run(session_name: &str) -> Result<()> {
                 if SHUTDOWN.load(Ordering::SeqCst) {
                     let _ = child.kill();
                     let _ = child.wait();
+
+                    // Save history + screen contents to disk
+                    if let Ok(path) = session::history_path(session_name) {
+                        let contents = parser.screen().contents_formatted();
+                        let hist = history.make_contiguous();
+                        let mut combined = Vec::with_capacity(hist.len() + contents.len());
+                        combined.extend_from_slice(hist);
+                        combined.extend_from_slice(&contents);
+                        let _ = std::fs::write(&path, &combined);
+                    }
 
                     // Broadcast Exited to all clients
                     let exit_bytes: Arc<[u8]> =

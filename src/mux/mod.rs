@@ -102,8 +102,20 @@ pub fn run(session_name: &str) -> Result<i32> {
     let mut current = session_name.to_string();
     let mut sidebar_state: Option<client::SidebarState> = None;
     loop {
-        let socket_path = ensure_server(&current)?;
-        match client::run(&current, &socket_path, tty_fd, sidebar_state.take())? {
+        // Check if this is a stopped session with saved history
+        let is_running = {
+            let socket_path = session::socket_path(&current)?;
+            std::os::unix::net::UnixStream::connect(&socket_path).is_ok()
+        };
+
+        let result = if !is_running && session::has_history(&current) {
+            client::view_history(&current, tty_fd, sidebar_state.take())?
+        } else {
+            let socket_path = ensure_server(&current)?;
+            client::run(&current, &socket_path, tty_fd, sidebar_state.take())?
+        };
+
+        match result {
             client::ClientResult::Quit => return Ok(0),
             client::ClientResult::Exit(code) => {
                 // If another session in the same workspace is running, switch to it
@@ -125,10 +137,8 @@ pub fn run(session_name: &str) -> Result<i32> {
                     None => return Ok(code),
                 }
             }
-            client::ClientResult::SwitchSession(next, sb) => {
-                // Disable mouse tracking before clearing the screen so no
-                // stale motion events queue up during the switch.  The new
-                // client will re-enable tracking on its first draw.
+            client::ClientResult::SwitchSession(next, sb)
+            | client::ClientResult::ViewHistory(next, sb) => {
                 terminal::set_mouse_tracking(tty_fd, false);
                 use std::io::Write;
                 let _ = tty.write_all(b"\x1b[H\x1b[2J");

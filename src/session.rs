@@ -473,6 +473,24 @@ pub fn socket_path(name: &str) -> Result<PathBuf> {
     Ok(sessions_dir()?.join(&full).join("sock"))
 }
 
+pub fn history_path(name: &str) -> Result<PathBuf> {
+    let full = full_name(name);
+    Ok(sessions_dir()?.join(&full).join("history"))
+}
+
+pub fn has_history(name: &str) -> bool {
+    match history_path(name) {
+        Ok(p) => p.metadata().map(|m| m.len() > 0).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
+pub fn remove_history(name: &str) {
+    if let Ok(p) = history_path(name) {
+        let _ = fs::remove_file(p);
+    }
+}
+
 pub fn remove_socket(name: &str) {
     let full = full_name(name);
     if let Ok(dir) = sessions_dir() {
