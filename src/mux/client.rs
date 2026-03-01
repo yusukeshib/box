@@ -199,22 +199,21 @@ fn draw_command_bar(
         return;
     }
     let buf = f.buffer_mut();
-    let bar_style = Style::default()
-        .add_modifier(Modifier::REVERSED)
-        .add_modifier(Modifier::DIM);
+    let bar_style = Style::default().add_modifier(Modifier::DIM);
+    let clear_style = Style::default();
 
-    // Fill the entire bar with background
+    // Fill the entire bar with default background
     for x in area.x..area.x + area.width {
         if x < buf.area().width && area.y < buf.area().height {
             let cell = &mut buf[(x, area.y)];
             cell.set_symbol(" ");
-            cell.set_style(bar_style);
+            cell.set_style(clear_style);
         }
     }
 
     // Determine content as styled spans: (text, style) pairs
-    let key_style = Style::default().add_modifier(Modifier::REVERSED);
-    let input_style = Style::default().add_modifier(Modifier::REVERSED);
+    let key_style = Style::default().add_modifier(Modifier::BOLD);
+    let input_style = Style::default();
     let spans: Vec<(&str, Style)> = if sidebar.new_session_input.is_some() {
         // Built below from formatted string
         vec![]
