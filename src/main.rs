@@ -520,6 +520,7 @@ fn cmd_create(
             .ok_or_else(|| anyhow::anyhow!("'{}' is not inside a git repository.", cwd.display()))?
             .to_string_lossy()
             .to_string();
+        let project_dir = session::resolve_original_project_dir(&project_dir);
         (project_dir, None, None)
     };
 
