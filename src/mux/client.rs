@@ -201,7 +201,7 @@ fn draw_command_bar(
         vec![
             (" Q", key_style),
             (" Quit  ", bar_style),
-            ("P", key_style),
+            ("A", key_style),
             (" Focus sidebar  ", bar_style),
             ("N", key_style),
             (" New session", bar_style),
@@ -467,13 +467,7 @@ fn process_sidebar_input(
                         i = j;
                         continue;
                     }
-                    // Lone ESC at end of buffer — likely an incomplete
-                    // escape sequence split across reads (e.g. from mouse
-                    // tracking).  Ignore it rather than canceling input.
-                    if i + 1 >= data.len() {
-                        break;
-                    }
-                    // Bare ESC followed by non-'[': cancel input mode
+                    // ESC (lone or followed by non-'['): cancel input mode
                     sidebar.new_session_input = None;
                     return SidebarAction::Redraw;
                 }
@@ -481,9 +475,6 @@ fn process_sidebar_input(
                 b'\r' | b'\n' => {
                     let cmd = input.clone();
                     sidebar.new_session_input = None;
-                    if cmd.is_empty() {
-                        return SidebarAction::Redraw;
-                    }
                     return SidebarAction::NewSession(cmd);
                 }
                 // Backspace
@@ -678,7 +669,9 @@ fn parse_sidebar_mouse(
                             let content_width = sb_width.saturating_sub(1);
                             let plus_col = content_width;
                             if col >= plus_col.saturating_sub(1) && col <= plus_col {
-                                sidebar.new_session_input = Some(String::new());
+                                sidebar.new_session_input = Some(
+                                std::env::var("BOX_DEFAULT_CMD").unwrap_or_default(),
+                            );
                                 return Some((SidebarAction::Redraw, consumed));
                             }
                             return Some((SidebarAction::None, consumed));
@@ -1051,7 +1044,9 @@ pub fn run(
                             dirty = true;
                         }
                         InputAction::NewSession => {
-                            sidebar.new_session_input = Some(String::new());
+                            sidebar.new_session_input = Some(
+                                std::env::var("BOX_DEFAULT_CMD").unwrap_or_default(),
+                            );
                             dirty = true;
                         }
                         InputAction::CopyToClipboard => {
