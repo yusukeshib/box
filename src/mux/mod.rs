@@ -9,8 +9,6 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ratatui::style::Color;
-
 use crate::session;
 
 use terminal::{
@@ -106,7 +104,26 @@ pub fn run(session_name: &str) -> Result<i32> {
     loop {
         let socket_path = ensure_server(&current)?;
         match client::run(&current, &socket_path, tty_fd, sidebar_state.take())? {
-            client::ClientResult::Exit(code) => return Ok(code),
+            client::ClientResult::Quit => return Ok(0),
+            client::ClientResult::Exit(code) => {
+                // If another session in the same workspace is running, switch to it
+                let ws = session::workspace_name(&current);
+                let next = session::workspace_sessions(ws)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|s| format!("{}/{}", ws, s))
+                    .find(|name| name != &current && session::is_local_running(name));
+                match next {
+                    Some(next_session) => {
+                        use std::io::Write;
+                        let _ = tty.write_all(b"\x1b[H\x1b[2J");
+                        let _ = tty.flush();
+                        sidebar_state = None;
+                        current = next_session;
+                    }
+                    None => return Ok(code),
+                }
+            }
             client::ClientResult::SwitchSession(next, sb) => {
                 // Clear the physical screen between sessions so the new
                 // client's first ratatui draw is guaranteed to repaint
@@ -118,81 +135,81 @@ pub fn run(session_name: &str) -> Result<i32> {
                 sidebar_state = sb;
                 current = next;
             }
+            client::ClientResult::NewSession(command) => {
+                use std::io::Write;
+                let _ = tty.write_all(b"\x1b[H\x1b[2J");
+                let _ = tty.flush();
+
+                let ws = session::workspace_name(&current);
+                let new_session = create_sub_session(ws, &command)?;
+                sidebar_state = None;
+                current = new_session;
+            }
         }
     }
 }
 
-fn display_name_for_session(session_name: &str) -> String {
-    session::load(session_name)
-        .ok()
-        .map(|s| s.display_name().to_string())
-        .unwrap_or_else(|| session_name.to_string())
-}
-
-fn project_name_for_session(session_name: &str) -> String {
-    session::load(session_name)
-        .ok()
-        .and_then(|s| {
-            std::path::Path::new(&s.project_dir)
+/// Create a new sub-session within a workspace.
+/// Generates a session name from the command and starts the mux server.
+fn create_sub_session(workspace: &str, command: &str) -> Result<String> {
+    // Parse the command to get a basename for the session name
+    let parts: Vec<&str> = command.split_whitespace().collect();
+    let basename = parts
+        .first()
+        .map(|s| {
+            std::path::Path::new(s)
                 .file_name()
-                .map(|n| n.to_string_lossy().to_string())
+                .map(|f| f.to_string_lossy().to_string())
+                .unwrap_or_else(|| s.to_string())
         })
-        .unwrap_or_default()
-}
+        .unwrap_or_else(|| "shell".to_string());
 
-fn color_for_session(session_name: &str) -> Option<Color> {
-    let dir = session::sessions_dir().ok()?.join(session_name);
-    let s = std::fs::read_to_string(dir.join("color")).ok()?;
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    parse_color(s)
-}
+    // Sanitize the basename
+    let basename: String = basename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
 
-/// Parse a color string into a ratatui Color.
-///
-/// Supported formats:
-/// - Named: red, green, blue, yellow, cyan, magenta, white, black, darkgray/dark-gray
-/// - Hex: #rrggbb (e.g. #ff0000)
-/// - ANSI 256: a bare number (e.g. 123)
-fn parse_color(s: &str) -> Option<Color> {
-    let s = s.trim().to_lowercase();
-    // Named colors
-    match s.as_str() {
-        "red" => return Some(Color::Red),
-        "green" => return Some(Color::Green),
-        "blue" => return Some(Color::Blue),
-        "yellow" => return Some(Color::Yellow),
-        "cyan" => return Some(Color::Cyan),
-        "magenta" => return Some(Color::Magenta),
-        "white" => return Some(Color::White),
-        "black" => return Some(Color::Black),
-        "darkgray" | "dark-gray" => return Some(Color::DarkGray),
-        "lightred" | "light-red" => return Some(Color::LightRed),
-        "lightgreen" | "light-green" => return Some(Color::LightGreen),
-        "lightblue" | "light-blue" => return Some(Color::LightBlue),
-        "lightyellow" | "light-yellow" => return Some(Color::LightYellow),
-        "lightcyan" | "light-cyan" => return Some(Color::LightCyan),
-        "lightmagenta" | "light-magenta" => return Some(Color::LightMagenta),
-        "gray" => return Some(Color::Gray),
-        _ => {}
+    // Find a unique name
+    let existing = session::workspace_sessions(workspace)?;
+    let mut name = basename.clone();
+    let mut counter = 2;
+    while existing.contains(&name) {
+        name = format!("{}-{}", basename, counter);
+        counter += 1;
     }
-    // Hex color: #rrggbb
-    if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some(Color::Rgb(r, g, b));
-        }
-        return None;
-    }
-    // ANSI 256: bare number
-    if let Ok(n) = s.parse::<u8>() {
-        return Some(Color::Indexed(n));
-    }
-    None
+
+    let full_name = format!("{}/{}", workspace, name);
+
+    // Load the workspace's first session to inherit settings
+    let first_session = existing
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Workspace '{}' has no sessions.", workspace))?;
+    let parent = session::load(&format!("{}/{}", workspace, first_session))?;
+
+    // Parse command into argv
+    let cmd_parts: Vec<String> =
+        shell_words::split(command).unwrap_or_else(|_| vec![command.to_string()]);
+
+    let sess = session::Session {
+        name: full_name.clone(),
+        project_dir: parent.project_dir.clone(),
+        image: parent.image.clone(),
+        mount_path: parent.mount_path.clone(),
+        command: cmd_parts,
+        env: parent.env.clone(),
+        local: parent.local,
+        strategy: parent.strategy.clone(),
+    };
+    session::save(&sess)?;
+
+    Ok(full_name)
 }
 
 /// Single-process mode (current behavior). For cmd_exec and Docker.
@@ -222,7 +239,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         }
     }
 
-    let inner_rows = term_rows.saturating_sub(1);
+    let inner_rows = term_rows;
     if inner_rows == 0 || term_cols == 0 {
         anyhow::bail!("Terminal too small");
     }
@@ -310,9 +327,6 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         }
     });
 
-    let display_name = display_name_for_session(&config.session_name);
-    let project_name = project_name_for_session(&config.session_name);
-    let header_color = color_for_session(&config.session_name);
     let mut input_state = InputState::new(config.prefix_key);
     let mut dirty = true;
     let mut child_exited = false;
@@ -361,8 +375,8 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         InputAction::Redraw => {
                             dirty = true;
                         }
-                        InputAction::OpenSidebar => {
-                            // Sidebar not available in standalone mode
+                        InputAction::FocusSidebar | InputAction::NewSession => {
+                            // Sidebar/new session not available in standalone mode
                         }
                         InputAction::CopyToClipboard => {
                             if let Some(ref sel) = input_state.selection {
@@ -408,7 +422,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         let cols_changed = cols != last_cols;
                         last_cols = cols;
                         last_rows = rows;
-                        let new_inner = rows.saturating_sub(1);
+                        let new_inner = rows;
                         if new_inner > 0 && cols > 0 {
                             current_inner_rows = new_inner;
                             let _ = terminal::set_pty_size(&pty, new_inner, cols);
@@ -453,12 +467,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                     };
                     let params = DrawFrameParams {
                         screen,
-                        session_name: &display_name,
-                        project_name: &project_name,
                         scroll: &scroll,
-                        command_mode: input_state.command_mode,
-                        hover_close: input_state.hover_close,
-                        header_color,
                         selection: input_state.selection.as_ref(),
                     };
                     terminal::begin_sync_update(tty_fd);

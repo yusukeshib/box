@@ -15,27 +15,23 @@ pub fn home_dir() -> Result<String> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoxConfig {
     pub name: String,
-    pub label: Option<String>,
     pub project_dir: String,
     pub image: String,
     pub mount_path: String,
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub local: bool,
-    pub color: Option<String>,
     pub strategy: String,
 }
 
 pub struct BoxConfigInput {
     pub name: String,
-    pub label: Option<String>,
     pub image: Option<String>,
     pub mount_path: Option<String>,
     pub project_dir: String,
     pub command: Option<Vec<String>>,
     pub env: Vec<String>,
     pub local: bool,
-    pub color: Option<String>,
     pub strategy: Option<String>,
 }
 
@@ -67,14 +63,13 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
     if input.local {
         return Ok(BoxConfig {
             name: input.name,
-            label: input.label,
+
             project_dir: input.project_dir,
             image: String::new(),
             mount_path: String::new(),
             command,
             env: vec![],
             local: true,
-            color: input.color,
             strategy,
         });
     }
@@ -88,14 +83,12 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
 
     Ok(BoxConfig {
         name: input.name,
-        label: input.label,
         project_dir: input.project_dir,
         image,
         mount_path,
         command,
         env: input.env,
         local: false,
-        color: input.color,
         strategy,
     })
 }
@@ -213,14 +206,14 @@ mod tests {
 
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -229,14 +222,14 @@ mod tests {
             config,
             BoxConfig {
                 name: "test".to_string(),
-                label: None,
+
                 project_dir: "/home/user/myproject".to_string(),
                 image: DEFAULT_IMAGE.to_string(),
                 mount_path: "/workspace/myproject".to_string(),
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             }
         );
@@ -255,14 +248,14 @@ mod tests {
         std::env::remove_var("BOX_DEFAULT_CMD");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: Some("/custom".to_string()),
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -276,14 +269,14 @@ mod tests {
         std::env::remove_var("BOX_DEFAULT_CMD");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: Some("ubuntu:latest".to_string()),
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -299,14 +292,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_IMAGE", "ubuntu:latest");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -325,14 +318,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_IMAGE", "ubuntu:latest");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: Some("python:3.11".to_string()),
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -388,14 +381,14 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         let config = resolve(BoxConfigInput {
             name: "full".to_string(),
-            label: None,
+
             image: Some("python:3.11".to_string()),
             mount_path: Some("/app".to_string()),
             project_dir: "/home/user/project".to_string(),
             command: Some(vec!["python".to_string(), "main.py".to_string()]),
             env: vec!["FOO=bar".to_string()],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -404,14 +397,14 @@ mod tests {
             config,
             BoxConfig {
                 name: "full".to_string(),
-                label: None,
+
                 project_dir: "/home/user/project".to_string(),
                 image: "python:3.11".to_string(),
                 mount_path: "/app".to_string(),
                 command: vec!["python".to_string(), "main.py".to_string()],
                 env: vec!["FOO=bar".to_string()],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             }
         );
@@ -424,14 +417,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_CMD", "bash");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -449,14 +442,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_CMD", "bash");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: Some(vec!["sh".to_string()]),
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -474,14 +467,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_CMD", "bash -c 'echo hello'");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -506,14 +499,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_CMD", "");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -531,14 +524,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_CMD", "bash -c 'unclosed");
         let result = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         });
         assert!(result.is_err());
@@ -556,14 +549,14 @@ mod tests {
         std::env::remove_var("BOX_DEFAULT_CMD");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -580,14 +573,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_CMD", "bash");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
             local: true,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -606,14 +599,14 @@ mod tests {
         std::env::set_var("BOX_DEFAULT_CMD", "bash");
         let config = resolve(BoxConfigInput {
             name: "test".to_string(),
-            label: None,
+
             image: None,
             mount_path: None,
             project_dir: "/home/user/myproject".to_string(),
             command: Some(vec![]),
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();

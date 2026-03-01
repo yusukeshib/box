@@ -2,56 +2,28 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, execute, terminal};
 use ratatui::prelude::*;
-use ratatui::widgets::{Cell, Row, Table, TableState};
 use ratatui::{TerminalOptions, Viewport};
 use std::io;
-use std::path::PathBuf;
 
 use crate::config;
-use crate::docker;
-use crate::session::{self, SessionSummary};
-use crate::shorten_project_path;
+use crate::session;
 
 pub enum TuiAction {
-    Resume(String),
     New {
         name: String,
         image: Option<String>,
         command: Option<Vec<String>>,
         local: bool,
-        color: Option<String>,
         strategy: Option<String>,
     },
-    Cd(String),
-    Origin(String),
     Quit,
 }
 
-const COLOR_PALETTE: &[(&str, Option<Color>)] = &[
-    ("none", None),
-    ("red", Some(Color::Red)),
-    ("green", Some(Color::Green)),
-    ("blue", Some(Color::Blue)),
-    ("yellow", Some(Color::Yellow)),
-    ("cyan", Some(Color::Cyan)),
-    ("magenta", Some(Color::Magenta)),
-    ("darkgray", Some(Color::DarkGray)),
-    ("lightred", Some(Color::LightRed)),
-    ("lightgreen", Some(Color::LightGreen)),
-    ("lightblue", Some(Color::LightBlue)),
-    ("lightyellow", Some(Color::LightYellow)),
-    ("lightcyan", Some(Color::LightCyan)),
-    ("lightmagenta", Some(Color::LightMagenta)),
-];
-
 #[derive(PartialEq)]
 enum Mode {
-    Normal,
-    DeleteConfirm,
-    InputName,
-    InputImage,
-    InputCommand,
-    InputColor,
+    Name,
+    Image,
+    Command,
 }
 
 struct TextInput {
@@ -165,151 +137,10 @@ fn clear_viewport(
     Ok(())
 }
 
-fn color_name_to_ratatui(name: &str) -> Option<Color> {
-    match name {
-        "red" => Some(Color::Red),
-        "green" => Some(Color::Green),
-        "blue" => Some(Color::Blue),
-        "yellow" => Some(Color::Yellow),
-        "cyan" => Some(Color::Cyan),
-        "magenta" => Some(Color::Magenta),
-        "darkgray" => Some(Color::DarkGray),
-        "lightred" => Some(Color::LightRed),
-        "lightgreen" => Some(Color::LightGreen),
-        "lightblue" => Some(Color::LightBlue),
-        "lightyellow" => Some(Color::LightYellow),
-        "lightcyan" => Some(Color::LightCyan),
-        "lightmagenta" => Some(Color::LightMagenta),
-        _ => None,
-    }
-}
-
-const HISTORY_MAX: usize = 100;
-
-struct InputHistory {
-    entries: Vec<String>,
-    position: usize, // points past end when not navigating
-    draft: String,
-}
-
-impl InputHistory {
-    fn load(path: &PathBuf) -> Self {
-        let entries = std::fs::read_to_string(path)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect();
-        Self {
-            entries,
-            position: 0,
-            draft: String::new(),
-        }
-    }
-
-    fn save(&self, path: &PathBuf) {
-        let _ = std::fs::write(path, self.entries.join("\n") + "\n");
-    }
-
-    fn push(&mut self, entry: &str) {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            return;
-        }
-        self.entries.retain(|e| e != entry);
-        self.entries.push(entry.to_string());
-        if self.entries.len() > HISTORY_MAX {
-            self.entries.remove(0);
-        }
-    }
-
-    fn reset_position(&mut self) {
-        self.position = self.entries.len();
-        self.draft.clear();
-    }
-
-    /// Navigate up (older). Returns the entry to display, or None if empty.
-    fn up(&mut self, current_text: &str) -> Option<&str> {
-        if self.entries.is_empty() {
-            return None;
-        }
-        if self.position == self.entries.len() {
-            // Save current text as draft before navigating
-            self.draft = current_text.to_string();
-        }
-        if self.position > 0 {
-            self.position -= 1;
-        }
-        Some(&self.entries[self.position])
-    }
-
-    /// Navigate down (newer). Returns the entry to display, or the draft.
-    fn down(&mut self, _current_text: &str) -> Option<&str> {
-        if self.position >= self.entries.len() {
-            return None;
-        }
-        self.position += 1;
-        if self.position == self.entries.len() {
-            Some(&self.draft)
-        } else {
-            Some(&self.entries[self.position])
-        }
-    }
-}
-
-fn box_dir() -> Option<PathBuf> {
-    config::home_dir()
-        .ok()
-        .map(|h| PathBuf::from(h).join(".box"))
-}
-
-fn last_color_path() -> Option<PathBuf> {
-    box_dir().map(|d| d.join("last_color"))
-}
-
-fn name_history_path() -> Option<PathBuf> {
-    box_dir().map(|d| d.join("name_history"))
-}
-
-fn command_history_path() -> Option<PathBuf> {
-    box_dir().map(|d| d.join("command_history"))
-}
-
-fn load_last_color_index() -> usize {
-    let path = match last_color_path() {
-        Some(p) => p,
-        None => return 0,
-    };
-    let name = match std::fs::read_to_string(&path) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => return 0,
-    };
-    COLOR_PALETTE
-        .iter()
-        .position(|(n, _)| *n == name)
-        .unwrap_or(0)
-}
-
-fn save_last_color(index: usize) {
-    if let Some(path) = last_color_path() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&path, COLOR_PALETTE[index].0);
-    }
-}
-
-pub fn session_manager<F>(sessions: &[SessionSummary], delete_fn: F) -> Result<TuiAction>
-where
-    F: Fn(&str) -> Result<()>,
-{
-    let mut items: Vec<SessionSummary> = sessions.to_vec();
-    let home = config::home_dir().unwrap_or_default();
-    for s in &mut items {
-        s.project_dir = shorten_project_path(&s.project_dir, &home);
-    }
-    // +1 for "new session" row, +1 for header, +1 for footer
-    let viewport_height = (items.len() as u16) + 3;
+/// Minimal create-session TUI: prompts for name, (image), command.
+/// Returns `TuiAction::New` or `TuiAction::Quit`.
+pub fn create_session() -> Result<TuiAction> {
+    let viewport_height = 1;
 
     terminal::enable_raw_mode()?;
     let _guard = TermGuard;
@@ -318,307 +149,61 @@ where
         viewport: Viewport::Inline(viewport_height),
     };
     let mut terminal = Terminal::with_options(CrosstermBackend::new(io::stderr()), options)?;
-    let mut state = TableState::default();
-    state.select(Some(0));
-    // Row 0 = "new session", rows 1.. = actual sessions
-    let new_row_idx = 0;
 
-    let mut mode = Mode::Normal;
     let mut input = TextInput::new();
+    let mut mode = Mode::Name;
     let mut footer_msg = String::new();
     let mut new_name = String::new();
     let mut new_image: Option<String> = None;
     let mut new_local = false;
-    let mut new_command: Option<Vec<String>> = None;
-    let mut new_command_text = String::new();
-    let default_color_index = load_last_color_index();
-    let mut color_index: usize = default_color_index;
-    let mut name_history = name_history_path()
-        .map(|p| InputHistory::load(&p))
-        .unwrap_or_else(|| InputHistory {
-            entries: vec![],
-            position: 0,
-            draft: String::new(),
-        });
-    let mut command_history = command_history_path()
-        .map(|p| InputHistory::load(&p))
-        .unwrap_or_else(|| InputHistory {
-            entries: vec![],
-            position: 0,
-            draft: String::new(),
-        });
 
     loop {
         terminal.draw(|f| {
             let area = f.area();
-            // Reserve last row for footer
-            let table_area = Rect {
-                x: area.x,
-                y: area.y,
-                width: area.width,
-                height: area.height.saturating_sub(1),
-            };
-            let footer_area = Rect {
-                x: area.x,
-                y: area.y + area.height.saturating_sub(1),
-                width: area.width,
-                height: 1,
-            };
-
-            // Table
-            {
-                let header = Row::new([
-                    "", "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE", "CREATED",
-                ])
-                .style(Style::default().dim());
-
-                let total_rows = 1 + items.len(); // "new session" + actual sessions
-                let mut rows: Vec<Row> = Vec::with_capacity(total_rows);
-
-                // First row: "+ new session"
-                rows.push(Row::new(["", "New box...", "", "", "", "", "", ""]));
-
-                // Session rows
-                for (i, s) in items.iter().enumerate() {
-                    let session_mode = if s.local { "local" } else { "docker" };
-                    let status = if s.running { "running" } else { "" };
-                    let color_cell: Cell = if let Some(ref c) = s.color {
-                        if let Some(rc) = color_name_to_ratatui(c) {
-                            Cell::from(Span::styled("\u{2588}", Style::default().fg(rc)))
-                        } else {
-                            Cell::from("")
-                        }
-                    } else {
-                        Cell::from("")
-                    };
-                    let row = Row::new([
-                        color_cell,
-                        Cell::from(s.display_name().to_string()),
-                        Cell::from(s.project_dir.as_str()),
-                        Cell::from(session_mode),
-                        Cell::from(status),
-                        Cell::from(s.command.as_str()),
-                        Cell::from(s.image.as_str()),
-                        Cell::from(s.created_at.as_str()),
-                    ]);
-                    let row_idx = i + 1; // offset by "new session" row
-                    if mode == Mode::DeleteConfirm && state.selected() == Some(row_idx) {
-                        rows.push(row.style(Style::default().fg(Color::Red)));
-                    } else {
-                        rows.push(row);
-                    }
-                }
-
-                let name_w = items
-                    .iter()
-                    .map(|s| s.display_name().len())
-                    .max()
-                    .unwrap_or(0)
-                    .max("New box...".len())
-                    .max(4) as u16;
-                let project_w = items
-                    .iter()
-                    .map(|s| s.project_dir.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(7) as u16;
-                let mode_w = 6u16;
-                let status_w = 7u16;
-                let cmd_w = items
-                    .iter()
-                    .map(|s| s.command.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(3) as u16;
-                let image_w = items
-                    .iter()
-                    .map(|s| s.image.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(5) as u16;
-                let created_w = items
-                    .iter()
-                    .map(|s| s.created_at.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(7) as u16;
-
-                let widths = [
-                    Constraint::Length(1),
-                    Constraint::Length(name_w),
-                    Constraint::Length(project_w),
-                    Constraint::Length(mode_w),
-                    Constraint::Length(status_w),
-                    Constraint::Length(cmd_w),
-                    Constraint::Length(image_w),
-                    Constraint::Length(created_w),
-                ];
-
-                let table = Table::new(rows, widths)
-                    .header(header)
-                    .highlight_symbol("> ")
-                    .row_highlight_style(Style::default().bold());
-
-                f.render_stateful_widget(table, table_area, &mut state);
-            }
-
-            // Footer
-            let on_new_row = state.selected() == Some(new_row_idx);
-            let footer_line: Line = match &mode {
-                Mode::Normal => {
-                    if !footer_msg.is_empty() {
-                        Line::from(Span::styled(
-                            footer_msg.as_str(),
-                            Style::default().fg(Color::Red),
-                        ))
-                    } else if on_new_row || items.is_empty() {
-                        Line::from("[Enter] New  [q] Quit").style(Style::default().dim())
-                    } else {
-                        Line::from("[Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit")
-                            .style(Style::default().dim())
-                    }
-                }
-                Mode::DeleteConfirm => {
-                    let name = state
-                        .selected()
-                        .and_then(|i| items.get(i.saturating_sub(1)))
-                        .map(|s| s.display_name())
-                        .unwrap_or("");
-                    Line::from(format!("Delete '{}'? [y/n]", name)).style(Style::default().dim())
-                }
-                Mode::InputName => Line::from(input.to_spans("Session name: ")),
-                Mode::InputImage => Line::from(input.to_spans("Image: ")),
-                Mode::InputCommand => Line::from(input.to_spans("Command (optional): ")),
-                Mode::InputColor => {
-                    let (name, color) = COLOR_PALETTE[color_index];
-                    let mut spans = vec![Span::styled("Color: ", Style::default().bold())];
-                    if let Some(c) = color {
-                        spans.push(Span::styled("\u{2588} ", Style::default().fg(c)));
-                        spans.push(Span::raw(name));
-                    } else {
-                        spans.push(Span::styled("\u{2588} ", Style::default().fg(Color::White)));
-                        spans.push(Span::raw("white"));
-                    }
-                    Line::from(spans)
+            let line: Line = if !footer_msg.is_empty() {
+                Line::from(Span::styled(
+                    footer_msg.as_str(),
+                    Style::default().fg(Color::Red),
+                ))
+            } else {
+                match &mode {
+                    Mode::Name => Line::from(input.to_spans("Session name: ")),
+                    Mode::Image => Line::from(input.to_spans("Image: ")),
+                    Mode::Command => Line::from(input.to_spans("Command (optional): ")),
                 }
             };
-            f.render_widget(footer_line, footer_area);
+            f.render_widget(line, area);
         })?;
+
+        // Clear error message on next keypress
+        if !footer_msg.is_empty() {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    footer_msg.clear();
+                }
+            }
+            continue;
+        }
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
 
-            // Ctrl+C in any mode → quit
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 clear_viewport(&mut terminal, viewport_height)?;
                 return Ok(TuiAction::Quit);
             }
 
             match mode {
-                Mode::Normal => {
-                    footer_msg.clear();
-                    let total_rows = 1 + items.len(); // "new session" + sessions
-                    match key.code {
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            let i = state.selected().unwrap_or(0);
-                            let next = if i == 0 { total_rows - 1 } else { i - 1 };
-                            state.select(Some(next));
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let i = state.selected().unwrap_or(0);
-                            let next = if i >= total_rows - 1 { 0 } else { i + 1 };
-                            state.select(Some(next));
-                        }
-                        KeyCode::Enter => {
-                            if let Some(i) = state.selected() {
-                                if i == new_row_idx {
-                                    input = TextInput::new();
-                                    name_history.reset_position();
-                                    mode = Mode::InputName;
-                                } else {
-                                    let name = items[i - 1].name.clone();
-                                    clear_viewport(&mut terminal, viewport_height)?;
-                                    return Ok(TuiAction::Resume(name));
-                                }
-                            }
-                        }
-                        KeyCode::Char('c') => {
-                            if let Some(i) = state.selected() {
-                                if i != new_row_idx {
-                                    let name = items[i - 1].name.clone();
-                                    clear_viewport(&mut terminal, viewport_height)?;
-                                    return Ok(TuiAction::Cd(name));
-                                }
-                            }
-                        }
-                        KeyCode::Char('o') => {
-                            if let Some(i) = state.selected() {
-                                if i != new_row_idx {
-                                    let name = items[i - 1].name.clone();
-                                    clear_viewport(&mut terminal, viewport_height)?;
-                                    return Ok(TuiAction::Origin(name));
-                                }
-                            }
-                        }
-                        KeyCode::Char('d') => {
-                            if let Some(i) = state.selected() {
-                                if i != new_row_idx {
-                                    mode = Mode::DeleteConfirm;
-                                }
-                            }
-                        }
-                        KeyCode::Esc | KeyCode::Char('q') => {
-                            clear_viewport(&mut terminal, viewport_height)?;
-                            return Ok(TuiAction::Quit);
-                        }
-                        _ => {}
-                    }
-                }
-                Mode::DeleteConfirm => match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        if let Some(i) = state.selected() {
-                            let item_idx = i - 1; // offset for "new session" row
-                            let name = items[item_idx].name.clone();
-                            if let Err(e) = delete_fn(&name) {
-                                footer_msg = format!("Delete failed: {}", e);
-                            }
-                            // Refresh list
-                            if let Ok(mut refreshed) = session::list() {
-                                let running = docker::running_sessions();
-                                for s in &mut refreshed {
-                                    if s.local {
-                                        s.running = session::is_local_running(&s.name);
-                                    } else {
-                                        s.running = running.contains(&s.name);
-                                    }
-                                }
-                                items = refreshed;
-                            }
-                            let total_rows = 1 + items.len();
-                            if i >= total_rows {
-                                state.select(Some(total_rows - 1));
-                            }
-                        }
-                        mode = Mode::Normal;
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        mode = Mode::Normal;
-                    }
-                    _ => {}
-                },
-                Mode::InputName => match key.code {
+                Mode::Name => match key.code {
                     KeyCode::Enter => {
-                        let raw_name = input.text.trim().to_string();
-                        let name = session::normalize_name(&raw_name);
+                        let name = input.text.trim().to_string();
                         if let Err(e) = session::validate_name(&name) {
                             footer_msg = e.to_string();
-                            mode = Mode::Normal;
                             input = TextInput::new();
                         } else if session::session_exists(&name).unwrap_or(false) {
                             footer_msg = format!("Session '{}' already exists.", name);
-                            mode = Mode::Normal;
                             input = TextInput::new();
                         } else if std::env::var("BOX_MODE")
                             .map(|v| v != "docker")
@@ -629,34 +214,24 @@ where
                             new_local = true;
                             let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
                             input = TextInput::with_text(default_cmd);
-                            command_history.reset_position();
-                            mode = Mode::InputCommand;
+                            mode = Mode::Command;
                         } else {
                             new_name = name;
                             let default_image = std::env::var("BOX_DEFAULT_IMAGE")
                                 .unwrap_or_else(|_| config::DEFAULT_IMAGE.to_string());
                             input = TextInput::with_text(default_image);
-                            mode = Mode::InputImage;
+                            mode = Mode::Image;
                         }
                     }
                     KeyCode::Esc => {
-                        mode = Mode::Normal;
-                    }
-                    KeyCode::Up => {
-                        if let Some(entry) = name_history.up(&input.text) {
-                            input = TextInput::with_text(entry.to_string());
-                        }
-                    }
-                    KeyCode::Down => {
-                        if let Some(entry) = name_history.down(&input.text) {
-                            input = TextInput::with_text(entry.to_string());
-                        }
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Quit);
                     }
                     _ => {
                         input.handle_key(key.code);
                     }
                 },
-                Mode::InputImage => match key.code {
+                Mode::Image => match key.code {
                     KeyCode::Enter => {
                         let image_text = input.text.trim().to_string();
                         new_image = if image_text.is_empty() {
@@ -666,20 +241,19 @@ where
                         };
                         let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
                         input = TextInput::with_text(default_cmd);
-                        command_history.reset_position();
-                        mode = Mode::InputCommand;
+                        mode = Mode::Command;
                     }
                     KeyCode::Esc => {
-                        mode = Mode::Normal;
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Quit);
                     }
                     _ => {
                         input.handle_key(key.code);
                     }
                 },
-                Mode::InputCommand => match key.code {
+                Mode::Command => match key.code {
                     KeyCode::Enter => {
                         let cmd_text = input.text.trim().to_string();
-                        new_command_text = cmd_text.clone();
                         let command = if cmd_text.is_empty() {
                             Some(vec![])
                         } else {
@@ -687,79 +261,27 @@ where
                                 Ok(args) => Some(args),
                                 Err(e) => {
                                     footer_msg = format!("Invalid command: {e}");
-                                    mode = Mode::Normal;
                                     input = TextInput::new();
                                     continue;
                                 }
                             }
                         };
-                        new_command = command;
-                        color_index = default_color_index;
-                        mode = Mode::InputColor;
-                    }
-                    KeyCode::Esc => {
-                        mode = Mode::Normal;
-                    }
-                    KeyCode::Up => {
-                        if let Some(entry) = command_history.up(&input.text) {
-                            input = TextInput::with_text(entry.to_string());
-                        }
-                    }
-                    KeyCode::Down => {
-                        if let Some(entry) = command_history.down(&input.text) {
-                            input = TextInput::with_text(entry.to_string());
-                        }
-                    }
-                    _ => {
-                        input.handle_key(key.code);
-                    }
-                },
-                Mode::InputColor => match key.code {
-                    KeyCode::Up => {
-                        if color_index > 0 {
-                            color_index -= 1;
-                        } else {
-                            color_index = COLOR_PALETTE.len() - 1;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if color_index < COLOR_PALETTE.len() - 1 {
-                            color_index += 1;
-                        } else {
-                            color_index = 0;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        let color = if color_index == 0 {
-                            None
-                        } else {
-                            Some(COLOR_PALETTE[color_index].0.to_string())
-                        };
-                        save_last_color(color_index);
-                        name_history.push(&new_name);
-                        if let Some(p) = name_history_path() {
-                            name_history.save(&p);
-                        }
-                        if !new_command_text.is_empty() {
-                            command_history.push(&new_command_text);
-                        }
-                        if let Some(p) = command_history_path() {
-                            command_history.save(&p);
-                        }
                         clear_viewport(&mut terminal, viewport_height)?;
                         return Ok(TuiAction::New {
                             name: new_name,
                             image: new_image,
-                            command: new_command,
+                            command,
                             local: new_local,
-                            color,
                             strategy: None,
                         });
                     }
                     KeyCode::Esc => {
-                        mode = Mode::Normal;
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Quit);
                     }
-                    _ => {}
+                    _ => {
+                        input.handle_key(key.code);
+                    }
                 },
             }
         }
@@ -857,85 +379,5 @@ mod tests {
         input.handle_key(KeyCode::Char('b'));
         assert_eq!(input.text, "abc");
         assert_eq!(input.cursor, 2);
-    }
-
-    fn make_history(entries: Vec<&str>) -> InputHistory {
-        let entries: Vec<String> = entries.into_iter().map(String::from).collect();
-        let position = entries.len();
-        InputHistory {
-            entries,
-            position,
-            draft: String::new(),
-        }
-    }
-
-    #[test]
-    fn test_history_up_down() {
-        let mut h = make_history(vec!["alpha", "beta", "gamma"]);
-        assert_eq!(h.up(""), Some("gamma"));
-        assert_eq!(h.up(""), Some("beta"));
-        assert_eq!(h.up(""), Some("alpha"));
-        // Already at oldest, stays there
-        assert_eq!(h.up(""), Some("alpha"));
-        // Navigate back down
-        assert_eq!(h.down(""), Some("beta"));
-        assert_eq!(h.down(""), Some("gamma"));
-        // Past newest returns draft
-        assert_eq!(h.down(""), Some(""));
-        // Past draft returns None
-        assert_eq!(h.down(""), None);
-    }
-
-    #[test]
-    fn test_history_draft_preservation() {
-        let mut h = make_history(vec!["old"]);
-        // User is typing "new" then presses Up
-        assert_eq!(h.up("new"), Some("old"));
-        // Press Down to return to draft
-        assert_eq!(h.down("old"), Some("new"));
-    }
-
-    #[test]
-    fn test_history_empty() {
-        let mut h = make_history(vec![]);
-        assert_eq!(h.up("text"), None);
-        assert_eq!(h.down("text"), None);
-    }
-
-    #[test]
-    fn test_history_push_dedup() {
-        let mut h = make_history(vec!["alpha", "beta"]);
-        h.push("alpha"); // duplicate
-        assert_eq!(h.entries, vec!["beta", "alpha"]);
-    }
-
-    #[test]
-    fn test_history_push_empty_ignored() {
-        let mut h = make_history(vec!["alpha"]);
-        h.push("");
-        h.push("   ");
-        assert_eq!(h.entries, vec!["alpha"]);
-    }
-
-    #[test]
-    fn test_history_push_cap() {
-        let mut h = make_history(vec![]);
-        for i in 0..110 {
-            h.push(&format!("entry-{}", i));
-        }
-        assert_eq!(h.entries.len(), HISTORY_MAX);
-        assert_eq!(h.entries[0], "entry-10");
-        assert_eq!(h.entries[HISTORY_MAX - 1], "entry-109");
-    }
-
-    #[test]
-    fn test_history_reset_position() {
-        let mut h = make_history(vec!["alpha", "beta"]);
-        h.up("x");
-        h.up("x");
-        assert_eq!(h.position, 0);
-        h.reset_position();
-        assert_eq!(h.position, 2);
-        assert!(h.draft.is_empty());
     }
 }
