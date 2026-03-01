@@ -405,6 +405,7 @@ fn process_sidebar_input(
     // Handle new session input mode
     if let Some(ref mut input) = sidebar.new_session_input {
         let mut i = 0;
+        let mut needs_redraw = false;
         while i < data.len() {
             let b = data[i];
             match b {
@@ -434,23 +435,27 @@ fn process_sidebar_input(
                 // Backspace
                 0x7f | 0x08 => {
                     input.pop();
-                    return SidebarAction::Redraw;
+                    needs_redraw = true;
                 }
                 // Ctrl+U → clear input
                 0x15 => {
                     input.clear();
-                    return SidebarAction::Redraw;
+                    needs_redraw = true;
                 }
                 // Printable ASCII
                 0x20..=0x7e => {
                     input.push(b as char);
-                    return SidebarAction::Redraw;
+                    needs_redraw = true;
                 }
                 _ => {}
             }
             i += 1;
         }
-        return SidebarAction::None;
+        return if needs_redraw {
+            SidebarAction::Redraw
+        } else {
+            SidebarAction::None
+        };
     }
 
     let mut i = 0;
