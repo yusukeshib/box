@@ -202,7 +202,6 @@ fn draw_command_bar(
     area: Rect,
     sidebar: &SidebarState,
     command_mode: bool,
-    stopped: bool,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -235,8 +234,6 @@ fn draw_command_bar(
             ("N", key_style),
             (" New session", bar_style),
         ]
-    } else if stopped {
-        vec![(" [stopped]", bar_style)]
     } else {
         vec![(" Ctrl+P to enter command mode", bar_style)]
     };
@@ -780,6 +777,8 @@ pub fn view_history(
     let history_data = std::fs::read(&history_path).unwrap_or_default();
     let mut parser = vt100::Parser::new(inner_rows, content_cols, super::SCROLLBACK_LINES);
     parser.process(&history_data);
+    // Append a dimmed [stopped] indicator at the end of the buffer
+    parser.process(b"\r\n\x1b[2m[stopped]\x1b[0m");
 
     let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
 
@@ -1132,7 +1131,7 @@ pub fn view_history(
                             };
                             draw_sidebar(f, &sidebar, sb_area);
                             terminal::draw_frame(f, &params, right_area);
-                            draw_command_bar(f, bar_area, &sidebar, input_state.command_mode, true);
+                            draw_command_bar(f, bar_area, &sidebar, input_state.command_mode);
                         })
                         .context("Failed to draw terminal frame")?;
                     {
@@ -1659,13 +1658,7 @@ pub fn run(
                             };
                             draw_sidebar(f, &sidebar, sb_area);
                             terminal::draw_frame(f, &params, right_area);
-                            draw_command_bar(
-                                f,
-                                bar_area,
-                                &sidebar,
-                                input_state.command_mode,
-                                false,
-                            );
+                            draw_command_bar(f, bar_area, &sidebar, input_state.command_mode);
                         })
                         .context("Failed to draw terminal frame")?;
                     {
