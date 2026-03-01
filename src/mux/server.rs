@@ -187,6 +187,15 @@ pub fn run(session_name: &str) -> Result<()> {
         match event {
             Ok(ServerEvent::PtyOutput(data)) => {
                 parser.process(&data);
+                // Respond to DSR (Device Status Report) cursor position
+                // queries.  Programs like atuin send \x1b[6n and expect the
+                // terminal to reply with \x1b[row;colR.  Since the mux
+                // server owns the vt100 parser, it must answer.
+                if data.windows(4).any(|w| w == b"\x1b[6n") {
+                    let (row, col) = parser.screen().cursor_position();
+                    let response = format!("\x1b[{};{}R", row + 1, col + 1);
+                    let _ = terminal::write_bytes_to_pty(&pty, response.as_bytes());
+                }
                 // Accumulate raw output for scrollback replay
                 history.extend(data.iter().copied());
                 if history.len() > MAX_HISTORY_BYTES {
