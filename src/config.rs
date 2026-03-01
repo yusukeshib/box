@@ -3,6 +3,33 @@ use serde::Deserialize;
 
 pub const DEFAULT_IMAGE: &str = "alpine:latest";
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Strategy {
+    Clone,
+    Worktree,
+}
+
+impl std::fmt::Display for Strategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Strategy::Clone => write!(f, "clone"),
+            Strategy::Worktree => write!(f, "worktree"),
+        }
+    }
+}
+
+impl std::str::FromStr for Strategy {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "clone" => Ok(Strategy::Clone),
+            "worktree" => Ok(Strategy::Worktree),
+            _ => bail!("Invalid strategy '{}'. Must be 'clone' or 'worktree'.", s),
+        }
+    }
+}
+
 /// Return the user's home directory from the HOME environment variable.
 /// Returns an error if HOME is not set or is empty.
 pub fn home_dir() -> Result<String> {
@@ -21,7 +48,7 @@ pub struct BoxConfig {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub local: bool,
-    pub strategy: String,
+    pub strategy: Strategy,
 }
 
 pub struct BoxConfigInput {
@@ -32,7 +59,7 @@ pub struct BoxConfigInput {
     pub command: Option<Vec<String>>,
     pub env: Vec<String>,
     pub local: bool,
-    pub strategy: Option<String>,
+    pub strategy: Option<Strategy>,
 }
 
 fn resolve_command(command: Option<Vec<String>>) -> Result<Vec<String>> {
@@ -46,13 +73,16 @@ fn resolve_command(command: Option<Vec<String>>) -> Result<Vec<String>> {
     }
 }
 
-fn resolve_strategy(strategy: Option<String>) -> Result<String> {
-    let s = strategy
-        .or_else(|| std::env::var("BOX_STRATEGY").ok().filter(|v| !v.is_empty()))
-        .unwrap_or_else(|| "clone".to_string());
-    match s.as_str() {
-        "clone" | "worktree" => Ok(s),
-        _ => bail!("Invalid strategy '{}'. Must be 'clone' or 'worktree'.", s),
+fn resolve_strategy(strategy: Option<Strategy>) -> Result<Strategy> {
+    match strategy {
+        Some(s) => Ok(s),
+        None => {
+            let env_val = std::env::var("BOX_STRATEGY").ok().filter(|v| !v.is_empty());
+            match env_val {
+                Some(s) => s.parse(),
+                None => Ok(Strategy::Clone),
+            }
+        }
     }
 }
 
@@ -126,9 +156,9 @@ fn parse_prefix_key(s: &str) -> Option<u8> {
 /// Returns the default (Ctrl+P = 0x10) if the file doesn't exist or the key
 /// is not set / invalid.
 pub fn load_mux_prefix_key() -> u8 {
-    let home = match std::env::var("HOME") {
-        Ok(h) if !h.is_empty() => h,
-        _ => return DEFAULT_PREFIX_KEY,
+    let home = match home_dir() {
+        Ok(h) => h,
+        Err(_) => return DEFAULT_PREFIX_KEY,
     };
     let path = std::path::Path::new(&home)
         .join(".config")
@@ -230,7 +260,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: Strategy::Clone,
             }
         );
 
@@ -405,7 +435,7 @@ mod tests {
                 env: vec!["FOO=bar".to_string()],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: Strategy::Clone,
             }
         );
     }

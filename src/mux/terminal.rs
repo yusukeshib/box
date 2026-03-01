@@ -126,10 +126,7 @@ impl<'a> Widget for TerminalWidget<'a> {
 
                 if let Some(sel) = self.selection {
                     if sel.contains(y as u16, x as u16) {
-                        style = style
-                            .fg(Color::White)
-                            .bg(Color::DarkGray)
-                            .remove_modifier(Modifier::REVERSED);
+                        style = style.add_modifier(Modifier::REVERSED);
                     }
                 }
 
@@ -324,8 +321,8 @@ pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) 
         let thumb_y_start = max_thumb_top - thumb_top;
 
         let scrollbar_x = grid_area.x + grid_area.width.saturating_sub(1);
-        let track_style = Style::default().fg(Color::DarkGray).bg(Color::Black);
-        let thumb_style = Style::default().fg(Color::White).bg(Color::White);
+        let track_style = Style::default().add_modifier(Modifier::DIM);
+        let thumb_style = Style::default();
 
         for row in 0..track_height {
             let y = grid_area.y + row as u16;
@@ -796,7 +793,14 @@ fn tty_write(tty_fd: i32, data: &[u8]) {
                 data.len() - offset,
             )
         };
-        if n <= 0 {
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue; // retry on EINTR
+            }
+            break;
+        }
+        if n == 0 {
             break;
         }
         offset += n as usize;
@@ -890,7 +894,13 @@ pub fn extract_selection_text(screen: &vt100::Screen, selection: &Selection) -> 
 }
 
 /// Install a panic hook that restores terminal state.
+/// Guarded by `Once` so multiple calls (e.g. standalone + client paths) are safe.
 pub fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(install_panic_hook_inner);
+}
+
+fn install_panic_hook_inner() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Ok(mut tty) = std::fs::OpenOptions::new()
