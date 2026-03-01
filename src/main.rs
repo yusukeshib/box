@@ -201,15 +201,21 @@ fn main() {
                     } else {
                         Some(args.cmd)
                     };
-                    cmd_create(
-                        &name,
-                        args.image,
-                        &docker_args,
-                        cmd,
-                        args.detach,
-                        local,
-                        args.strategy,
-                    )
+                    let strategy = args
+                        .strategy
+                        .map(|s| s.parse::<config::Strategy>())
+                        .transpose();
+                    strategy.and_then(|strategy| {
+                        cmd_create(
+                            &name,
+                            args.image,
+                            &docker_args,
+                            cmd,
+                            args.detach,
+                            local,
+                            strategy,
+                        )
+                    })
                 }
             }
         }
@@ -409,7 +415,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         sessions.retain(|s| s.running);
     }
     if args.stopped {
-        sessions.retain(|s| !s.running && !s.local);
+        sessions.retain(|s| !s.running);
     }
     if args.project {
         let cwd = std::env::current_dir()?;
@@ -493,7 +499,7 @@ fn cmd_create(
     cmd: Option<Vec<String>>,
     detach: bool,
     local: bool,
-    strategy: Option<String>,
+    strategy: Option<config::Strategy>,
 ) -> Result<i32> {
     session::validate_name(name)?;
 
@@ -698,7 +704,7 @@ fn cmd_remove(name: &str, force: bool) -> Result<i32> {
             bail!("Workspace '{}' not found.", ws);
         }
         let ws_sessions = session::workspace_sessions(ws)?;
-        let mut strategy = String::from("clone");
+        let mut strategy = config::Strategy::Clone;
         let mut project_dir = String::new();
 
         // Check all sessions are stopped (or stop them if --force)

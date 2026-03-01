@@ -796,7 +796,14 @@ fn tty_write(tty_fd: i32, data: &[u8]) {
                 data.len() - offset,
             )
         };
-        if n <= 0 {
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue; // retry on EINTR
+            }
+            break;
+        }
+        if n == 0 {
             break;
         }
         offset += n as usize;
@@ -890,7 +897,13 @@ pub fn extract_selection_text(screen: &vt100::Screen, selection: &Selection) -> 
 }
 
 /// Install a panic hook that restores terminal state.
+/// Guarded by `Once` so multiple calls (e.g. standalone + client paths) are safe.
 pub fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(install_panic_hook_inner);
+}
+
+fn install_panic_hook_inner() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         if let Ok(mut tty) = std::fs::OpenOptions::new()

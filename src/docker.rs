@@ -13,11 +13,11 @@ pub fn ensure_workspace(
     home: &str,
     name: &str,
     project_dir: &str,
-    strategy: &str,
+    strategy: &crate::config::Strategy,
 ) -> Result<String> {
     match strategy {
-        "worktree" => ensure_workspace_worktree(home, name, project_dir),
-        _ => ensure_workspace_clone(home, name, project_dir),
+        crate::config::Strategy::Worktree => ensure_workspace_worktree(home, name, project_dir),
+        crate::config::Strategy::Clone => ensure_workspace_clone(home, name, project_dir),
     }
 }
 
@@ -96,10 +96,10 @@ fn ensure_workspace_worktree(home: &str, name: &str, project_dir: &str) -> Resul
 }
 
 /// Remove the workspace for a session. Dispatches based on strategy.
-pub fn remove_workspace(name: &str, strategy: &str) {
+pub fn remove_workspace(name: &str, strategy: &crate::config::Strategy) {
     match strategy {
-        "worktree" => remove_workspace_worktree(name),
-        _ => remove_workspace_clone(name),
+        crate::config::Strategy::Worktree => remove_workspace_worktree(name),
+        crate::config::Strategy::Clone => remove_workspace_clone(name),
     }
 }
 
@@ -157,7 +157,7 @@ pub struct DockerRunConfig<'a> {
     pub home: &'a str,
     pub docker_args: Option<&'a str>,
     pub detach: bool,
-    pub strategy: &'a str,
+    pub strategy: &'a crate::config::Strategy,
 }
 
 /// Build the docker run argument list without executing. Used by run_container and tests.
@@ -278,7 +278,7 @@ pub fn container_is_running(name: &str) -> bool {
 /// Container names are `box-workspace-session` format; maps back to `workspace/session`.
 pub fn running_sessions() -> std::collections::HashSet<String> {
     let output = Command::new("docker")
-        .args(["ps", "--filter", "name=box-", "--format", "{{.Names}}"])
+        .args(["ps", "--filter", "name=^box-", "--format", "{{.Names}}"])
         .stderr(std::process::Stdio::null())
         .output();
     match output {
@@ -394,7 +394,7 @@ mod tests {
             home: "/home/user",
             docker_args: None,
             detach: false,
-            strategy: "clone",
+            strategy: &crate::config::Strategy::Clone,
         }
     }
 
