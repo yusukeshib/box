@@ -10,7 +10,7 @@ use super::terminal::{
     self, extract_selection_text, scrollback_line_count, write_osc52_clipboard, DrawFrameParams,
     InputAction, InputState, ScrollState,
 };
-use crate::session;
+use crate::{docker, session};
 
 pub enum ClientResult {
     /// Session process exited (may fall through to another session)
@@ -52,6 +52,29 @@ enum ClientEvent {
     ServerMsg(ServerMsg),
     InputBytes(Vec<u8>),
     ServerDisconnected,
+}
+
+/// Delete a session: stop if running, remove container and session directory.
+/// If the workspace becomes empty, remove it too.
+fn delete_session(name: &str) {
+    let sess = match session::load(name) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    if sess.local {
+        if session::is_local_running(name) {
+            let _ = super::send_kill(name);
+        }
+    } else {
+        docker::remove_container(name);
+    }
+    let _ = session::remove_dir(name);
+    let ws = session::workspace_name(name);
+    let remaining = session::workspace_sessions(ws).unwrap_or_default();
+    if remaining.is_empty() {
+        docker::remove_workspace(ws, &sess.strategy);
+        let _ = session::remove_workspace_dir(ws);
+    }
 }
 
 /// Build the sidebar session list with workspace grouping.
@@ -187,8 +210,10 @@ fn draw_sidebar(
                     } else {
                         Style::default().bg(Color::Indexed(238)).fg(Color::White)
                     }
-                } else {
+                } else if entry.running {
                     Style::default().bg(Color::Black).fg(Color::White)
+                } else {
+                    Style::default().bg(Color::Black).fg(Color::DarkGray)
                 };
                 (line, style)
             }
@@ -212,6 +237,24 @@ fn draw_sidebar(
                 let cell = &mut buf[(x, row_y)];
                 cell.set_symbol(&ch.to_string());
                 cell.set_style(style);
+            }
+        }
+
+        // Draw "x" button for session entries
+        if entry.kind == SidebarEntryKind::Session {
+            let x_pos = area.x + content_width - 2;
+            if x_pos < buf.area().width && row_y < buf.area().height {
+                let is_current = entry.full_name == _current_session;
+                let x_style = if is_current {
+                    Style::default().bg(Color::Indexed(238)).fg(Color::Black)
+                } else if is_selected && focused {
+                    Style::default().bg(Color::White).fg(Color::DarkGray)
+                } else {
+                    Style::default().bg(Color::Black).fg(Color::DarkGray)
+                };
+                let cell = &mut buf[(x_pos, row_y)];
+                cell.set_symbol("x");
+                cell.set_style(x_style);
             }
         }
     }
@@ -268,6 +311,8 @@ enum SidebarAction {
     },
     /// Create a new session with the given command
     NewSession(String),
+    /// Delete a stopped session
+    DeleteSession(String),
     /// Return focus to the main pane
     Unfocus,
     Redraw,
@@ -410,6 +455,15 @@ fn process_sidebar_input(
             i += 1;
             continue;
         }
+        // x → delete selected session
+        if b == b'x' {
+            let entry = &sidebar.entries[sidebar.selected];
+            if entry.kind == SidebarEntryKind::Session && entry.full_name != current_session {
+                return SidebarAction::DeleteSession(entry.full_name.clone());
+            }
+            i += 1;
+            continue;
+        }
         // Enter → switch to selected session and unfocus
         if b == b'\r' || b == b'\n' {
             let entry = &sidebar.entries[sidebar.selected];
@@ -474,6 +528,21 @@ fn parse_sidebar_mouse(
                         if entry.kind == SidebarEntryKind::WorkspaceHeader {
                             return Some((SidebarAction::None, consumed));
                         }
+
+                        // Click on "x" button (last 2 chars before border)
+                        let content_width = sb_width.saturating_sub(1);
+                        let x_col = content_width; // 1-indexed col of the "x"
+                        if col >= x_col.saturating_sub(1)
+                            && col <= x_col
+                            && entry.full_name != current_session
+                        {
+                            sidebar.selected = entry_idx;
+                            return Some((
+                                SidebarAction::DeleteSession(entry.full_name.clone()),
+                                consumed,
+                            ));
+                        }
+
                         if entry.full_name == current_session {
                             return Some((SidebarAction::None, consumed));
                         }
@@ -692,6 +761,13 @@ pub fn run(
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::NewSession(cmd));
                         }
+                        SidebarAction::DeleteSession(name) => {
+                            delete_session(&name);
+                            let (entries, selected) = build_sidebar_entries(session_name);
+                            sidebar.entries = entries;
+                            sidebar.selected = selected;
+                            dirty = true;
+                        }
                         SidebarAction::Unfocus | SidebarAction::Redraw => {
                             dirty = true;
                         }
@@ -745,6 +821,13 @@ pub fn run(
                         SidebarAction::NewSession(cmd) => {
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::NewSession(cmd));
+                        }
+                        SidebarAction::DeleteSession(name) => {
+                            delete_session(&name);
+                            let (entries, selected) = build_sidebar_entries(session_name);
+                            sidebar.entries = entries;
+                            sidebar.selected = selected;
+                            dirty = true;
                         }
                         SidebarAction::Unfocus | SidebarAction::Redraw => {
                             dirty = true;
