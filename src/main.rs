@@ -113,6 +113,9 @@ struct ResumeArgs {
 struct RemoveArgs {
     /// Session name
     name: String,
+    /// Stop running sessions before removing
+    #[arg(short, long)]
+    force: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -224,7 +227,7 @@ fn main() {
                 .unwrap_or_default();
             cmd_resume(&args.name, &docker_args, args.detach)
         }
-        Some(Commands::Remove(args)) => cmd_remove(&args.name),
+        Some(Commands::Remove(args)) => cmd_remove(&args.name, args.force),
         Some(Commands::Stop(args)) => cmd_stop(&args.name),
         Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
         Some(Commands::List(args)) => cmd_list_sessions(&args),
@@ -684,7 +687,7 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
     }
 }
 
-fn cmd_remove(name: &str) -> Result<i32> {
+fn cmd_remove(name: &str, force: bool) -> Result<i32> {
     session::validate_name(name)?;
 
     // If no '/' in name, remove entire workspace (all sessions)
@@ -697,7 +700,7 @@ fn cmd_remove(name: &str) -> Result<i32> {
         let mut strategy = String::from("clone");
         let mut project_dir = String::new();
 
-        // Check all sessions are stopped
+        // Check all sessions are stopped (or stop them if --force)
         for sess_name in &ws_sessions {
             let full = format!("{}/{}", ws, sess_name);
             let sess = session::load(&full)?;
@@ -707,20 +710,30 @@ fn cmd_remove(name: &str) -> Result<i32> {
             }
             if sess.local {
                 if session::is_local_running(&full) {
-                    bail!(
-                        "Session '{}' is still running. Stop it first with `box stop {}`.",
-                        full,
-                        full
-                    );
+                    if force {
+                        mux::send_kill(&full)?;
+                        println!("Session '{}' stopped.", full);
+                    } else {
+                        bail!(
+                            "Session '{}' is still running. Stop it first with `box stop {}`.",
+                            full,
+                            full
+                        );
+                    }
                 }
             } else {
                 docker::check()?;
                 if docker::container_is_running(&full) {
-                    bail!(
-                        "Session '{}' is still running. Stop it first with `box stop {}`.",
-                        full,
-                        full
-                    );
+                    if force {
+                        docker::stop_container(&full)?;
+                        println!("Session '{}' stopped.", full);
+                    } else {
+                        bail!(
+                            "Session '{}' is still running. Stop it first with `box stop {}`.",
+                            full,
+                            full
+                        );
+                    }
                 }
             }
         }
@@ -760,11 +773,16 @@ fn cmd_remove(name: &str) -> Result<i32> {
 
     if sess.local {
         if session::is_local_running(&full) {
-            bail!(
-                "Session '{}' is still running. Stop it first with `box stop {}`.",
-                full,
-                full
-            );
+            if force {
+                mux::send_kill(&full)?;
+                println!("Session '{}' stopped.", full);
+            } else {
+                bail!(
+                    "Session '{}' is still running. Stop it first with `box stop {}`.",
+                    full,
+                    full
+                );
+            }
         }
         session::remove_dir(&full)?;
         // If last session in workspace, remove workspace too
@@ -781,11 +799,16 @@ fn cmd_remove(name: &str) -> Result<i32> {
     docker::check()?;
 
     if docker::container_is_running(&full) {
-        bail!(
-            "Session '{}' is still running. Stop it first with `box stop {}`.",
-            full,
-            full
-        );
+        if force {
+            docker::stop_container(&full)?;
+            println!("Session '{}' stopped.", full);
+        } else {
+            bail!(
+                "Session '{}' is still running. Stop it first with `box stop {}`.",
+                full,
+                full
+            );
+        }
     }
 
     docker::remove_container(&full);
@@ -1460,9 +1483,33 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_rejects_flags() {
+    fn test_remove_rejects_unknown_flags() {
         let result = try_parse(&["remove", "my-session", "-d"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_force_flag() {
+        let cli = parse(&["remove", "--force", "my-session"]);
+        match cli.command {
+            Some(Commands::Remove(args)) => {
+                assert_eq!(args.name, "my-session");
+                assert!(args.force);
+            }
+            other => panic!("expected Remove, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_remove_short_force_flag() {
+        let cli = parse(&["remove", "-f", "my-session"]);
+        match cli.command {
+            Some(Commands::Remove(args)) => {
+                assert_eq!(args.name, "my-session");
+                assert!(args.force);
+            }
+            other => panic!("expected Remove, got {:?}", other),
+        }
     }
 
     // -- stop subcommand --
