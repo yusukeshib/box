@@ -194,7 +194,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, comm
         let (line, style) = match entry.kind {
             SidebarEntryKind::WorkspaceHeader => {
                 let line = format!(" {}", entry.display);
-                let style = Style::default().bg(Color::Black).fg(Color::Indexed(238));
+                let style = Style::default().bg(Color::Black).fg(Color::Indexed(245));
                 (line, style)
             }
             SidebarEntryKind::Session => {
