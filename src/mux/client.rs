@@ -355,10 +355,9 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, comm
 /// Process raw input bytes when the sidebar is open.
 /// Returns Some(action) if the sidebar produces a result, None to keep it open.
 enum SidebarAction {
-    /// Switch to another session. `keep_sidebar` = true keeps sidebar open (keyboard nav).
+    /// Switch to another session.
     Switch {
         name: String,
-        keep_sidebar: bool,
     },
     /// Create a new session with the given command
     NewSession(String),
@@ -580,7 +579,6 @@ fn process_sidebar_input(
                 sidebar.focused = false;
                 return SidebarAction::Switch {
                     name: entry.full_name.clone(),
-                    keep_sidebar: true,
                 };
             }
             // If current session or not switchable, just unfocus
@@ -662,7 +660,6 @@ fn parse_sidebar_mouse(
                         return Some((
                             SidebarAction::Switch {
                                 name: entry.full_name.clone(),
-                                keep_sidebar: false,
                             },
                             consumed,
                         ));
@@ -816,9 +813,6 @@ pub fn run(
     });
 
     let mut dirty = true;
-    // Deferred session switch — set by sidebar Switch action so we repaint
-    // (showing the updated selection highlight) before actually switching.
-    let mut pending_switch: Option<(String, bool)> = None;
     let mut last_sidebar_refresh = std::time::Instant::now();
 
     let mut last_cols = term_cols;
@@ -864,12 +858,12 @@ pub fn run(
                 // or mouse in sidebar area)
                 if sidebar.focused || sidebar.new_session_input.is_some() {
                     match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
-                        SidebarAction::Switch {
-                            name: next,
-                            keep_sidebar,
-                        } => {
-                            pending_switch = Some((next, keep_sidebar));
-                            dirty = true;
+                        SidebarAction::Switch { name: next } => {
+                            // Return immediately — the new session will
+                            // inherit the sidebar state and draw its own
+                            // first frame with the correct content.
+                            unsafe { libc::close(tty_input_fd) };
+                            return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
                         }
                         SidebarAction::NewSession(cmd) => {
                             unsafe { libc::close(tty_input_fd) };
@@ -937,12 +931,9 @@ pub fn run(
 
                 if is_sidebar_mouse {
                     match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
-                        SidebarAction::Switch {
-                            name: next,
-                            keep_sidebar,
-                        } => {
-                            pending_switch = Some((next, keep_sidebar));
-                            dirty = true;
+                        SidebarAction::Switch { name: next } => {
+                            unsafe { libc::close(tty_input_fd) };
+                            return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
                         }
                         SidebarAction::NewSession(cmd) => {
                             unsafe { libc::close(tty_input_fd) };
@@ -1168,14 +1159,6 @@ pub fn run(
                     }
                     parser.set_scrollback(0);
                     dirty = false;
-
-                    // Process deferred switch after repaint so the user
-                    // sees the updated selection highlight.
-                    if let Some((next, _keep_sidebar)) = pending_switch.take() {
-                        unsafe { libc::close(tty_input_fd) };
-                        // Always pass sidebar state to the next session
-                        return Ok(ClientResult::SwitchSession(next, Some(sidebar)));
-                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {

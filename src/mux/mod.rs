@@ -115,6 +115,7 @@ pub fn run(session_name: &str) -> Result<i32> {
                     .find(|name| name != &current && session::is_local_running(name));
                 match next {
                     Some(next_session) => {
+                        terminal::set_mouse_tracking(tty_fd, false);
                         use std::io::Write;
                         let _ = tty.write_all(b"\x1b[H\x1b[2J");
                         let _ = tty.flush();
@@ -125,10 +126,10 @@ pub fn run(session_name: &str) -> Result<i32> {
                 }
             }
             client::ClientResult::SwitchSession(next, sb) => {
-                // Clear the physical screen between sessions so the new
-                // client's first ratatui draw is guaranteed to repaint
-                // everything (ratatui diffs against its empty internal
-                // buffer and sees every cell as changed).
+                // Disable mouse tracking before clearing the screen so no
+                // stale motion events queue up during the switch.  The new
+                // client will re-enable tracking on its first draw.
+                terminal::set_mouse_tracking(tty_fd, false);
                 use std::io::Write;
                 let _ = tty.write_all(b"\x1b[H\x1b[2J");
                 let _ = tty.flush();
@@ -136,6 +137,7 @@ pub fn run(session_name: &str) -> Result<i32> {
                 current = next;
             }
             client::ClientResult::NewSession(command) => {
+                terminal::set_mouse_tracking(tty_fd, false);
                 use std::io::Write;
                 let _ = tty.write_all(b"\x1b[H\x1b[2J");
                 let _ = tty.flush();
