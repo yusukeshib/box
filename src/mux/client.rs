@@ -167,8 +167,86 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
     w as u16
 }
 
+/// Draw the global command bar at the bottom of the screen (like nvim's command line).
+fn draw_command_bar(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    sidebar: &SidebarState,
+    command_mode: bool,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let buf = f.buffer_mut();
+    let bar_style = Style::default()
+        .bg(Color::Indexed(236))
+        .fg(Color::Indexed(245));
+
+    // Fill the entire bar with background
+    for x in area.x..area.x + area.width {
+        if x < buf.area().width && area.y < buf.area().height {
+            let cell = &mut buf[(x, area.y)];
+            cell.set_symbol(" ");
+            cell.set_style(bar_style);
+        }
+    }
+
+    // Determine content as styled spans: (text, style) pairs
+    let key_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
+    let input_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
+    let spans: Vec<(&str, Style)> = if sidebar.new_session_input.is_some() {
+        // Built below from formatted string
+        vec![]
+    } else if command_mode {
+        vec![
+            (" Q", key_style),
+            (" Quit  ", bar_style),
+            ("P", key_style),
+            (" Focus sidebar  ", bar_style),
+            ("N", key_style),
+            (" New session", bar_style),
+        ]
+    } else {
+        vec![(" Ctrl+P to enter command mode", bar_style)]
+    };
+
+    // For input mode, build the formatted string separately
+    let input_text;
+    let spans: Vec<(&str, Style)> = if let Some(ref input) = sidebar.new_session_input {
+        input_text = format!(" Enter command name: {}", input);
+        vec![(&input_text, input_style)]
+    } else {
+        spans
+    };
+
+    let mut col = 0u16;
+    for (text, style) in &spans {
+        for ch in text.chars() {
+            let x = area.x + col;
+            if x >= area.x + area.width {
+                break;
+            }
+            if x < buf.area().width && area.y < buf.area().height {
+                let cell = &mut buf[(x, area.y)];
+                cell.set_symbol(&ch.to_string());
+                cell.set_style(*style);
+            }
+            col += 1;
+        }
+    }
+    let text_len = col;
+
+    // Show cursor at end of input when in input mode
+    if sidebar.new_session_input.is_some() {
+        let cursor_x = area.x + text_len;
+        if cursor_x < area.x + area.width {
+            f.set_cursor_position((cursor_x, area.y));
+        }
+    }
+}
+
 /// Draw the sidebar as a full-height left panel with grouped workspace headers.
-fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, command_mode: bool) {
+fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -282,58 +360,6 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, comm
                 let cell = &mut buf[(x_pos, row_y)];
                 cell.set_symbol("x");
                 cell.set_style(x_style);
-            }
-        }
-    }
-
-    // Draw new session input at the bottom if active
-    if let Some(ref input) = sidebar.new_session_input {
-        let row_y = area.y + area.height - 1;
-        if row_y < buf.area().height {
-            let input_style = Style::default().bg(Color::DarkGray).fg(Color::White);
-            // Fill the row
-            for x in area.x..area.x + content_width {
-                if x < buf.area().width {
-                    let cell = &mut buf[(x, row_y)];
-                    cell.set_symbol(" ");
-                    cell.set_style(input_style);
-                }
-            }
-            let prompt = format!(" $ {}", input);
-            for (col, ch) in prompt.chars().enumerate() {
-                let x = area.x + col as u16;
-                if x >= area.x + content_width {
-                    break;
-                }
-                if x < buf.area().width {
-                    let cell = &mut buf[(x, row_y)];
-                    cell.set_symbol(&ch.to_string());
-                    cell.set_style(input_style);
-                }
-            }
-        }
-    }
-
-    // Draw hint at the bottom when not in input mode
-    if sidebar.new_session_input.is_none() {
-        let row_y = area.y + area.height - 1;
-        if row_y < buf.area().height {
-            let hint = if command_mode {
-                " Q Quit  A List  N New"
-            } else {
-                " ^P …"
-            };
-            let hint_style = Style::default().bg(Color::Black).fg(Color::Indexed(238));
-            for (col, ch) in hint.chars().enumerate() {
-                let x = area.x + col as u16;
-                if x >= area.x + content_width {
-                    break;
-                }
-                if x < buf.area().width {
-                    let cell = &mut buf[(x, row_y)];
-                    cell.set_symbol(&ch.to_string());
-                    cell.set_style(hint_style);
-                }
             }
         }
     }
@@ -703,7 +729,7 @@ pub fn run(
 ) -> Result<ClientResult> {
     let (term_cols, term_rows) = terminal::get_term_size(tty_fd)?;
 
-    let inner_rows = term_rows;
+    let inner_rows = term_rows.saturating_sub(1); // reserve 1 row for command bar
     if inner_rows == 0 || term_cols == 0 {
         anyhow::bail!("Terminal too small");
     }
@@ -1095,7 +1121,7 @@ pub fn run(
                         let cols_changed = cols != last_cols;
                         last_cols = cols;
                         last_rows = rows;
-                        let new_inner = rows;
+                        let new_inner = rows.saturating_sub(1); // reserve 1 row for command bar
                         let sb_w = sidebar_width(&sidebar.entries);
                         let content_cols = cols.saturating_sub(sb_w);
                         if new_inner > 0 && content_cols > 0 {
@@ -1153,22 +1179,30 @@ pub fn run(
                     terminal
                         .draw(|f| {
                             let full = f.area();
+                            let body_height = full.height.saturating_sub(1);
                             let sb_width = sb_w.min(full.width);
                             let right_width = full.width.saturating_sub(sb_width);
                             let sb_area = Rect {
                                 x: full.x,
                                 y: full.y,
                                 width: sb_width,
-                                height: full.height,
+                                height: body_height,
                             };
                             let right_area = Rect {
                                 x: full.x + sb_width,
                                 y: full.y,
                                 width: right_width,
-                                height: full.height,
+                                height: body_height,
                             };
-                            draw_sidebar(f, &sidebar, sb_area, input_state.command_mode);
+                            let bar_area = Rect {
+                                x: full.x,
+                                y: full.y + body_height,
+                                width: full.width,
+                                height: 1,
+                            };
+                            draw_sidebar(f, &sidebar, sb_area);
                             terminal::draw_frame(f, &params, right_area);
+                            draw_command_bar(f, bar_area, &sidebar, input_state.command_mode);
                         })
                         .context("Failed to draw terminal frame")?;
                     {
