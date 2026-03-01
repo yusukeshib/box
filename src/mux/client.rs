@@ -687,8 +687,7 @@ fn parse_sidebar_mouse(
                             let content_width = sb_width.saturating_sub(1);
                             let plus_col = content_width;
                             if col >= plus_col.saturating_sub(1) && col <= plus_col {
-                                sidebar.new_session_input =
-                                Some(default_new_session_cmd(sidebar));
+                                sidebar.new_session_input = Some(default_new_session_cmd(sidebar));
                                 return Some((SidebarAction::Redraw, consumed));
                             }
                             return Some((SidebarAction::None, consumed));
@@ -1061,8 +1060,7 @@ pub fn run(
                             dirty = true;
                         }
                         InputAction::NewSession => {
-                            sidebar.new_session_input =
-                                Some(default_new_session_cmd(&sidebar));
+                            sidebar.new_session_input = Some(default_new_session_cmd(&sidebar));
                             dirty = true;
                         }
                         InputAction::CopyToClipboard => {

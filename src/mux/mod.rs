@@ -170,7 +170,9 @@ fn create_sub_session(workspace: &str, command: &str) -> Result<String> {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .ok_or_else(|| {
-                    anyhow::anyhow!("No command specified. Set $BOX_DEFAULT_CMD for Docker sessions.")
+                    anyhow::anyhow!(
+                        "No command specified. Set $BOX_DEFAULT_CMD for Docker sessions."
+                    )
                 })?
         }
     } else {
