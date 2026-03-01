@@ -2,18 +2,14 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::{cursor, execute, terminal};
 use ratatui::prelude::*;
-use ratatui::widgets::{Cell, Row, Table, TableState};
 use ratatui::{TerminalOptions, Viewport};
 use std::io;
 use std::path::PathBuf;
 
 use crate::config;
-use crate::docker;
-use crate::session::{self, SessionSummary};
-use crate::shorten_project_path;
+use crate::session;
 
 pub enum TuiAction {
-    Resume(String),
     New {
         name: String,
         image: Option<String>,
@@ -21,18 +17,14 @@ pub enum TuiAction {
         local: bool,
         strategy: Option<String>,
     },
-    Cd(String),
-    Origin(String),
     Quit,
 }
 
 #[derive(PartialEq)]
 enum Mode {
-    Normal,
-    DeleteConfirm,
-    InputName,
-    InputImage,
-    InputCommand,
+    Name,
+    Image,
+    Command,
 }
 
 struct TextInput {
@@ -146,17 +138,10 @@ fn clear_viewport(
     Ok(())
 }
 
-pub fn session_manager<F>(sessions: &[SessionSummary], delete_fn: F) -> Result<TuiAction>
-where
-    F: Fn(&str) -> Result<()>,
-{
-    let mut items: Vec<SessionSummary> = sessions.to_vec();
-    let home = config::home_dir().unwrap_or_default();
-    for s in &mut items {
-        s.project_dir = shorten_project_path(&s.project_dir, &home);
-    }
-    // +1 for "new session" row, +1 for header, +1 for footer
-    let viewport_height = (items.len() as u16) + 3;
+/// Minimal create-session TUI: prompts for name, (image), command.
+/// Returns `TuiAction::New` or `TuiAction::Quit`.
+pub fn create_session() -> Result<TuiAction> {
+    let viewport_height = 1;
 
     terminal::enable_raw_mode()?;
     let _guard = TermGuard;
@@ -165,13 +150,9 @@ where
         viewport: Viewport::Inline(viewport_height),
     };
     let mut terminal = Terminal::with_options(CrosstermBackend::new(io::stderr()), options)?;
-    let mut state = TableState::default();
-    state.select(Some(0));
-    // Row 0 = "new session", rows 1.. = actual sessions
-    let new_row_idx = 0;
 
-    let mut mode = Mode::Normal;
     let mut input = TextInput::new();
+    let mut mode = Mode::Name;
     let mut footer_msg = String::new();
     let mut new_name = String::new();
     let mut new_image: Option<String> = None;
@@ -180,251 +161,51 @@ where
     loop {
         terminal.draw(|f| {
             let area = f.area();
-            // Reserve last row for footer
-            let table_area = Rect {
-                x: area.x,
-                y: area.y,
-                width: area.width,
-                height: area.height.saturating_sub(1),
-            };
-            let footer_area = Rect {
-                x: area.x,
-                y: area.y + area.height.saturating_sub(1),
-                width: area.width,
-                height: 1,
-            };
-
-            // Table
-            {
-                let header = Row::new([
-                    "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE", "CREATED",
-                ])
-                .style(Style::default().dim());
-
-                let total_rows = 1 + items.len(); // "new session" + actual sessions
-                let mut rows: Vec<Row> = Vec::with_capacity(total_rows);
-
-                // First row: "+ new session"
-                rows.push(Row::new(["New box...", "", "", "", "", "", ""]));
-
-                // Session rows
-                for (i, s) in items.iter().enumerate() {
-                    let session_mode = if s.local { "local" } else { "docker" };
-                    let status = if s.running { "running" } else { "" };
-                    let row = Row::new([
-                        Cell::from(s.name.as_str()),
-                        Cell::from(s.project_dir.as_str()),
-                        Cell::from(session_mode),
-                        Cell::from(status),
-                        Cell::from(s.command.as_str()),
-                        Cell::from(s.image.as_str()),
-                        Cell::from(s.created_at.as_str()),
-                    ]);
-                    let row_idx = i + 1; // offset by "new session" row
-                    if mode == Mode::DeleteConfirm && state.selected() == Some(row_idx) {
-                        rows.push(row.style(Style::default().fg(Color::Red)));
-                    } else {
-                        rows.push(row);
-                    }
+            let line: Line = if !footer_msg.is_empty() {
+                Line::from(Span::styled(
+                    footer_msg.as_str(),
+                    Style::default().fg(Color::Red),
+                ))
+            } else {
+                match &mode {
+                    Mode::Name => Line::from(input.to_spans("Session name: ")),
+                    Mode::Image => Line::from(input.to_spans("Image: ")),
+                    Mode::Command => Line::from(input.to_spans("Command (optional): ")),
                 }
-
-                let name_w = items
-                    .iter()
-                    .map(|s| s.display_name().len())
-                    .max()
-                    .unwrap_or(0)
-                    .max("New box...".len())
-                    .max(4) as u16;
-                let project_w = items
-                    .iter()
-                    .map(|s| s.project_dir.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(7) as u16;
-                let mode_w = 6u16;
-                let status_w = 7u16;
-                let cmd_w = items
-                    .iter()
-                    .map(|s| s.command.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(3) as u16;
-                let image_w = items
-                    .iter()
-                    .map(|s| s.image.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(5) as u16;
-                let created_w = items
-                    .iter()
-                    .map(|s| s.created_at.len())
-                    .max()
-                    .unwrap_or(0)
-                    .max(7) as u16;
-
-                let widths = [
-                    Constraint::Length(name_w),
-                    Constraint::Length(project_w),
-                    Constraint::Length(mode_w),
-                    Constraint::Length(status_w),
-                    Constraint::Length(cmd_w),
-                    Constraint::Length(image_w),
-                    Constraint::Length(created_w),
-                ];
-
-                let table = Table::new(rows, widths)
-                    .header(header)
-                    .highlight_symbol("> ")
-                    .row_highlight_style(Style::default().bold());
-
-                f.render_stateful_widget(table, table_area, &mut state);
-            }
-
-            // Footer
-            let on_new_row = state.selected() == Some(new_row_idx);
-            let footer_line: Line = match &mode {
-                Mode::Normal => {
-                    if !footer_msg.is_empty() {
-                        Line::from(Span::styled(
-                            footer_msg.as_str(),
-                            Style::default().fg(Color::Red),
-                        ))
-                    } else if on_new_row || items.is_empty() {
-                        Line::from("[Enter] New  [q] Quit").style(Style::default().dim())
-                    } else {
-                        Line::from("[Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit")
-                            .style(Style::default().dim())
-                    }
-                }
-                Mode::DeleteConfirm => {
-                    let name = state
-                        .selected()
-                        .and_then(|i| items.get(i.saturating_sub(1)))
-                        .map(|s| s.display_name())
-                        .unwrap_or("");
-                    Line::from(format!("Delete '{}'? [y/n]", name)).style(Style::default().dim())
-                }
-                Mode::InputName => Line::from(input.to_spans("Session name: ")),
-                Mode::InputImage => Line::from(input.to_spans("Image: ")),
-                Mode::InputCommand => Line::from(input.to_spans("Command (optional): ")),
             };
-            f.render_widget(footer_line, footer_area);
+            f.render_widget(line, area);
         })?;
+
+        // Clear error message on next keypress
+        if !footer_msg.is_empty() {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    footer_msg.clear();
+                }
+            }
+            continue;
+        }
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
 
-            // Ctrl+C in any mode → quit
             if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 clear_viewport(&mut terminal, viewport_height)?;
                 return Ok(TuiAction::Quit);
             }
 
             match mode {
-                Mode::Normal => {
-                    footer_msg.clear();
-                    let total_rows = 1 + items.len(); // "new session" + sessions
-                    match key.code {
-                        KeyCode::Up | KeyCode::Char('k') => {
-                            let i = state.selected().unwrap_or(0);
-                            let next = if i == 0 { total_rows - 1 } else { i - 1 };
-                            state.select(Some(next));
-                        }
-                        KeyCode::Down | KeyCode::Char('j') => {
-                            let i = state.selected().unwrap_or(0);
-                            let next = if i >= total_rows - 1 { 0 } else { i + 1 };
-                            state.select(Some(next));
-                        }
-                        KeyCode::Enter => {
-                            if let Some(i) = state.selected() {
-                                if i == new_row_idx {
-                                    input = TextInput::new();
-                                    name_history.reset_position();
-                                    mode = Mode::InputName;
-                                } else {
-                                    let name = items[i - 1].name.clone();
-                                    clear_viewport(&mut terminal, viewport_height)?;
-                                    return Ok(TuiAction::Resume(name));
-                                }
-                            }
-                        }
-                        KeyCode::Char('c') => {
-                            if let Some(i) = state.selected() {
-                                if i != new_row_idx {
-                                    let name = items[i - 1].name.clone();
-                                    clear_viewport(&mut terminal, viewport_height)?;
-                                    return Ok(TuiAction::Cd(name));
-                                }
-                            }
-                        }
-                        KeyCode::Char('o') => {
-                            if let Some(i) = state.selected() {
-                                if i != new_row_idx {
-                                    let name = items[i - 1].name.clone();
-                                    clear_viewport(&mut terminal, viewport_height)?;
-                                    return Ok(TuiAction::Origin(name));
-                                }
-                            }
-                        }
-                        KeyCode::Char('d') => {
-                            if let Some(i) = state.selected() {
-                                if i != new_row_idx {
-                                    mode = Mode::DeleteConfirm;
-                                }
-                            }
-                        }
-                        KeyCode::Esc | KeyCode::Char('q') => {
-                            clear_viewport(&mut terminal, viewport_height)?;
-                            return Ok(TuiAction::Quit);
-                        }
-                        _ => {}
-                    }
-                }
-                Mode::DeleteConfirm => match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => {
-                        if let Some(i) = state.selected() {
-                            let item_idx = i - 1; // offset for "new session" row
-                            let name = items[item_idx].name.clone();
-                            if let Err(e) = delete_fn(&name) {
-                                footer_msg = format!("Delete failed: {}", e);
-                            }
-                            // Refresh list
-                            if let Ok(mut refreshed) = session::list() {
-                                let running = docker::running_sessions();
-                                for s in &mut refreshed {
-                                    if s.local {
-                                        s.running = session::is_local_running(&s.name);
-                                    } else {
-                                        s.running = running.contains(&s.name);
-                                    }
-                                }
-                                items = refreshed;
-                            }
-                            let total_rows = 1 + items.len();
-                            if i >= total_rows {
-                                state.select(Some(total_rows - 1));
-                            }
-                        }
-                        mode = Mode::Normal;
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                        mode = Mode::Normal;
-                    }
-                    _ => {}
-                },
-                Mode::InputName => match key.code {
+                Mode::Name => match key.code {
                     KeyCode::Enter => {
                         let raw_name = input.text.trim().to_string();
                         let name = session::normalize_name(&raw_name);
                         if let Err(e) = session::validate_name(&name) {
                             footer_msg = e.to_string();
-                            mode = Mode::Normal;
                             input = TextInput::new();
                         } else if session::session_exists(&name).unwrap_or(false) {
                             footer_msg = format!("Session '{}' already exists.", name);
-                            mode = Mode::Normal;
                             input = TextInput::new();
                         } else if std::env::var("BOX_MODE")
                             .map(|v| v != "docker")
@@ -435,18 +216,18 @@ where
                             new_local = true;
                             let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
                             input = TextInput::with_text(default_cmd);
-                            command_history.reset_position();
-                            mode = Mode::InputCommand;
+                            mode = Mode::Command;
                         } else {
                             new_name = name;
                             let default_image = std::env::var("BOX_DEFAULT_IMAGE")
                                 .unwrap_or_else(|_| config::DEFAULT_IMAGE.to_string());
                             input = TextInput::with_text(default_image);
-                            mode = Mode::InputImage;
+                            mode = Mode::Image;
                         }
                     }
                     KeyCode::Esc => {
-                        mode = Mode::Normal;
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Quit);
                     }
                     KeyCode::Up => {
                         if let Some(entry) = name_history.up(&input.text) {
@@ -462,7 +243,7 @@ where
                         input.handle_key(key.code);
                     }
                 },
-                Mode::InputImage => match key.code {
+                Mode::Image => match key.code {
                     KeyCode::Enter => {
                         let image_text = input.text.trim().to_string();
                         new_image = if image_text.is_empty() {
@@ -472,17 +253,17 @@ where
                         };
                         let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
                         input = TextInput::with_text(default_cmd);
-                        command_history.reset_position();
-                        mode = Mode::InputCommand;
+                        mode = Mode::Command;
                     }
                     KeyCode::Esc => {
-                        mode = Mode::Normal;
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Quit);
                     }
                     _ => {
                         input.handle_key(key.code);
                     }
                 },
-                Mode::InputCommand => match key.code {
+                Mode::Command => match key.code {
                     KeyCode::Enter => {
                         let cmd_text = input.text.trim().to_string();
                         new_command_text = cmd_text.clone();
@@ -493,7 +274,6 @@ where
                                 Ok(args) => Some(args),
                                 Err(e) => {
                                     footer_msg = format!("Invalid command: {e}");
-                                    mode = Mode::Normal;
                                     input = TextInput::new();
                                     continue;
                                 }
@@ -509,7 +289,8 @@ where
                         });
                     }
                     KeyCode::Esc => {
-                        mode = Mode::Normal;
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Quit);
                     }
                     KeyCode::Up => {
                         if let Some(entry) = command_history.up(&input.text) {

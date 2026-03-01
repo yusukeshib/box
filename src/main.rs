@@ -182,7 +182,7 @@ fn main() {
                 std::process::exit(1);
             }
             match args.name {
-                None => cmd_list(),
+                None => cmd_create_tui(),
                 Some(name) => {
                     let local = if args.docker {
                         false
@@ -339,11 +339,11 @@ fn resolve_project_dir(
     git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
 }
 
-/// `box` with no args: resume the first session, or open TUI if none exist.
+/// `box` with no args: resume the first session, or prompt to create if none exist.
 fn cmd_default() -> Result<i32> {
     let sessions = session::list()?;
     if sessions.is_empty() {
-        return cmd_list();
+        return cmd_create_tui();
     }
     // Prefer first running session, otherwise first session
     let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
@@ -353,51 +353,14 @@ fn cmd_default() -> Result<i32> {
         .or(sessions.first());
     match target {
         Some(s) => cmd_resume(&s.name, &docker_args, false),
-        None => cmd_list(),
+        None => cmd_create_tui(),
     }
 }
 
-fn cmd_list() -> Result<i32> {
-    let mut sessions = session::list()?;
-
-    let has_docker_sessions = sessions.iter().any(|s| !s.local);
-    if has_docker_sessions {
-        docker::check()?;
-        let running = docker::running_sessions();
-        for s in &mut sessions {
-            if !s.local {
-                // Docker container names use - instead of /
-                s.running = running.contains(&s.name.replace('/', "-"));
-            }
-        }
-    }
-    for s in &mut sessions {
-        if s.local {
-            s.running = session::is_local_running(&s.name);
-        }
-    }
-
-    let delete_fn = |name: &str| -> Result<()> {
-        let full = session::full_name(name);
-        let ws = session::workspace_name(&full);
-        let sess = session::load(&full)?;
-        if !sess.local {
-            docker::remove_container(&full);
-        }
-        session::remove_dir(&full)?;
-        // If no sessions remain in the workspace, remove the workspace too
-        let remaining = session::workspace_sessions(ws).unwrap_or_default();
-        if remaining.is_empty() {
-            docker::remove_workspace(ws, &sess.strategy);
-            let _ = session::remove_workspace_dir(ws);
-        }
-        Ok(())
-    };
-
+/// `box create` with no name: prompt for session details.
+fn cmd_create_tui() -> Result<i32> {
     let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
-
-    match tui::session_manager(&sessions, delete_fn)? {
-        tui::TuiAction::Resume(name) => cmd_resume(&name, &docker_args, false),
+    match tui::create_session()? {
         tui::TuiAction::New {
             name,
             image,
@@ -405,13 +368,7 @@ fn cmd_list() -> Result<i32> {
             local,
             strategy,
         } => cmd_create(&name, image, &docker_args, command, false, local, strategy),
-        tui::TuiAction::Cd(name) => cmd_cd(&name),
-        tui::TuiAction::Origin(name) => {
-            let sess = session::load(&name)?;
-            output_cd_path(&sess.project_dir);
-            Ok(0)
-        }
-        tui::TuiAction::Quit => Ok(0),
+        _ => Ok(0),
     }
 }
 
