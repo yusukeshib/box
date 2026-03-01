@@ -14,7 +14,7 @@ pub enum TuiAction {
         image: Option<String>,
         command: Option<Vec<String>>,
         local: bool,
-        strategy: Option<String>,
+        strategy: Option<crate::config::Strategy>,
     },
     Quit,
 }

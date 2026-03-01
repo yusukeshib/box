@@ -36,6 +36,9 @@ pub(super) struct SidebarState {
     pub(super) new_session_input: Option<String>,
     /// When true, keyboard input is routed to the sidebar for navigation
     pub(super) focused: bool,
+    /// A lone ESC was received but may be an incomplete escape sequence.
+    /// Flushed on timeout to unfocus the sidebar.
+    pending_esc: bool,
 }
 
 pub(super) struct SidebarEntry {
@@ -196,22 +199,21 @@ fn draw_command_bar(
         return;
     }
     let buf = f.buffer_mut();
-    let bar_style = Style::default()
-        .bg(Color::Indexed(236))
-        .fg(Color::Indexed(245));
+    let bar_style = Style::default().add_modifier(Modifier::DIM);
+    let clear_style = Style::default();
 
-    // Fill the entire bar with background
+    // Fill the entire bar with default background
     for x in area.x..area.x + area.width {
         if x < buf.area().width && area.y < buf.area().height {
             let cell = &mut buf[(x, area.y)];
             cell.set_symbol(" ");
-            cell.set_style(bar_style);
+            cell.set_style(clear_style);
         }
     }
 
     // Determine content as styled spans: (text, style) pairs
-    let key_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
-    let input_style = Style::default().bg(Color::Indexed(236)).fg(Color::White);
+    let key_style = Style::default().add_modifier(Modifier::BOLD);
+    let input_style = Style::default();
     let spans: Vec<(&str, Style)> = if sidebar.new_session_input.is_some() {
         // Built below from formatted string
         vec![]
@@ -272,9 +274,9 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
     let buf = f.buffer_mut();
     let focused = sidebar.focused;
     let bg_style = if focused {
-        Style::default().bg(Color::Black).fg(Color::White)
+        Style::default()
     } else {
-        Style::default().bg(Color::Black).fg(Color::DarkGray)
+        Style::default().add_modifier(Modifier::DIM)
     };
 
     // Fill background
@@ -300,21 +302,23 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
         let (line, style) = match entry.kind {
             SidebarEntryKind::WorkspaceHeader => {
                 let line = format!(" {}", entry.display);
-                let style = Style::default().bg(Color::Black).fg(Color::Indexed(245));
+                let style = Style::default().add_modifier(Modifier::DIM);
                 (line, style)
             }
             SidebarEntryKind::Session => {
                 let line = format!("   {}", entry.display);
                 let style = if is_selected {
                     if focused {
-                        Style::default().bg(Color::White).fg(Color::Black)
+                        Style::default().add_modifier(Modifier::REVERSED)
                     } else {
-                        Style::default().bg(Color::Indexed(238)).fg(Color::White)
+                        Style::default()
+                            .add_modifier(Modifier::REVERSED)
+                            .add_modifier(Modifier::DIM)
                     }
                 } else if entry.running {
-                    Style::default().bg(Color::Black).fg(Color::White)
+                    Style::default()
                 } else {
-                    Style::default().bg(Color::Black).fg(Color::DarkGray)
+                    Style::default().add_modifier(Modifier::DIM)
                 };
                 (line, style)
             }
@@ -343,7 +347,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
 
         // Draw "+" button for workspace headers (" +")
         if entry.kind == SidebarEntryKind::WorkspaceHeader {
-            let plus_style = Style::default().bg(Color::Black).fg(Color::White);
+            let plus_style = Style::default();
             let space_pos = area.x + content_width - 3;
             let plus_pos = area.x + content_width - 2;
             if space_pos < buf.area().width && row_y < buf.area().height {
@@ -368,12 +372,10 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
         if entry.kind == SidebarEntryKind::Session {
             let x_pos = area.x + content_width - 2;
             if x_pos < buf.area().width && row_y < buf.area().height {
-                let x_style = if is_selected && focused {
-                    Style::default().bg(Color::White).fg(Color::Black)
-                } else if is_selected {
-                    Style::default().bg(Color::Indexed(238)).fg(Color::Black)
+                let x_style = if is_selected {
+                    Style::default().add_modifier(Modifier::REVERSED)
                 } else {
-                    Style::default().bg(Color::Black).fg(Color::DarkGray)
+                    Style::default().add_modifier(Modifier::DIM)
                 };
                 let cell = &mut buf[(x_pos, row_y)];
                 cell.set_symbol("x");
@@ -385,7 +387,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
     // Right border
     let border_x = area.x + area.width - 1;
     if border_x < buf.area().width {
-        let border_style = Style::default().bg(Color::Black).fg(Color::DarkGray);
+        let border_style = Style::default().add_modifier(Modifier::DIM);
         for y in area.y..area.y + area.height {
             if y < buf.area().height {
                 let cell = &mut buf[(border_x, y)];
@@ -590,10 +592,11 @@ fn process_sidebar_input(
                     }
                 }
             }
-            // Lone ESC at end of buffer — likely an incomplete escape
-            // sequence split across reads (e.g. from mouse tracking).
-            // Ignore it rather than unfocusing the sidebar.
+            // Lone ESC at end of buffer — may be an incomplete escape
+            // sequence split across reads, or a real ESC keypress.
+            // Mark pending; the timeout handler will flush it.
             if i + 1 >= data.len() {
+                sidebar.pending_esc = true;
                 break;
             }
             // Bare ESC followed by non-'[' — unfocus sidebar
@@ -751,6 +754,7 @@ pub fn run(
             selected,
             new_session_input: None,
             focused: false,
+            pending_esc: false,
         }
     });
     let sb_w = sidebar_width(&sidebar.entries);
@@ -905,6 +909,10 @@ pub fn run(
                 }
             },
             Ok(ClientEvent::InputBytes(data)) => {
+                // New input arrived — if we had a pending lone ESC from a
+                // previous read, it was part of a split escape sequence.
+                sidebar.pending_esc = false;
+
                 // Sidebar always handles mouse events in its area
                 let sb_width = sidebar_width(&sidebar.entries);
 
@@ -1056,6 +1064,7 @@ pub fn run(
                                 selected,
                                 new_session_input: None,
                                 focused: true,
+                                pending_esc: false,
                             };
                             dirty = true;
                         }
@@ -1080,6 +1089,19 @@ pub fn run(
                 return Ok(ClientResult::Exit(0));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Flush pending sidebar ESC (no more bytes arrived, so it
+                // was a real ESC keypress, not part of an escape sequence).
+                if sidebar.pending_esc {
+                    sidebar.pending_esc = false;
+                    if sidebar.focused {
+                        sidebar.focused = false;
+                        dirty = true;
+                    } else if sidebar.new_session_input.is_some() {
+                        sidebar.new_session_input = None;
+                        dirty = true;
+                    }
+                }
+
                 // Flush any buffered incomplete escape sequence
                 if sidebar.new_session_input.is_none() {
                     let max_scrollback = scrollback_line_count(&mut parser);

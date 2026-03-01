@@ -572,11 +572,21 @@ fn spawn_server(session_name: &str) -> Result<()> {
                 // to detach from the caller's process group.
                 #[cfg(target_os = "linux")]
                 {
-                    libc::setsid();
+                    if libc::setsid() == -1 {
+                        eprintln!(
+                            "warning: setsid() failed: {}",
+                            std::io::Error::last_os_error()
+                        );
+                    }
                 }
                 #[cfg(not(target_os = "linux"))]
                 {
-                    libc::setpgid(0, 0);
+                    if libc::setpgid(0, 0) == -1 {
+                        eprintln!(
+                            "warning: setpgid() failed: {}",
+                            std::io::Error::last_os_error()
+                        );
+                    }
                 }
                 // Ignore SIGHUP so the server survives terminal close.
                 // This is set before exec() so it persists into the new process.

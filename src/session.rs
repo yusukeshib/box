@@ -16,7 +16,7 @@ pub struct Session {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub local: bool,
-    pub strategy: String,
+    pub strategy: config::Strategy,
 }
 
 impl From<config::BoxConfig> for Session {
@@ -35,7 +35,6 @@ impl From<config::BoxConfig> for Session {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct SessionSummary {
     pub name: String,
     pub project_dir: String,
@@ -44,7 +43,7 @@ pub struct SessionSummary {
     pub created_at: String,
     pub running: bool,
     pub local: bool,
-    pub strategy: String,
+    pub _strategy: config::Strategy,
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
@@ -243,7 +242,7 @@ pub fn save(session: &Session) -> Result<()> {
     } else {
         let _ = fs::remove_file(dir.join("env"));
     }
-    fs::write(dir.join("strategy"), &session.strategy)?;
+    fs::write(dir.join("strategy"), session.strategy.to_string())?;
     Ok(())
 }
 
@@ -300,9 +299,10 @@ pub fn load(name: &str) -> Result<Session> {
         .map(|s| s.trim() == "local")
         .unwrap_or(false);
 
-    let strategy = fs::read_to_string(dir.join("strategy"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "clone".to_string());
+    let strategy: config::Strategy = fs::read_to_string(dir.join("strategy"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(config::Strategy::Clone);
 
     Ok(Session {
         name: full,
@@ -371,9 +371,10 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
         .map(|s| s.trim() == "local")
         .unwrap_or(false);
 
-    let strategy = fs::read_to_string(session_path.join("strategy"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "clone".to_string());
+    let strategy: config::Strategy = fs::read_to_string(session_path.join("strategy"))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(config::Strategy::Clone);
 
     SessionSummary {
         name,
@@ -383,7 +384,7 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
         created_at,
         running: false,
         local,
-        strategy,
+        _strategy: strategy,
     }
 }
 
@@ -631,7 +632,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -656,7 +657,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -682,7 +683,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -703,7 +704,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -769,7 +770,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
             assert!(session_exists("exists-test/default").unwrap());
@@ -799,7 +800,7 @@ mod tests {
                     env: vec![],
                     local: false,
 
-                    strategy: "clone".to_string(),
+                    strategy: config::Strategy::Clone,
                 };
                 save(&sess).unwrap();
             }
@@ -826,7 +827,7 @@ mod tests {
                     env: vec![],
                     local: false,
 
-                    strategy: "clone".to_string(),
+                    strategy: config::Strategy::Clone,
                 };
                 save(&sess).unwrap();
             }
@@ -851,7 +852,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -875,7 +876,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
             assert!(session_exists("to-remove/default").unwrap());
@@ -905,7 +906,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -945,7 +946,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -967,7 +968,7 @@ mod tests {
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -992,7 +993,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -1058,7 +1059,7 @@ mod tests {
                 env: vec![],
                 local: false,
 
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
             assert!(workspace_exists("ws-test").unwrap());
@@ -1078,7 +1079,7 @@ mod tests {
                     env: vec![],
                     local: false,
 
-                    strategy: "clone".to_string(),
+                    strategy: config::Strategy::Clone,
                 };
                 save(&sess).unwrap();
             }
@@ -1112,7 +1113,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
@@ -1139,7 +1140,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess_a).unwrap();
 
@@ -1152,7 +1153,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess_b).unwrap();
 
@@ -1190,7 +1191,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                strategy: "clone".to_string(),
+                strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
