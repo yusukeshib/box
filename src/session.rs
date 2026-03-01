@@ -156,6 +156,60 @@ pub fn workspace_sessions(workspace: &str) -> Result<Vec<String>> {
     Ok(names)
 }
 
+/// If `project_dir` points inside `~/.box/workspaces/<ws>/`, follow the
+/// workspace session chain to find the original (non-workspace) project directory.
+/// Returns the original path unchanged when it is not inside a workspace.
+pub fn resolve_original_project_dir(project_dir: &str) -> String {
+    let home = match config::home_dir() {
+        Ok(h) => h,
+        Err(_) => return project_dir.to_string(),
+    };
+    let workspaces_dir = PathBuf::from(&home).join(".box").join("workspaces");
+    let workspaces_dir = match fs::canonicalize(&workspaces_dir) {
+        Ok(p) => p,
+        Err(_) => return project_dir.to_string(),
+    };
+
+    let mut current = project_dir.to_string();
+    for _ in 0..10 {
+        let current_path = match fs::canonicalize(&current) {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        let rel = match current_path.strip_prefix(&workspaces_dir) {
+            Ok(r) => r,
+            Err(_) => break, // not inside workspaces — we're done
+        };
+        let ws_name = match rel.components().next() {
+            Some(c) => c.as_os_str().to_string_lossy().to_string(),
+            None => break,
+        };
+        // Load any session in this workspace to read its project_dir
+        let sessions = match workspace_sessions(&ws_name) {
+            Ok(s) => s,
+            Err(_) => break,
+        };
+        let first = match sessions.first() {
+            Some(s) => s,
+            None => break,
+        };
+        let full = format!("{}/{}", ws_name, first);
+        let dir = match sessions_dir() {
+            Ok(d) => d.join(&full),
+            Err(_) => break,
+        };
+        let pd = match fs::read_to_string(dir.join("project_dir")) {
+            Ok(s) => s.trim().to_string(),
+            Err(_) => break,
+        };
+        if pd == current {
+            break; // self-referencing — stop
+        }
+        current = pd;
+    }
+    current
+}
+
 pub fn save(session: &Session) -> Result<()> {
     let full = full_name(&session.name);
     let dir = sessions_dir()?.join(&full);
@@ -1031,6 +1085,119 @@ mod tests {
 
             let names = workspace_sessions("ws").unwrap();
             assert_eq!(names, vec!["default", "server", "test"]);
+        });
+    }
+
+    #[test]
+    fn test_resolve_original_non_workspace_passthrough() {
+        with_temp_home(|_| {
+            let result = resolve_original_project_dir("/tmp/my-real-repo");
+            assert_eq!(result, "/tmp/my-real-repo");
+        });
+    }
+
+    #[test]
+    fn test_resolve_original_single_hop() {
+        with_temp_home(|tmp| {
+            // Create a workspace directory that looks like a real workspace
+            let ws_dir = tmp.join(".box").join("workspaces").join("ws-a");
+            fs::create_dir_all(&ws_dir).unwrap();
+
+            // Create a session for ws-a pointing to the real repo
+            let sess = Session {
+                name: "ws-a/default".to_string(),
+                project_dir: "/tmp/real-repo".to_string(),
+                image: "alpine:latest".to_string(),
+                mount_path: "/workspace".to_string(),
+                command: vec![],
+                env: vec![],
+                local: false,
+                strategy: "clone".to_string(),
+            };
+            save(&sess).unwrap();
+
+            let result = resolve_original_project_dir(&ws_dir.to_string_lossy());
+            assert_eq!(result, "/tmp/real-repo");
+        });
+    }
+
+    #[test]
+    fn test_resolve_original_chained() {
+        with_temp_home(|tmp| {
+            // ws-b workspace dir points to ws-a workspace dir
+            let ws_a_dir = tmp.join(".box").join("workspaces").join("ws-a");
+            let ws_b_dir = tmp.join(".box").join("workspaces").join("ws-b");
+            fs::create_dir_all(&ws_a_dir).unwrap();
+            fs::create_dir_all(&ws_b_dir).unwrap();
+
+            // ws-a session points to the real repo
+            let sess_a = Session {
+                name: "ws-a/default".to_string(),
+                project_dir: "/tmp/real-repo".to_string(),
+                image: "alpine:latest".to_string(),
+                mount_path: "/workspace".to_string(),
+                command: vec![],
+                env: vec![],
+                local: false,
+                strategy: "clone".to_string(),
+            };
+            save(&sess_a).unwrap();
+
+            // ws-b session points to ws-a workspace dir
+            let sess_b = Session {
+                name: "ws-b/default".to_string(),
+                project_dir: ws_a_dir.to_string_lossy().to_string(),
+                image: "alpine:latest".to_string(),
+                mount_path: "/workspace".to_string(),
+                command: vec![],
+                env: vec![],
+                local: false,
+                strategy: "clone".to_string(),
+            };
+            save(&sess_b).unwrap();
+
+            let result = resolve_original_project_dir(&ws_b_dir.to_string_lossy());
+            assert_eq!(result, "/tmp/real-repo");
+        });
+    }
+
+    #[test]
+    fn test_resolve_original_missing_workspace() {
+        with_temp_home(|tmp| {
+            // Create the workspaces parent dir but not the specific workspace session
+            let ws_dir = tmp.join(".box").join("workspaces").join("ghost");
+            fs::create_dir_all(&ws_dir).unwrap();
+
+            // No session metadata exists for "ghost" — should fall back gracefully
+            let input = ws_dir.to_string_lossy().to_string();
+            let result = resolve_original_project_dir(&input);
+            assert_eq!(result, input);
+        });
+    }
+
+    #[test]
+    fn test_resolve_original_self_referencing() {
+        with_temp_home(|tmp| {
+            let ws_dir = tmp.join(".box").join("workspaces").join("loop-ws");
+            fs::create_dir_all(&ws_dir).unwrap();
+
+            // Session points to its own workspace dir (self-referencing)
+            let sess = Session {
+                name: "loop-ws/default".to_string(),
+                project_dir: ws_dir.to_string_lossy().to_string(),
+                image: "alpine:latest".to_string(),
+                mount_path: "/workspace".to_string(),
+                command: vec![],
+                env: vec![],
+                local: false,
+                strategy: "clone".to_string(),
+            };
+            save(&sess).unwrap();
+
+            // Should not infinite loop — returns the self-referencing path
+            let input = ws_dir.to_string_lossy().to_string();
+            let result = resolve_original_project_dir(&input);
+            assert_eq!(result, input);
         });
     }
 }

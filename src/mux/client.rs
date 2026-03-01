@@ -158,7 +158,7 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
 }
 
 /// Draw the sidebar as a full-height left panel with grouped workspace headers.
-fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
+fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, command_mode: bool) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -257,7 +257,9 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             let x_pos = area.x + content_width - 2;
             if x_pos < buf.area().width && row_y < buf.area().height {
                 let x_style = if is_selected && focused {
-                    Style::default().bg(Color::White).fg(Color::DarkGray)
+                    Style::default().bg(Color::White).fg(Color::Black)
+                } else if is_selected {
+                    Style::default().bg(Color::Indexed(238)).fg(Color::Black)
                 } else {
                     Style::default().bg(Color::Black).fg(Color::DarkGray)
                 };
@@ -291,6 +293,30 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
                     let cell = &mut buf[(x, row_y)];
                     cell.set_symbol(&ch.to_string());
                     cell.set_style(input_style);
+                }
+            }
+        }
+    }
+
+    // Draw hint at the bottom when not in input mode
+    if sidebar.new_session_input.is_none() {
+        let row_y = area.y + area.height - 1;
+        if row_y < buf.area().height {
+            let hint = if command_mode {
+                " Q Quit  A List  N New"
+            } else {
+                " ^P …"
+            };
+            let hint_style = Style::default().bg(Color::Black).fg(Color::Indexed(238));
+            for (col, ch) in hint.chars().enumerate() {
+                let x = area.x + col as u16;
+                if x >= area.x + content_width {
+                    break;
+                }
+                if x < buf.area().width {
+                    let cell = &mut buf[(x, row_y)];
+                    cell.set_symbol(&ch.to_string());
+                    cell.set_style(hint_style);
                 }
             }
         }
@@ -1048,7 +1074,7 @@ pub fn run(
                                 width: right_width,
                                 height: full.height,
                             };
-                            draw_sidebar(f, &sidebar, sb_area);
+                            draw_sidebar(f, &sidebar, sb_area, input_state.command_mode);
                             terminal::draw_frame(f, &params, right_area);
                         })
                         .context("Failed to draw terminal frame")?;
