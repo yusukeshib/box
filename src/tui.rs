@@ -19,30 +19,12 @@ pub enum TuiAction {
         image: Option<String>,
         command: Option<Vec<String>>,
         local: bool,
-        color: Option<String>,
         strategy: Option<String>,
     },
     Cd(String),
     Origin(String),
     Quit,
 }
-
-const COLOR_PALETTE: &[(&str, Option<Color>)] = &[
-    ("none", None),
-    ("red", Some(Color::Red)),
-    ("green", Some(Color::Green)),
-    ("blue", Some(Color::Blue)),
-    ("yellow", Some(Color::Yellow)),
-    ("cyan", Some(Color::Cyan)),
-    ("magenta", Some(Color::Magenta)),
-    ("darkgray", Some(Color::DarkGray)),
-    ("lightred", Some(Color::LightRed)),
-    ("lightgreen", Some(Color::LightGreen)),
-    ("lightblue", Some(Color::LightBlue)),
-    ("lightyellow", Some(Color::LightYellow)),
-    ("lightcyan", Some(Color::LightCyan)),
-    ("lightmagenta", Some(Color::LightMagenta)),
-];
 
 #[derive(PartialEq)]
 enum Mode {
@@ -51,7 +33,6 @@ enum Mode {
     InputName,
     InputImage,
     InputCommand,
-    InputColor,
 }
 
 struct TextInput {
@@ -165,140 +146,6 @@ fn clear_viewport(
     Ok(())
 }
 
-fn color_name_to_ratatui(name: &str) -> Option<Color> {
-    match name {
-        "red" => Some(Color::Red),
-        "green" => Some(Color::Green),
-        "blue" => Some(Color::Blue),
-        "yellow" => Some(Color::Yellow),
-        "cyan" => Some(Color::Cyan),
-        "magenta" => Some(Color::Magenta),
-        "darkgray" => Some(Color::DarkGray),
-        "lightred" => Some(Color::LightRed),
-        "lightgreen" => Some(Color::LightGreen),
-        "lightblue" => Some(Color::LightBlue),
-        "lightyellow" => Some(Color::LightYellow),
-        "lightcyan" => Some(Color::LightCyan),
-        "lightmagenta" => Some(Color::LightMagenta),
-        _ => None,
-    }
-}
-
-const HISTORY_MAX: usize = 100;
-
-struct InputHistory {
-    entries: Vec<String>,
-    position: usize, // points past end when not navigating
-    draft: String,
-}
-
-impl InputHistory {
-    fn load(path: &PathBuf) -> Self {
-        let entries = std::fs::read_to_string(path)
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| !l.is_empty())
-            .map(String::from)
-            .collect();
-        Self {
-            entries,
-            position: 0,
-            draft: String::new(),
-        }
-    }
-
-    fn save(&self, path: &PathBuf) {
-        let _ = std::fs::write(path, self.entries.join("\n") + "\n");
-    }
-
-    fn push(&mut self, entry: &str) {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            return;
-        }
-        self.entries.retain(|e| e != entry);
-        self.entries.push(entry.to_string());
-        if self.entries.len() > HISTORY_MAX {
-            self.entries.remove(0);
-        }
-    }
-
-    fn reset_position(&mut self) {
-        self.position = self.entries.len();
-        self.draft.clear();
-    }
-
-    /// Navigate up (older). Returns the entry to display, or None if empty.
-    fn up(&mut self, current_text: &str) -> Option<&str> {
-        if self.entries.is_empty() {
-            return None;
-        }
-        if self.position == self.entries.len() {
-            // Save current text as draft before navigating
-            self.draft = current_text.to_string();
-        }
-        if self.position > 0 {
-            self.position -= 1;
-        }
-        Some(&self.entries[self.position])
-    }
-
-    /// Navigate down (newer). Returns the entry to display, or the draft.
-    fn down(&mut self, _current_text: &str) -> Option<&str> {
-        if self.position >= self.entries.len() {
-            return None;
-        }
-        self.position += 1;
-        if self.position == self.entries.len() {
-            Some(&self.draft)
-        } else {
-            Some(&self.entries[self.position])
-        }
-    }
-}
-
-fn box_dir() -> Option<PathBuf> {
-    config::home_dir()
-        .ok()
-        .map(|h| PathBuf::from(h).join(".box"))
-}
-
-fn last_color_path() -> Option<PathBuf> {
-    box_dir().map(|d| d.join("last_color"))
-}
-
-fn name_history_path() -> Option<PathBuf> {
-    box_dir().map(|d| d.join("name_history"))
-}
-
-fn command_history_path() -> Option<PathBuf> {
-    box_dir().map(|d| d.join("command_history"))
-}
-
-fn load_last_color_index() -> usize {
-    let path = match last_color_path() {
-        Some(p) => p,
-        None => return 0,
-    };
-    let name = match std::fs::read_to_string(&path) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => return 0,
-    };
-    COLOR_PALETTE
-        .iter()
-        .position(|(n, _)| *n == name)
-        .unwrap_or(0)
-}
-
-fn save_last_color(index: usize) {
-    if let Some(path) = last_color_path() {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(&path, COLOR_PALETTE[index].0);
-    }
-}
-
 pub fn session_manager<F>(sessions: &[SessionSummary], delete_fn: F) -> Result<TuiAction>
 where
     F: Fn(&str) -> Result<()>,
@@ -329,24 +176,6 @@ where
     let mut new_name = String::new();
     let mut new_image: Option<String> = None;
     let mut new_local = false;
-    let mut new_command: Option<Vec<String>> = None;
-    let mut new_command_text = String::new();
-    let default_color_index = load_last_color_index();
-    let mut color_index: usize = default_color_index;
-    let mut name_history = name_history_path()
-        .map(|p| InputHistory::load(&p))
-        .unwrap_or_else(|| InputHistory {
-            entries: vec![],
-            position: 0,
-            draft: String::new(),
-        });
-    let mut command_history = command_history_path()
-        .map(|p| InputHistory::load(&p))
-        .unwrap_or_else(|| InputHistory {
-            entries: vec![],
-            position: 0,
-            draft: String::new(),
-        });
 
     loop {
         terminal.draw(|f| {
@@ -368,7 +197,7 @@ where
             // Table
             {
                 let header = Row::new([
-                    "", "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE", "CREATED",
+                    "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE", "CREATED",
                 ])
                 .style(Style::default().dim());
 
@@ -376,24 +205,14 @@ where
                 let mut rows: Vec<Row> = Vec::with_capacity(total_rows);
 
                 // First row: "+ new session"
-                rows.push(Row::new(["", "New box...", "", "", "", "", "", ""]));
+                rows.push(Row::new(["New box...", "", "", "", "", "", ""]));
 
                 // Session rows
                 for (i, s) in items.iter().enumerate() {
                     let session_mode = if s.local { "local" } else { "docker" };
                     let status = if s.running { "running" } else { "" };
-                    let color_cell: Cell = if let Some(ref c) = s.color {
-                        if let Some(rc) = color_name_to_ratatui(c) {
-                            Cell::from(Span::styled("\u{2588}", Style::default().fg(rc)))
-                        } else {
-                            Cell::from("")
-                        }
-                    } else {
-                        Cell::from("")
-                    };
                     let row = Row::new([
-                        color_cell,
-                        Cell::from(s.display_name().to_string()),
+                        Cell::from(s.name.as_str()),
                         Cell::from(s.project_dir.as_str()),
                         Cell::from(session_mode),
                         Cell::from(status),
@@ -444,7 +263,6 @@ where
                     .max(7) as u16;
 
                 let widths = [
-                    Constraint::Length(1),
                     Constraint::Length(name_w),
                     Constraint::Length(project_w),
                     Constraint::Length(mode_w),
@@ -489,18 +307,6 @@ where
                 Mode::InputName => Line::from(input.to_spans("Session name: ")),
                 Mode::InputImage => Line::from(input.to_spans("Image: ")),
                 Mode::InputCommand => Line::from(input.to_spans("Command (optional): ")),
-                Mode::InputColor => {
-                    let (name, color) = COLOR_PALETTE[color_index];
-                    let mut spans = vec![Span::styled("Color: ", Style::default().bold())];
-                    if let Some(c) = color {
-                        spans.push(Span::styled("\u{2588} ", Style::default().fg(c)));
-                        spans.push(Span::raw(name));
-                    } else {
-                        spans.push(Span::styled("\u{2588} ", Style::default().fg(Color::White)));
-                        spans.push(Span::raw("white"));
-                    }
-                    Line::from(spans)
-                }
             };
             f.render_widget(footer_line, footer_area);
         })?;
@@ -693,9 +499,14 @@ where
                                 }
                             }
                         };
-                        new_command = command;
-                        color_index = default_color_index;
-                        mode = Mode::InputColor;
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::New {
+                            name: new_name,
+                            image: new_image,
+                            command,
+                            local: new_local,
+                            strategy: None,
+                        });
                     }
                     KeyCode::Esc => {
                         mode = Mode::Normal;
@@ -713,53 +524,6 @@ where
                     _ => {
                         input.handle_key(key.code);
                     }
-                },
-                Mode::InputColor => match key.code {
-                    KeyCode::Up => {
-                        if color_index > 0 {
-                            color_index -= 1;
-                        } else {
-                            color_index = COLOR_PALETTE.len() - 1;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if color_index < COLOR_PALETTE.len() - 1 {
-                            color_index += 1;
-                        } else {
-                            color_index = 0;
-                        }
-                    }
-                    KeyCode::Enter => {
-                        let color = if color_index == 0 {
-                            None
-                        } else {
-                            Some(COLOR_PALETTE[color_index].0.to_string())
-                        };
-                        save_last_color(color_index);
-                        name_history.push(&new_name);
-                        if let Some(p) = name_history_path() {
-                            name_history.save(&p);
-                        }
-                        if !new_command_text.is_empty() {
-                            command_history.push(&new_command_text);
-                        }
-                        if let Some(p) = command_history_path() {
-                            command_history.save(&p);
-                        }
-                        clear_viewport(&mut terminal, viewport_height)?;
-                        return Ok(TuiAction::New {
-                            name: new_name,
-                            image: new_image,
-                            command: new_command,
-                            local: new_local,
-                            color,
-                            strategy: None,
-                        });
-                    }
-                    KeyCode::Esc => {
-                        mode = Mode::Normal;
-                    }
-                    _ => {}
                 },
             }
         }

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use ratatui::prelude::*;
-use ratatui::widgets::{Paragraph, Widget};
+use ratatui::widgets::Widget;
 use ratatui::{TerminalOptions, Viewport};
 use std::io::{self, Write};
 use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -286,124 +286,19 @@ pub struct ScrollState {
 /// Parameters for rendering the mux frame.
 pub struct DrawFrameParams<'a> {
     pub screen: &'a vt100::Screen,
-    pub session_name: &'a str,
-    pub project_name: &'a str,
     pub scroll: &'a ScrollState,
-    pub command_mode: bool,
-    pub hover_close: bool,
-    pub header_color: Option<Color>,
     pub selection: Option<&'a Selection>,
 }
 
-/// Pick white or black foreground based on perceived brightness of the background.
-fn auto_fg(bg: Color) -> Color {
-    let (r, g, b) = match bg {
-        Color::Rgb(r, g, b) => (r, g, b),
-        Color::Black => (0, 0, 0),
-        Color::Red | Color::LightRed => (205, 49, 49),
-        Color::Green | Color::LightGreen => (13, 188, 121),
-        Color::Yellow | Color::LightYellow => (229, 229, 16),
-        Color::Blue | Color::LightBlue => (36, 114, 200),
-        Color::Magenta | Color::LightMagenta => (188, 63, 188),
-        Color::Cyan | Color::LightCyan => (17, 168, 205),
-        Color::White => (229, 229, 229),
-        Color::Gray => (128, 128, 128),
-        Color::DarkGray => (102, 102, 102),
-        _ => return Color::Black, // indexed / reset — assume light
-    };
-    // Relative luminance (ITU-R BT.601)
-    let lum = 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64;
-    if lum > 128.0 {
-        Color::Black
-    } else {
-        Color::White
-    }
-}
-
-/// Render the mux frame: header bar + terminal grid.
+/// Render the mux frame: terminal grid (full area, no header).
 /// `area` defines the region to draw into (allows callers to constrain it).
 pub fn draw_frame(f: &mut ratatui::Frame, params: &DrawFrameParams, area: Rect) {
     let screen = params.screen;
-    let session_name = params.session_name;
-    let project_name = params.project_name;
-    let command_mode = params.command_mode;
-    let hover_close = params.hover_close;
-    let header_color = params.header_color;
     let scrolled_up = params.scroll.offset > 0;
     let scroll_offset = params.scroll.offset;
     let max_scrollback = params.scroll.max;
 
-    let header_area = Rect {
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height: 1,
-    };
-
-    let grid_area = Rect {
-        x: area.x,
-        y: area.y + 1,
-        width: area.width,
-        height: area.height.saturating_sub(1),
-    };
-
-    let header_style = if command_mode {
-        Style::default().bg(Color::DarkGray).fg(Color::White)
-    } else if let Some(bg) = header_color {
-        Style::default().bg(bg).fg(auto_fg(bg))
-    } else {
-        Style::default().bg(Color::White).fg(Color::Black)
-    };
-
-    let left = if command_mode {
-        " COMMAND ".to_string()
-    } else if project_name.is_empty() {
-        format!(" {} ", session_name)
-    } else {
-        format!(" {} > {} ", project_name, session_name)
-    };
-
-    // Right side: optional scroll indicator + close button
-    let scroll_text = if scrolled_up {
-        format!(" [{}/{}] ", scroll_offset, max_scrollback)
-    } else {
-        String::new()
-    };
-
-    let help_hint = if command_mode {
-        " a sessions  ^P/^N scroll  ^Q detach  ^X stop  Esc exit "
-    } else {
-        ""
-    };
-
-    // Close button: " x " = 3 chars (wider click target)
-    let close_btn = " x ";
-    let right_len = scroll_text.len() + help_hint.len() + close_btn.len();
-
-    let pad = (area.width as usize)
-        .saturating_sub(left.len())
-        .saturating_sub(right_len);
-
-    let close_style = if hover_close {
-        Style::default().bg(Color::DarkGray).fg(Color::White)
-    } else {
-        header_style
-    };
-
-    let header_text = format!("{}{}{}{}", left, " ".repeat(pad), help_hint, scroll_text);
-    let header = Paragraph::new(header_text).style(header_style);
-    f.render_widget(header, header_area);
-
-    // Render the close button with its own style (supports hover highlight)
-    let btn_start = area.width.saturating_sub(close_btn.len() as u16);
-    let btn_area = Rect {
-        x: area.x + btn_start,
-        y: area.y,
-        width: close_btn.len() as u16,
-        height: 1,
-    };
-    let close_widget = Paragraph::new(close_btn).style(close_style);
-    f.render_widget(close_widget, btn_area);
+    let grid_area = area;
 
     let widget = TerminalWidget {
         screen,
@@ -455,8 +350,6 @@ pub struct InputState {
     pub scroll_offset: usize,
     /// The control byte that enters COMMAND mode (default 0x10 = Ctrl+P).
     prefix_key: u8,
-    /// True when the mouse is hovering over the header close button.
-    pub hover_close: bool,
     /// True while the user is click-dragging the scrollbar thumb.
     dragging_scrollbar: bool,
     /// Bytes from an incomplete escape sequence carried over from the
@@ -541,7 +434,6 @@ impl InputState {
             command_mode: false,
             scroll_offset: 0,
             prefix_key,
-            hover_close: false,
             dragging_scrollbar: false,
             pending: Vec::new(),
             selection: None,
@@ -624,31 +516,17 @@ impl InputState {
 
             // Gate 1: Always intercept SGR mouse events for scrollback / scrollbar
             if let Some((mouse, consumed)) = parse_sgr_mouse(data, i) {
-                // Update hover state for the close button area.
-                // Close button " x " occupies the last 4 columns of the header (row 1).
-                let in_close_area = mouse.row == 1
-                    && term_cols >= 4
-                    && mouse.col >= term_cols - 3
-                    && mouse.col <= term_cols;
-                // Motion events (button 35 = motion with no button pressed,
-                // button 32 = motion with left button held)
+                // Motion events (button 35 = motion with no button pressed)
                 if mouse.button == 35 {
-                    let was_hover = self.hover_close;
-                    self.hover_close = in_close_area;
-                    if self.hover_close != was_hover {
-                        actions.push(InputAction::Redraw);
-                    }
                     i += consumed;
                     continue;
                 }
-                // Left-drag: update selection or hover (not scrollbar)
+                // Left-drag: update selection (not scrollbar)
                 if mouse.button == 32 && !self.dragging_scrollbar {
                     if let Some((start_row, start_col)) = self.drag_start {
                         // Convert SGR 1-indexed coords to 0-indexed grid coords
-                        // Grid starts at row 2 (1-indexed), so grid_row = mouse.row - 2
-                        let grid_row = mouse.row.saturating_sub(2);
+                        let grid_row = mouse.row.saturating_sub(1);
                         let grid_col = mouse.col.saturating_sub(1);
-                        // Only create selection if we've moved to a different cell
                         if grid_row != start_row || grid_col != start_col {
                             self.selection = Some(Selection {
                                 start_row,
@@ -658,25 +536,12 @@ impl InputState {
                             });
                             actions.push(InputAction::Redraw);
                         }
-                    } else {
-                        let was_hover = self.hover_close;
-                        self.hover_close = in_close_area;
-                        if self.hover_close != was_hover {
-                            actions.push(InputAction::Redraw);
-                        }
                     }
                     i += consumed;
                     continue;
                 }
 
                 match mouse.button {
-                    // Left click on header close button (SGR coords are 1-indexed)
-                    // " x " spans last 4 columns of the header
-                    0 if mouse.pressed && in_close_area => {
-                        // Close (detach) button
-                        actions.push(InputAction::Detach);
-                        return actions;
-                    }
                     64 => {
                         // Scroll wheel up — clear selection
                         self.selection = None;
@@ -695,9 +560,9 @@ impl InputState {
                     0 if mouse.pressed
                         && max_scrollback > 0
                         && mouse.col == term_cols
-                        && mouse.row >= 2 =>
+                        && mouse.row >= 1 =>
                     {
-                        let grid_row = (mouse.row - 2) as usize;
+                        let grid_row = (mouse.row - 1) as usize;
                         let track_height = current_inner_rows as usize;
                         if grid_row < track_height && track_height > 1 {
                             self.scroll_offset =
@@ -706,12 +571,12 @@ impl InputState {
                             actions.push(InputAction::Redraw);
                         }
                     }
-                    // Left click on grid area (not header, not scrollbar) → start drag
-                    0 if mouse.pressed && mouse.row >= 2 => {
+                    // Left click on grid area → start drag
+                    0 if mouse.pressed && mouse.row >= 1 => {
                         let had_selection = self.selection.is_some();
                         self.selection = None;
                         self.drag_start =
-                            Some((mouse.row.saturating_sub(2), mouse.col.saturating_sub(1)));
+                            Some((mouse.row.saturating_sub(1), mouse.col.saturating_sub(1)));
                         if had_selection {
                             actions.push(InputAction::Redraw);
                         }
@@ -721,7 +586,7 @@ impl InputState {
                         let track_height = current_inner_rows as usize;
                         if track_height > 1 {
                             let grid_row =
-                                (mouse.row.saturating_sub(2) as usize).min(track_height - 1);
+                                (mouse.row.saturating_sub(1) as usize).min(track_height - 1);
                             self.scroll_offset =
                                 max_scrollback * (track_height - 1 - grid_row) / (track_height - 1);
                             actions.push(InputAction::Redraw);

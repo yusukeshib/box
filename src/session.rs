@@ -17,7 +17,6 @@ pub struct Session {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub local: bool,
-    pub color: Option<String>,
     pub strategy: String,
 }
 
@@ -38,7 +37,6 @@ impl From<config::BoxConfig> for Session {
             command: cfg.command,
             env: cfg.env,
             local: cfg.local,
-            color: cfg.color,
             strategy: cfg.strategy,
         }
     }
@@ -55,7 +53,6 @@ pub struct SessionSummary {
     pub created_at: String,
     pub running: bool,
     pub local: bool,
-    pub color: Option<String>,
     pub strategy: String,
 }
 
@@ -228,16 +225,6 @@ pub fn save(session: &Session) -> Result<()> {
     } else {
         let _ = fs::remove_file(dir.join("env"));
     }
-    if let Some(ref label) = session.label {
-        fs::write(dir.join("label"), label)?;
-    } else {
-        let _ = fs::remove_file(dir.join("label"));
-    }
-    if let Some(ref color) = session.color {
-        fs::write(dir.join("color"), color)?;
-    } else {
-        let _ = fs::remove_file(dir.join("color"));
-    }
     fs::write(dir.join("strategy"), &session.strategy)?;
     Ok(())
 }
@@ -295,16 +282,6 @@ pub fn load(name: &str) -> Result<Session> {
         .map(|s| s.trim() == "local")
         .unwrap_or(false);
 
-    let label = fs::read_to_string(dir.join("label"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    let color = fs::read_to_string(dir.join("color"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
     let strategy = fs::read_to_string(dir.join("strategy"))
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "clone".to_string());
@@ -317,7 +294,6 @@ pub fn load(name: &str) -> Result<Session> {
         command,
         env,
         local,
-        color,
         strategy,
     })
 }
@@ -377,11 +353,6 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
         .map(|s| s.trim() == "local")
         .unwrap_or(false);
 
-    let color = fs::read_to_string(session_path.join("color"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
     let strategy = fs::read_to_string(session_path.join("strategy"))
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "clone".to_string());
@@ -394,7 +365,6 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
         created_at,
         running: false,
         local,
-        color,
         strategy,
     }
 }
@@ -642,7 +612,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -667,7 +637,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -693,7 +663,7 @@ mod tests {
                 ],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -714,7 +684,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -780,7 +750,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -810,7 +780,7 @@ mod tests {
                     command: vec![],
                     env: vec![],
                     local: false,
-                    color: None,
+
                     strategy: "clone".to_string(),
                 };
                 save(&sess).unwrap();
@@ -837,7 +807,7 @@ mod tests {
                     command: vec![],
                     env: vec![],
                     local: false,
-                    color: None,
+
                     strategy: "clone".to_string(),
                 };
                 save(&sess).unwrap();
@@ -862,7 +832,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -886,7 +856,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -916,7 +886,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -956,7 +926,7 @@ mod tests {
                 command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -978,7 +948,7 @@ mod tests {
                 command: vec![],
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -1003,7 +973,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -1069,7 +1039,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
@@ -1089,7 +1059,7 @@ mod tests {
                     command: vec![],
                     env: vec![],
                     local: false,
-                    color: None,
+
                     strategy: "clone".to_string(),
                 };
                 save(&sess).unwrap();

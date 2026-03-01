@@ -22,7 +22,6 @@ pub struct BoxConfig {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub local: bool,
-    pub color: Option<String>,
     pub strategy: String,
 }
 
@@ -35,7 +34,6 @@ pub struct BoxConfigInput {
     pub command: Option<Vec<String>>,
     pub env: Vec<String>,
     pub local: bool,
-    pub color: Option<String>,
     pub strategy: Option<String>,
 }
 
@@ -74,7 +72,6 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
             command,
             env: vec![],
             local: true,
-            color: input.color,
             strategy,
         });
     }
@@ -95,7 +92,6 @@ pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
         command,
         env: input.env,
         local: false,
-        color: input.color,
         strategy,
     })
 }
@@ -220,7 +216,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -236,7 +232,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             }
         );
@@ -262,7 +258,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -283,7 +279,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -306,7 +302,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -332,7 +328,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -395,7 +391,7 @@ mod tests {
             command: Some(vec!["python".to_string(), "main.py".to_string()]),
             env: vec!["FOO=bar".to_string()],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -411,7 +407,7 @@ mod tests {
                 command: vec!["python".to_string(), "main.py".to_string()],
                 env: vec!["FOO=bar".to_string()],
                 local: false,
-                color: None,
+
                 strategy: "clone".to_string(),
             }
         );
@@ -431,7 +427,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -456,7 +452,7 @@ mod tests {
             command: Some(vec!["sh".to_string()]),
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -481,7 +477,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -513,7 +509,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -538,7 +534,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         });
         assert!(result.is_err());
@@ -563,7 +559,7 @@ mod tests {
             command: None,
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -587,7 +583,7 @@ mod tests {
             command: None,
             env: vec![],
             local: true,
-            color: None,
+
             strategy: None,
         })
         .unwrap();
@@ -613,7 +609,7 @@ mod tests {
             command: Some(vec![]),
             env: vec![],
             local: false,
-            color: None,
+
             strategy: None,
         })
         .unwrap();

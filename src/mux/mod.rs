@@ -9,8 +9,6 @@ use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use ratatui::style::Color;
-
 use crate::session;
 
 use terminal::{
@@ -207,78 +205,11 @@ fn create_sub_session(workspace: &str, command: &str) -> Result<String> {
         command: cmd_parts,
         env: parent.env.clone(),
         local: parent.local,
-        color: parent.color.clone(),
         strategy: parent.strategy.clone(),
     };
     session::save(&sess)?;
 
     Ok(full_name)
-}
-
-fn project_name_for_session(session_name: &str) -> String {
-    session::load(session_name)
-        .ok()
-        .and_then(|s| {
-            std::path::Path::new(&s.project_dir)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-        })
-        .unwrap_or_default()
-}
-
-fn color_for_session(session_name: &str) -> Option<Color> {
-    let dir = session::sessions_dir().ok()?.join(session_name);
-    let s = std::fs::read_to_string(dir.join("color")).ok()?;
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    parse_color(s)
-}
-
-/// Parse a color string into a ratatui Color.
-///
-/// Supported formats:
-/// - Named: red, green, blue, yellow, cyan, magenta, white, black, darkgray/dark-gray
-/// - Hex: #rrggbb (e.g. #ff0000)
-/// - ANSI 256: a bare number (e.g. 123)
-fn parse_color(s: &str) -> Option<Color> {
-    let s = s.trim().to_lowercase();
-    // Named colors
-    match s.as_str() {
-        "red" => return Some(Color::Red),
-        "green" => return Some(Color::Green),
-        "blue" => return Some(Color::Blue),
-        "yellow" => return Some(Color::Yellow),
-        "cyan" => return Some(Color::Cyan),
-        "magenta" => return Some(Color::Magenta),
-        "white" => return Some(Color::White),
-        "black" => return Some(Color::Black),
-        "darkgray" | "dark-gray" => return Some(Color::DarkGray),
-        "lightred" | "light-red" => return Some(Color::LightRed),
-        "lightgreen" | "light-green" => return Some(Color::LightGreen),
-        "lightblue" | "light-blue" => return Some(Color::LightBlue),
-        "lightyellow" | "light-yellow" => return Some(Color::LightYellow),
-        "lightcyan" | "light-cyan" => return Some(Color::LightCyan),
-        "lightmagenta" | "light-magenta" => return Some(Color::LightMagenta),
-        "gray" => return Some(Color::Gray),
-        _ => {}
-    }
-    // Hex color: #rrggbb
-    if let Some(hex) = s.strip_prefix('#') {
-        if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            return Some(Color::Rgb(r, g, b));
-        }
-        return None;
-    }
-    // ANSI 256: bare number
-    if let Ok(n) = s.parse::<u8>() {
-        return Some(Color::Indexed(n));
-    }
-    None
 }
 
 /// Single-process mode (current behavior). For cmd_exec and Docker.
@@ -308,7 +239,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         }
     }
 
-    let inner_rows = term_rows.saturating_sub(1);
+    let inner_rows = term_rows;
     if inner_rows == 0 || term_cols == 0 {
         anyhow::bail!("Terminal too small");
     }
@@ -396,9 +327,6 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
         }
     });
 
-    let display_name = display_name_for_session(&config.session_name);
-    let project_name = project_name_for_session(&config.session_name);
-    let header_color = color_for_session(&config.session_name);
     let mut input_state = InputState::new(config.prefix_key);
     let mut dirty = true;
     let mut child_exited = false;
@@ -494,7 +422,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         let cols_changed = cols != last_cols;
                         last_cols = cols;
                         last_rows = rows;
-                        let new_inner = rows.saturating_sub(1);
+                        let new_inner = rows;
                         if new_inner > 0 && cols > 0 {
                             current_inner_rows = new_inner;
                             let _ = terminal::set_pty_size(&pty, new_inner, cols);
@@ -539,12 +467,7 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                     };
                     let params = DrawFrameParams {
                         screen,
-                        session_name: &display_name,
-                        project_name: &project_name,
                         scroll: &scroll,
-                        command_mode: input_state.command_mode,
-                        hover_close: input_state.hover_close,
-                        header_color,
                         selection: input_state.selection.as_ref(),
                     };
                     terminal::begin_sync_update(tty_fd);

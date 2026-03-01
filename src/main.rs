@@ -84,10 +84,6 @@ struct CreateArgs {
     #[arg(long)]
     docker: bool,
 
-    /// Header background color (e.g. red, #ff0000, 123)
-    #[arg(long)]
-    color: Option<String>,
-
     /// Workspace strategy: clone (git clone --local) or worktree (git worktree add)
     /// Default: $BOX_STRATEGY or "clone"
     #[arg(long)]
@@ -209,7 +205,6 @@ fn main() {
                         cmd,
                         args.detach,
                         local,
-                        args.color,
                         args.strategy,
                     )
                 }
@@ -408,18 +403,8 @@ fn cmd_list() -> Result<i32> {
             image,
             command,
             local,
-            color,
             strategy,
-        } => cmd_create(
-            &name,
-            image,
-            &docker_args,
-            command,
-            false,
-            local,
-            color,
-            strategy,
-        ),
+        } => cmd_create(&name, image, &docker_args, command, false, local, strategy),
         tui::TuiAction::Cd(name) => cmd_cd(&name),
         tui::TuiAction::Origin(name) => {
             let sess = session::load(&name)?;
@@ -427,25 +412,6 @@ fn cmd_list() -> Result<i32> {
             Ok(0)
         }
         tui::TuiAction::Quit => Ok(0),
-    }
-}
-
-fn ansi_color_code(name: &str) -> Option<&'static str> {
-    match name {
-        "red" => Some("\x1b[31m"),
-        "green" => Some("\x1b[32m"),
-        "yellow" => Some("\x1b[33m"),
-        "blue" => Some("\x1b[34m"),
-        "magenta" => Some("\x1b[35m"),
-        "cyan" => Some("\x1b[36m"),
-        "darkgray" => Some("\x1b[90m"),
-        "lightred" => Some("\x1b[91m"),
-        "lightgreen" => Some("\x1b[92m"),
-        "lightyellow" => Some("\x1b[93m"),
-        "lightblue" => Some("\x1b[94m"),
-        "lightmagenta" => Some("\x1b[95m"),
-        "lightcyan" => Some("\x1b[96m"),
-        _ => None,
     }
 }
 
@@ -539,18 +505,9 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         let mode = if s.local { "local" } else { "docker" };
         let status = if s.running { "running" } else { "stopped" };
         let project = shorten_path(&s.project_dir);
-        let color_prefix = if let Some(ref c) = s.color {
-            if let Some(code) = ansi_color_code(c) {
-                format!("{}\u{2588}\x1b[0m ", code)
-            } else {
-                "  ".to_string()
-            }
-        } else {
-            "  ".to_string()
-        };
         println!(
-            "{}{:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
-            color_prefix, s.display_name(), project, mode, status, s.command, s.image, s.created_at,
+            "  {:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
+            s.name, project, mode, status, s.command, s.image, s.created_at,
         );
     }
 
@@ -565,7 +522,6 @@ fn cmd_create(
     cmd: Option<Vec<String>>,
     detach: bool,
     local: bool,
-    color: Option<String>,
     strategy: Option<String>,
 ) -> Result<i32> {
     let normalized = session::normalize_name(name);
@@ -613,7 +569,6 @@ fn cmd_create(
         command: cmd,
         env: vec![],
         local,
-        color,
         strategy: strategy.or(inherited_strategy),
     })?;
 
@@ -1065,7 +1020,6 @@ _box() {{
                         '--docker-args=[Extra Docker flags]:args' \
                         '--local[Create a local session (default)]' \
                         '--docker[Create a Docker session]' \
-                        '--color=[Header background color]:color' \
                         '--strategy=[Workspace strategy (clone or worktree)]:strategy:(clone worktree)' \
                         '1:session name:' \
                         '*:command:'
@@ -1148,7 +1102,7 @@ fn cmd_config_bash() -> Result<i32> {
         create)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker --color --strategy" -- "$cur"))
+                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker --strategy" -- "$cur"))
                     ;;
             esac
             ;;

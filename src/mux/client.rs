@@ -509,7 +509,7 @@ pub fn run(
 ) -> Result<ClientResult> {
     let (term_cols, term_rows) = terminal::get_term_size(tty_fd)?;
 
-    let inner_rows = term_rows.saturating_sub(1);
+    let inner_rows = term_rows;
     if inner_rows == 0 || term_cols == 0 {
         anyhow::bail!("Terminal too small");
     }
@@ -579,9 +579,6 @@ pub fn run(
     // first draw() will output every cell as a full diff — no clear() needed.
     let mut terminal = terminal::create_terminal(tty_fd, term_cols, term_rows)?;
 
-    let display_name = super::display_name_for_session(session_name);
-    let project_name = super::project_name_for_session(session_name);
-    let header_color = super::color_for_session(session_name);
     let prefix_key = crate::config::load_mux_prefix_key();
     let mut input_state = InputState::new(prefix_key);
 
@@ -838,7 +835,7 @@ pub fn run(
                         let cols_changed = cols != last_cols;
                         last_cols = cols;
                         last_rows = rows;
-                        let new_inner = rows.saturating_sub(1);
+                        let new_inner = rows;
                         let sb_w = sidebar_width(&sidebar.entries);
                         let content_cols = cols.saturating_sub(sb_w);
                         if new_inner > 0 && content_cols > 0 {
@@ -880,12 +877,7 @@ pub fn run(
                     };
                     let params = DrawFrameParams {
                         screen,
-                        session_name,
-                        project_name: &project_name,
                         scroll: &scroll,
-                        command_mode: input_state.command_mode,
-                        hover_close: input_state.hover_close,
-                        header_color,
                         selection: input_state.selection.as_ref(),
                     };
                     // Write BSU/ESU through the same BufWriter as the
