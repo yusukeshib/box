@@ -153,7 +153,7 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
         })
         .max()
         .unwrap_or(8);
-    let w = (max_name + 2).clamp(20, 40);
+    let w = (max_name + 2).clamp(16, 24);
     w as u16
 }
 
@@ -248,6 +248,12 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect, comm
             if plus_pos < buf.area().width && row_y < buf.area().height {
                 let cell = &mut buf[(plus_pos, row_y)];
                 cell.set_symbol("+");
+                cell.set_style(plus_style);
+            }
+            let trail_pos = area.x + content_width - 1;
+            if trail_pos < buf.area().width && row_y < buf.area().height {
+                let cell = &mut buf[(trail_pos, row_y)];
+                cell.set_symbol(" ");
                 cell.set_style(plus_style);
             }
         }
