@@ -305,18 +305,15 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
                 let line = format!("   {}", entry.display);
                 let style = if is_selected {
                     if focused {
+                        // bright background + very dark text
                         Style::default().add_modifier(Modifier::REVERSED)
                     } else {
-                        Style::default()
-                    }
-                } else if entry.running {
-                    if focused {
-                        Style::default()
-                    } else {
-                        Style::default().add_modifier(Modifier::DIM)
+                        // unfocused selected
+                        Style::default().add_modifier(Modifier::REVERSED)
                     }
                 } else {
-                    Style::default().add_modifier(Modifier::DIM)
+                    // no background + bright text
+                    Style::default()
                 };
                 (line, style)
             }
@@ -327,7 +324,7 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             if x < buf.area().width && row_y < buf.area().height {
                 let cell = &mut buf[(x, row_y)];
                 cell.set_symbol(" ");
-                cell.set_style(if is_selected && focused {
+                cell.set_style(if is_selected {
                     fg_style
                 } else {
                     bg_style
