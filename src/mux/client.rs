@@ -1021,7 +1021,11 @@ pub fn run(
                     last_sidebar_refresh = std::time::Instant::now();
                     let (entries, selected) = build_sidebar_entries(session_name);
                     if entries.iter().map(|e| e.running).collect::<Vec<_>>()
-                        != sidebar.entries.iter().map(|e| e.running).collect::<Vec<_>>()
+                        != sidebar
+                            .entries
+                            .iter()
+                            .map(|e| e.running)
+                            .collect::<Vec<_>>()
                     {
                         sidebar.entries = entries;
                         sidebar.selected = selected;
