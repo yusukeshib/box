@@ -77,6 +77,16 @@ fn delete_session(name: &str) {
     }
 }
 
+/// Find any running session across all workspaces, excluding `exclude`.
+fn find_any_running_session(exclude: &str) -> Option<String> {
+    session::list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.local && s.name != exclude)
+        .map(|s| s.name)
+        .find(|n| session::is_local_running(n))
+}
+
 /// Build the sidebar session list with workspace grouping.
 /// Returns entries and the index of the current session.
 fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
@@ -153,7 +163,7 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
         })
         .max()
         .unwrap_or(8);
-    let w = (max_name + 2).clamp(16, 24);
+    let w = (max_name + 2).clamp(20, 30);
     w as u16
 }
 
@@ -793,6 +803,10 @@ pub fn run(
                     dirty = true;
                 }
                 ServerMsg::Exited(code) => {
+                    if let Some(next) = find_any_running_session(session_name) {
+                        unsafe { libc::close(tty_input_fd) };
+                        return Ok(ClientResult::SwitchSession(next, None));
+                    }
                     return Ok(ClientResult::Exit(code));
                 }
             },
@@ -818,14 +832,7 @@ pub fn run(
                         SidebarAction::DeleteSession(name) => {
                             delete_session(&name);
                             if name == session_name {
-                                // Deleted the current session — switch or exit
-                                let ws = session::workspace_name(&name);
-                                let next = session::workspace_sessions(ws)
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|s| format!("{}/{}", ws, s))
-                                    .find(|n| session::is_local_running(n));
-                                match next {
+                                match find_any_running_session(&name) {
                                     Some(next_session) => {
                                         unsafe { libc::close(tty_input_fd) };
                                         return Ok(ClientResult::SwitchSession(next_session, None));
@@ -898,13 +905,7 @@ pub fn run(
                         SidebarAction::DeleteSession(name) => {
                             delete_session(&name);
                             if name == session_name {
-                                let ws = session::workspace_name(&name);
-                                let next = session::workspace_sessions(ws)
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|s| format!("{}/{}", ws, s))
-                                    .find(|n| session::is_local_running(n));
-                                match next {
+                                match find_any_running_session(&name) {
                                     Some(next_session) => {
                                         unsafe { libc::close(tty_input_fd) };
                                         return Ok(ClientResult::SwitchSession(next_session, None));
