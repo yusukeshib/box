@@ -165,7 +165,7 @@ pub fn build_run_args(cfg: &DockerRunConfig) -> Result<Vec<String>> {
     let ws = session::workspace_name(cfg.name);
     let workspace_dir = Path::new(cfg.home).join(".box").join("workspaces").join(ws);
     let workspace_dir = workspace_dir.to_string_lossy();
-    let container_name = format!("box-{}", cfg.name.replace('/', "-"));
+    let container_name = container_label(cfg.name);
     let interactive_flag = if cfg.detach { "-d" } else { "-it" };
     let mut args: Vec<String> = vec![
         "run".into(),

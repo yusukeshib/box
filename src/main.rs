@@ -341,20 +341,31 @@ fn resolve_project_dir(
 
 /// `box` with no args: resume the first session, or prompt to create if none exist.
 fn cmd_default() -> Result<i32> {
-    let sessions = session::list()?;
+    let mut sessions = session::list()?;
     if sessions.is_empty() {
         return cmd_create_tui();
     }
+
+    // Populate running status
+    let has_docker_sessions = sessions.iter().any(|s| !s.local);
+    if has_docker_sessions && docker::check().is_ok() {
+        let running = docker::running_sessions();
+        for s in &mut sessions {
+            if !s.local {
+                s.running = running.contains(&s.name.replace('/', "-"));
+            }
+        }
+    }
+    for s in &mut sessions {
+        if s.local {
+            s.running = session::is_local_running(&s.name);
+        }
+    }
+
     // Prefer first running session, otherwise first session
     let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
-    let target = sessions
-        .iter()
-        .find(|s| s.running || (s.local && session::is_local_running(&s.name)))
-        .or(sessions.first());
-    match target {
-        Some(s) => cmd_resume(&s.name, &docker_args, false),
-        None => cmd_create_tui(),
-    }
+    let target = sessions.iter().find(|s| s.running).unwrap_or(&sessions[0]);
+    cmd_resume(&target.name, &docker_args, false)
 }
 
 /// `box create` with no name: prompt for session details.
