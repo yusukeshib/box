@@ -314,16 +314,22 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
             }
             SidebarEntryKind::Session => {
                 let line = format!("   {}", entry.display);
-                let style = if is_selected {
-                    if focused {
-                        Style::default().bg(Color::Blue).fg(Color::White)
-                    } else {
-                        Style::default().bg(Color::DarkGray).fg(Color::White)
-                    }
-                } else if focused {
-                    Style::default()
+                let fg = if entry.running {
+                    Color::White
                 } else {
-                    Style::default().fg(Color::DarkGray)
+                    Color::DarkGray
+                };
+                let style = if is_selected {
+                    let bg = if focused {
+                        Color::Blue
+                    } else {
+                        Color::DarkGray
+                    };
+                    // Avoid invisible text when fg == bg
+                    let sel_fg = if fg == bg { Color::Gray } else { fg };
+                    Style::default().bg(bg).fg(sel_fg)
+                } else {
+                    Style::default().fg(fg)
                 };
                 (line, style)
             }
