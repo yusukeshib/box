@@ -240,6 +240,23 @@ fn draw_sidebar(
             }
         }
 
+        // Draw "+" button for workspace headers (" +")
+        if entry.kind == SidebarEntryKind::WorkspaceHeader {
+            let plus_style = Style::default().bg(Color::Black).fg(Color::White);
+            let space_pos = area.x + content_width - 3;
+            let plus_pos = area.x + content_width - 2;
+            if space_pos < buf.area().width && row_y < buf.area().height {
+                let cell = &mut buf[(space_pos, row_y)];
+                cell.set_symbol(" ");
+                cell.set_style(plus_style);
+            }
+            if plus_pos < buf.area().width && row_y < buf.area().height {
+                let cell = &mut buf[(plus_pos, row_y)];
+                cell.set_symbol("+");
+                cell.set_style(plus_style);
+            }
+        }
+
         // Draw "x" button for session entries
         if entry.kind == SidebarEntryKind::Session {
             let x_pos = area.x + content_width - 2;
@@ -357,8 +374,17 @@ fn process_sidebar_input(
         while i < data.len() {
             let b = data[i];
             match b {
-                // ESC → cancel input
+                // ESC — check if it's a mouse sequence; if so, skip it
                 0x1b => {
+                    if i + 2 < data.len() && data[i + 1] == b'[' && data[i + 2] == b'<' {
+                        // SGR mouse sequence — skip until terminator
+                        let mut j = i + 3;
+                        while j < data.len() && data[j] != b'M' && data[j] != b'm' {
+                            j += 1;
+                        }
+                        i = j + 1;
+                        continue;
+                    }
                     sidebar.new_session_input = None;
                     return SidebarAction::Redraw;
                 }
@@ -524,8 +550,14 @@ fn parse_sidebar_mouse(
                     let entry_idx = (row - 1) as usize;
                     if entry_idx < sidebar.entries.len() {
                         let entry = &sidebar.entries[entry_idx];
-                        // Skip workspace headers
+                        // Workspace header: check for "+" button click
                         if entry.kind == SidebarEntryKind::WorkspaceHeader {
+                            let content_width = sb_width.saturating_sub(1);
+                            let plus_col = content_width;
+                            if col >= plus_col.saturating_sub(1) && col <= plus_col {
+                                sidebar.new_session_input = Some(String::new());
+                                return Some((SidebarAction::Redraw, consumed));
+                            }
                             return Some((SidebarAction::None, consumed));
                         }
 
