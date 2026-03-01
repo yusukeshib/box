@@ -20,21 +20,14 @@ Boxは**隔離された**gitワークスペースと**永続的な**ターミナ
 
 **2. 内蔵ターミナルマルチプレクサによるセッション永続化**
 
-すべてのセッションはスクロールバック、マウスサポート、永続的な接続を備えたターミナルマルチプレクサ内で実行されます。デタッチと再接続を自由に行えます — プロセスはバックグラウンドで実行され続けます。
-
-```
- COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
-$ make test
-...
-```
+すべてのセッションはスクロールバック、マウスサポート、永続的な接続を備えたターミナルマルチプレクサ内で実行されます。デタッチと再接続を自由に行えます — プロセスはバックグラウンドで実行され続けます。サイドバーで現在のワークスペースの全セッションをすばやく切り替えられます。
 
 ## 特徴
 
 - **隔離されたgitワークスペース** — `git clone --local`（デフォルト）または `git worktree` でセッションごとにワークスペースを作成。ホストのファイルは変更されない
 - **永続的なセッション** — `Ctrl+P` → `Ctrl+Q` でデタッチ、`box resume` で再接続。プロセスは実行され続ける
 - **ターミナルマルチプレクサ** — スクロールバック履歴、マウススクロール、スクロールバー、ナビゲーション用COMMANDモード
-- **名前付きセッション** — 複数の実験を並行して、それぞれ独自のワークスペースで実行
-- **セッションマネージャーTUI** — セッションの作成、再開、管理のための対話型ダッシュボード
+- **マルチセッションワークスペース** — ワークスペースごとに複数セッションを実行（例: `my-feature/zsh`、`my-feature/server`）。サイドバーで素早く切り替え
 - **Dockerモード** — 任意のDockerイメージによるオプションの完全コンテナ隔離（`BOX_MODE=docker`）
 
 ## 必要なもの
@@ -75,8 +68,9 @@ nix run github:yusukeshib/box
 ## クイックスタート
 
 ```bash
-box my-feature
+box create my-feature
 # 隔離されたgitワークスペースを作成し、その中でシェルを開く
+# セッション名はコマンドから自動生成: my-feature/zsh
 ```
 
 Boxはgitリポジトリ内で実行する必要があります。現在のリポジトリを `~/.box/workspaces/<name>/` にクローンします。
@@ -90,11 +84,13 @@ $ make test  # 自由に壊してOK
 # プロセスはバックグラウンドで実行され続ける
 
 # 後で再接続
-box resume my-feature
+box resume my-feature/zsh
 
 # 完了？クリーンアップ
 box remove my-feature
 ```
+
+引数なしで `box` を実行すると、最初の実行中セッションを再開します。セッションがない場合は作成プロンプトが表示されます。
 
 ## ターミナルマルチプレクサ
 
@@ -102,11 +98,7 @@ box remove my-feature
 
 ### COMMANDモード
 
-`Ctrl+P`（設定変更可能）を押すとCOMMANDモードに入ります。ヘッダーバーがダークグレーに変わり、利用可能なキーが表示されます：
-
-```
- COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
-```
+`Ctrl+P`（設定変更可能）を押すとCOMMANDモードに入ります：
 
 | キー | 動作 |
 |-----|--------|
@@ -116,11 +108,17 @@ box remove my-feature
 | `Ctrl+D` | 半ページ下にスクロール |
 | `矢印キー` | 上下スクロール |
 | `PgUp` / `PgDn` | 半ページスクロール |
-| `Ctrl+Q` | セッションからデタッチ（プロセスは実行され続ける） |
+| `Ctrl+Q` | boxを終了 |
 | `Ctrl+X` | セッションを停止/キル |
+| `A` | セッションサイドバーにフォーカス（Enterで切替、Escでキャンセル） |
+| `N` | 現在のワークスペースに新しいセッションを作成 |
 | `Esc` | COMMANDモードを終了（最下部にスナップ） |
 
 マウススクロールは通常モードとCOMMANDモードの両方で動作します。スクロールバックコンテンツがある場合、スクロールバーが表示されます。
+
+### セッションサイドバー
+
+左側のサイドバーに現在のワークスペースの全セッションが表示されます。セッションをクリックして切り替えるか、`Ctrl+P` → `A` でキーボードナビゲーションによるサイドバーフォーカスが可能です。セッションが終了すると（例: シェルでCtrl+D）、同じワークスペース内の別の実行中セッションに自動的に切り替わります。
 
 ### プレフィックスキーの設定
 
@@ -133,37 +131,29 @@ prefix_key = "Ctrl+B"   # デフォルト: "Ctrl+P"
 
 `Ctrl+A` から `Ctrl+Z` まで対応しています。
 
-## セッションマネージャー
+## セッション名
 
-引数なしで `box` を実行すると、対話型TUIが開きます：
+セッションは `ワークスペース/セッション` の命名規則を使用します：
 
-```
- NAME            PROJECT      MODE    STATUS   CMD      IMAGE            CREATED
-  New box...
-> my-feature     /U/y/p/app   local   running  bash                      2026-02-07 12:00:00 UTC
-  experiment     /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
-  docker-test    /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
-
- [Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit
+```bash
+box create my-feature                # → my-feature/zsh（コマンド名からセッション名を生成）
+box create my-feature -- python      # → my-feature/python
+box create my-feature/server -- node # → my-feature/server
 ```
 
-- **Enter** — セッションを再開、または「New box...」で新規作成
-- **c** — セッションのワークスペースディレクトリにcd
-- **o** — セッションの元のプロジェクトディレクトリにcd
-- **d** — ハイライト中のセッションを削除（確認あり）
-- **q** / **Esc** — 終了
+複数のセッションがワークスペースを共有できます — それぞれ独自のターミナルを持ちますが、同じgitワークスペースディレクトリを使用します。
 
 ## 使い方
 
 ```bash
-box                                               セッションマネージャー（TUI）
-box <name> [--local] [--docker] [--strategy <s>] [--color <color>]  `box create <name>` のショートカット
-box create <name> [--local] [--docker] [--strategy <s>] [--color <color>] [options] [-- cmd...] 新しいセッションを作成
+box                                               最初の実行中セッションを再開
+box <name> [--local] [--docker] [--strategy <s>]  `box create <name>` のショートカット
+box create [name] [--local] [--docker] [--strategy <s>] [options] [-- cmd...]  新しいセッションを作成
 box resume <name> [-d] [--docker-args <args>]     既存のセッションを再開
 box stop <name>                                   実行中のセッションを停止
 box exec <name> -- <cmd...>                       実行中のセッションでコマンドを実行
 box list [options]                                セッション一覧を表示（エイリアス: ls）
-box remove <name>                                 セッションを削除
+box remove <name>                                 セッションまたはワークスペースを削除
 box cd <name>                                     ホストのプロジェクトディレクトリを表示
 box path <name>                                   ワークスペースパスを表示
 box origin                                        ワークスペースから元のプロジェクトディレクトリにcd
@@ -177,12 +167,15 @@ box upgrade                                       最新版にアップグレー
 # ショートカット: 名前を渡すだけ
 box my-feature
 
+# 対話型プロンプト（名前、コマンドを入力）
+box create
+
 # コマンドを指定して作成
 box create my-feature -- make test
 
-# ヘッダーの背景色をカスタマイズ
-box create my-feature --color blue
-box my-feature --color '#ff6600'
+# 同じワークスペースに複数セッション
+box create my-feature/server -- node server.js
+box create my-feature/test -- make test
 
 # cloneの代わりにgit worktreeを使用（より高速、オブジェクトストアを共有）
 box create my-feature --strategy worktree
@@ -253,7 +246,6 @@ box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 | `--local` | ローカルセッションを作成（デフォルト） |
 | `--docker` | Dockerセッションを作成（Docker必要） |
 | `--image <image>` | 使用するDockerイメージ（デフォルト: `alpine:latest`） |
-| `--color <color>` | ヘッダーの背景色（色名、`#rrggbb` 16進数、またはANSI 256番号） |
 | `--strategy <strategy>` | ワークスペース戦略: `clone`（デフォルト）または `worktree`。`$BOX_STRATEGY` を上書き |
 | `--docker-args <args>` | 追加のDockerフラグ（例: `-e KEY=VALUE`、`-v /host:/container`）。`$BOX_DOCKER_ARGS` を上書き |
 | `-- cmd...` | 実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
@@ -309,7 +301,7 @@ your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
 内蔵ターミナルマルチプレクサは各セッションを以下の機能でラップします：
 - **セッション永続化** — プロセスはバックグラウンドサーバーで実行され、中断なくデタッチ・再接続が可能
 - **スクロールバック** — 10,000行の履歴をキーボードとマウスでナビゲーション
-- **ヘッダーバー** — セッション名、スクロール位置、COMMANDモードのステータスを表示
+- **セッションサイドバー** — ワークスペース内の全セッションを表示し、素早く切り替え
 
 | 項目 | 詳細 |
 |--------|--------|
@@ -344,9 +336,10 @@ your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
 Boxにはセッション永続化 — 実行中のプロセスからデタッチして後で再接続する機能 — が必要です。tmuxやscreenを外部依存として要求する代わりに、専用のターミナルマルチプレクサを内蔵しています：
 
 - 設定不要 — そのまま動作
-- 全セッションで一貫したUI（ヘッダーバー、スクロールバック、COMMANDモード）
+- 全セッションで一貫したUI（サイドバー、スクロールバック、COMMANDモード）
 - セッション永続化のためのクライアント-サーバーアーキテクチャを透過的に処理
 - マウススクロールとビジュアルスクロールバーで出力履歴をナビゲーション
+- マルチセッションサイドバーでワークスペースごとに複数ターミナルを実行
 
 </details>
 

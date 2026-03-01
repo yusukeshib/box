@@ -20,21 +20,14 @@ Each session gets its own workspace. By default, `git clone --local` creates a f
 
 **2. Built-in terminal multiplexer for persistent sessions**
 
-Every session runs inside a terminal multiplexer with scrollback, mouse support, and a persistent connection. Detach and reattach freely — your process keeps running in the background.
-
-```
- COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
-$ make test
-...
-```
+Every session runs inside a terminal multiplexer with scrollback, mouse support, and a persistent connection. Detach and reattach freely — your process keeps running in the background. A sidebar shows all sessions in the current workspace for quick switching.
 
 ## Features
 
 - **Isolated git workspaces** — `git clone --local` (default) or `git worktree` for per-session workspaces; host files are never modified
 - **Persistent sessions** — detach with `Ctrl+P` → `Ctrl+Q`, reattach with `box resume`; processes keep running
 - **Terminal multiplexer** — scrollback history, mouse scroll, scrollbar, COMMAND mode for navigation
-- **Named sessions** — run multiple experiments in parallel, each with its own workspace
-- **Session manager TUI** — interactive dashboard to create, resume, and manage sessions
+- **Multi-session workspaces** — run multiple sessions per workspace (e.g. `my-feature/zsh`, `my-feature/server`) with a sidebar for quick switching
 - **Docker mode** — optional full container isolation with any Docker image (`BOX_MODE=docker`)
 
 ## Requirements
@@ -75,8 +68,9 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 ## Quick Start
 
 ```bash
-box my-feature
+box create my-feature
 # Creates an isolated git workspace and opens a shell inside it
+# Session name is derived from the command: my-feature/zsh
 ```
 
 Box must be run inside a git repository. It clones the current repo into `~/.box/workspaces/<name>/`.
@@ -90,11 +84,13 @@ $ make test  # break things freely
 # Your process keeps running in the background
 
 # Reattach later
-box resume my-feature
+box resume my-feature/zsh
 
 # Done? Clean up
 box remove my-feature
 ```
+
+Running `box` with no arguments resumes the first running session. If no sessions exist, it prompts to create one.
 
 ## Terminal Multiplexer
 
@@ -102,11 +98,7 @@ Every box session runs inside a built-in terminal multiplexer. This gives you se
 
 ### COMMAND mode
 
-Press `Ctrl+P` (configurable) to enter COMMAND mode. The header bar turns dark gray and shows available keys:
-
-```
- COMMAND  ^P/^N scroll  ^Q detach  ^X stop  Esc exit              x
-```
+Press `Ctrl+P` (configurable) to enter COMMAND mode:
 
 | Key | Action |
 |-----|--------|
@@ -116,11 +108,17 @@ Press `Ctrl+P` (configurable) to enter COMMAND mode. The header bar turns dark g
 | `Ctrl+D` | Scroll down half page |
 | `Arrow keys` | Scroll up/down |
 | `PgUp` / `PgDn` | Scroll by half page |
-| `Ctrl+Q` | Detach from session (process keeps running) |
+| `Ctrl+Q` | Quit box |
 | `Ctrl+X` | Stop/kill the session |
+| `A` | Focus the session sidebar (Enter to switch, Esc to cancel) |
+| `N` | Create a new session in the current workspace |
 | `Esc` | Exit COMMAND mode (snap to bottom) |
 
 Mouse scroll works in both normal and COMMAND mode. A scrollbar appears when there is scrollback content.
+
+### Session sidebar
+
+The sidebar on the left shows all sessions in the current workspace. Click a session to switch to it, or use `Ctrl+P` → `A` to focus the sidebar with keyboard navigation. When a session exits (e.g. Ctrl+D in the shell), box automatically switches to another running session in the same workspace.
 
 ### Configuring the prefix key
 
@@ -133,37 +131,29 @@ prefix_key = "Ctrl+B"   # default: "Ctrl+P"
 
 Supports `Ctrl+A` through `Ctrl+Z`.
 
-## Session Manager
+## Session Naming
 
-Running `box` with no arguments opens an interactive TUI:
+Sessions use a `workspace/session` naming convention:
 
-```
- NAME            PROJECT      MODE    STATUS   CMD      IMAGE            CREATED
-  New box...
-> my-feature     /U/y/p/app   local   running  bash                      2026-02-07 12:00:00 UTC
-  experiment     /U/y/p/app   local                                      2026-02-07 12:15:00 UTC
-  docker-test    /U/y/p/other docker                    ubuntu:latest    2026-02-07 12:30:00 UTC
-
- [Enter] Resume  [c] Cd  [o] Origin  [d] Delete  [q] Quit
+```bash
+box create my-feature                # → my-feature/zsh (session name from command)
+box create my-feature -- python      # → my-feature/python
+box create my-feature/server -- node # → my-feature/server
 ```
 
-- **Enter** — resume a session, or create a new one on "New box..."
-- **c** — cd to the session's workspace directory
-- **o** — cd to the session's origin project directory
-- **d** — delete the highlighted session (with confirmation)
-- **q** / **Esc** — quit
+Multiple sessions can share a workspace — each gets its own terminal but uses the same git workspace directory.
 
 ## Usage
 
 ```bash
-box                                               Session manager (TUI)
-box <name> [--local] [--docker] [--strategy <s>] [--color <color>]  Shortcut for `box create <name>`
-box create <name> [--local] [--docker] [--strategy <s>] [--color <color>] [options] [-- cmd...] Create a new session
+box                                               Resume first running session
+box <name> [--local] [--docker] [--strategy <s>]  Shortcut for `box create <name>`
+box create [name] [--local] [--docker] [--strategy <s>] [options] [-- cmd...]  Create a new session
 box resume <name> [-d] [--docker-args <args>]     Resume an existing session
 box stop <name>                                   Stop a running session
 box exec <name> -- <cmd...>                       Run a command in a running session
 box list [options]                                List sessions (alias: ls)
-box remove <name>                                 Remove a session
+box remove <name>                                 Remove a session or workspace
 box cd <name>                                     Print host project directory
 box path <name>                                   Print workspace path
 box origin                                        Cd back to origin project from workspace
@@ -177,12 +167,15 @@ box upgrade                                       Upgrade to latest version
 # Shortcut: just pass a name
 box my-feature
 
+# Interactive prompt (asks for name, command)
+box create
+
 # With a specific command
 box create my-feature -- make test
 
-# With a custom header color
-box create my-feature --color blue
-box my-feature --color '#ff6600'
+# Multiple sessions in the same workspace
+box create my-feature/server -- node server.js
+box create my-feature/test -- make test
 
 # Use git worktree instead of clone (faster, shares object store)
 box create my-feature --strategy worktree
@@ -253,7 +246,6 @@ box create my-feature --docker --docker-args "-e KEY=VALUE -v /host:/container"
 | `--local` | Create a local session (default) |
 | `--docker` | Create a Docker session (requires Docker) |
 | `--image <image>` | Docker image to use (default: `alpine:latest`) |
-| `--color <color>` | Header background color (name, `#rrggbb` hex, or ANSI 256 number) |
 | `--strategy <strategy>` | Workspace strategy: `clone` (default) or `worktree`. Overrides `$BOX_STRATEGY` |
 | `--docker-args <args>` | Extra Docker flags (e.g. `-e KEY=VALUE`, `-v /host:/container`). Overrides `$BOX_DOCKER_ARGS` |
 | `-- cmd...` | Command to run (default: `$BOX_DEFAULT_CMD` if set) |
@@ -309,7 +301,7 @@ With `--strategy worktree`, box uses `git worktree add --detach` instead. This s
 The built-in terminal multiplexer wraps each session with:
 - **Session persistence** — the process runs in a background server; detach and reattach without interruption
 - **Scrollback** — 10,000 lines of history with keyboard and mouse navigation
-- **Header bar** — shows session name, scroll position, and COMMAND mode status
+- **Session sidebar** — shows all sessions in the workspace for quick switching
 
 | Aspect | Detail |
 |--------|--------|
@@ -344,9 +336,10 @@ That said, `git worktree` is available via `--strategy worktree` for cases where
 Box needs session persistence — the ability to detach from a running process and reattach later. Rather than requiring tmux or screen as external dependencies, box includes a purpose-built terminal multiplexer that:
 
 - Requires zero configuration — works out of the box
-- Provides a consistent UI across all sessions (header bar, scrollback, COMMAND mode)
+- Provides a consistent UI across all sessions (sidebar, scrollback, COMMAND mode)
 - Handles the client-server architecture for session persistence transparently
 - Supports mouse scroll and a visual scrollbar for navigating output history
+- Multi-session sidebar for running multiple terminals per workspace
 
 </details>
 
