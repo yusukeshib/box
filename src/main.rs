@@ -60,8 +60,8 @@ enum Commands {
 
 #[derive(clap::Args, Debug)]
 struct CreateArgs {
-    /// Session name
-    name: String,
+    /// Session name (omit to open the interactive session manager)
+    name: Option<String>,
 
     /// Run container in the background (detached)
     #[arg(short = 'd')]
@@ -185,30 +185,35 @@ fn main() {
                 );
                 std::process::exit(1);
             }
-            let local = if args.docker {
-                false
-            } else {
-                args.local || is_local_mode()
-            };
-            let docker_args = args
-                .docker_args
-                .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
-                .unwrap_or_default();
-            let cmd = if args.cmd.is_empty() {
-                None
-            } else {
-                Some(args.cmd)
-            };
-            cmd_create(
-                &args.name,
-                args.image,
-                &docker_args,
-                cmd,
-                args.detach,
-                local,
-                args.color,
-                args.strategy,
-            )
+            match args.name {
+                None => cmd_list(),
+                Some(name) => {
+                    let local = if args.docker {
+                        false
+                    } else {
+                        args.local || is_local_mode()
+                    };
+                    let docker_args = args
+                        .docker_args
+                        .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
+                        .unwrap_or_default();
+                    let cmd = if args.cmd.is_empty() {
+                        None
+                    } else {
+                        Some(args.cmd)
+                    };
+                    cmd_create(
+                        &name,
+                        args.image,
+                        &docker_args,
+                        cmd,
+                        args.detach,
+                        local,
+                        args.color,
+                        args.strategy,
+                    )
+                }
+            }
         }
         Some(Commands::Resume(args)) => {
             if std::env::var_os("BOX_SESSION").is_some() {
@@ -236,7 +241,7 @@ fn main() {
             ConfigShell::Zsh => cmd_config_zsh(),
             ConfigShell::Bash => cmd_config_bash(),
         },
-        None => cmd_list(),
+        None => cmd_default(),
     };
 
     match result {
@@ -337,6 +342,24 @@ fn resolve_project_dir(
 
     // Fall back to git root
     git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
+}
+
+/// `box` with no args: resume the first session, or open TUI if none exist.
+fn cmd_default() -> Result<i32> {
+    let sessions = session::list()?;
+    if sessions.is_empty() {
+        return cmd_list();
+    }
+    // Prefer first running session, otherwise first session
+    let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
+    let target = sessions
+        .iter()
+        .find(|s| s.running || (s.local && session::is_local_running(&s.name)))
+        .or(sessions.first());
+    match target {
+        Some(s) => cmd_resume(&s.name, &docker_args, false),
+        None => cmd_list(),
+    }
 }
 
 fn cmd_list() -> Result<i32> {
@@ -555,16 +578,8 @@ fn cmd_create(
 
     session::validate_name(name)?;
 
-    let full = session::full_name(name);
     let (ws, _sess_part) = session::parse_name(name);
-
-    if session::session_exists(&full)? {
-        bail!(
-            "Session '{}' already exists. Use `box resume {}` to resume it.",
-            full,
-            full
-        );
-    }
+    let has_explicit_session = name.contains('/');
 
     // If workspace already exists, inherit settings from the first session
     let (project_dir, inherited_image, inherited_strategy) = if session::workspace_exists(ws)? {
@@ -589,8 +604,9 @@ fn cmd_create(
         (project_dir, None, None)
     };
 
-    let cfg = config::resolve(config::BoxConfigInput {
-        name: full.clone(),
+    // Resolve config first to know the command
+    let mut cfg = config::resolve(config::BoxConfigInput {
+        name: String::new(), // placeholder, set below
         image: image.or(inherited_image),
         mount_path: None,
         project_dir,
@@ -601,7 +617,30 @@ fn cmd_create(
         strategy: strategy.or(inherited_strategy),
     })?;
 
-    let display = cfg.label.as_deref().unwrap_or(&cfg.name);
+    // Derive session part from command basename when user gave a bare workspace name
+    let full = if has_explicit_session {
+        session::full_name(name)
+    } else {
+        let sess_part = cfg
+            .command
+            .first()
+            .and_then(|s| {
+                std::path::Path::new(s)
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+            })
+            .unwrap_or_else(|| "default".to_string());
+        format!("{}/{}", ws, sess_part)
+    };
+    cfg.name = full.clone();
+
+    if session::session_exists(&full)? {
+        bail!(
+            "Session '{}' already exists. Use `box resume {}` to resume it.",
+            full,
+            full
+        );
+    }
 
     if local {
         eprintln!("\x1b[2msession:\x1b[0m {}", display);
@@ -1336,7 +1375,7 @@ mod tests {
         let cli = parse(&["create", "my-session"]);
         match cli.command {
             Some(Commands::Create(args)) => {
-                assert_eq!(args.name, "my-session");
+                assert_eq!(args.name.as_deref(), Some("my-session"));
                 assert!(!args.detach);
                 assert!(!args.local);
                 assert!(args.image.is_none());
@@ -1352,7 +1391,7 @@ mod tests {
         let cli = parse(&["create", "my-session", "--local"]);
         match cli.command {
             Some(Commands::Create(args)) => {
-                assert_eq!(args.name, "my-session");
+                assert_eq!(args.name.as_deref(), Some("my-session"));
                 assert!(args.local);
                 assert!(!args.detach);
             }
@@ -1376,7 +1415,7 @@ mod tests {
         ]);
         match cli.command {
             Some(Commands::Create(args)) => {
-                assert_eq!(args.name, "full-session");
+                assert_eq!(args.name.as_deref(), Some("full-session"));
                 assert!(args.detach);
                 assert_eq!(args.image.as_deref(), Some("python:3.11"));
                 assert_eq!(
@@ -1394,7 +1433,7 @@ mod tests {
         let cli = parse(&["create", "my-session", "--image", "ubuntu:latest"]);
         match cli.command {
             Some(Commands::Create(args)) => {
-                assert_eq!(args.name, "my-session");
+                assert_eq!(args.name.as_deref(), Some("my-session"));
                 assert_eq!(args.image.as_deref(), Some("ubuntu:latest"));
             }
             other => panic!("expected Create, got {:?}", other),
@@ -1406,7 +1445,7 @@ mod tests {
         let cli = parse(&["create", "my-session", "--", "bash", "-c", "echo hi"]);
         match cli.command {
             Some(Commands::Create(args)) => {
-                assert_eq!(args.name, "my-session");
+                assert_eq!(args.name.as_deref(), Some("my-session"));
                 assert_eq!(args.cmd, vec!["bash", "-c", "echo hi"]);
             }
             other => panic!("expected Create, got {:?}", other),
@@ -1418,7 +1457,7 @@ mod tests {
         let cli = parse(&["create", "my-session", "-d"]);
         match cli.command {
             Some(Commands::Create(args)) => {
-                assert_eq!(args.name, "my-session");
+                assert_eq!(args.name.as_deref(), Some("my-session"));
                 assert!(args.detach);
             }
             other => panic!("expected Create, got {:?}", other),
@@ -1426,9 +1465,14 @@ mod tests {
     }
 
     #[test]
-    fn test_create_requires_name() {
-        let result = try_parse(&["create"]);
-        assert!(result.is_err());
+    fn test_create_no_name_opens_tui() {
+        let cli = parse(&["create"]);
+        match cli.command {
+            Some(Commands::Create(args)) => {
+                assert!(args.name.is_none());
+            }
+            _ => panic!("expected Create"),
+        }
     }
 
     // -- resume subcommand --
