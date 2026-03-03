@@ -1,6 +1,6 @@
 # Project: box
 
-Sandboxed Docker environments for git repos. Written in Rust.
+Sandboxed git workspaces for development. Written in Rust.
 
 ## Setup
 

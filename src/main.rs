@@ -1,8 +1,8 @@
 mod config;
-mod docker;
 mod git;
 mod session;
 mod tui;
+mod workspace;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
@@ -13,8 +13,8 @@ use std::path::Path;
 #[derive(Parser)]
 #[command(
     name = "box",
-    about = "Sandboxed Docker environments for git repos (supports --local mode)",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box create my-feature                        # create a new session\n  box create my-feature --image ubuntu -- bash # create with options\n  box create my-feature --local                # create a local session (no Docker)\n  box resume my-feature                        # resume a session\n  box resume my-feature -d                     # resume in background\n  box stop my-feature                          # stop a running session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box list -q --running                        # names of running sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box upgrade                                  # self-update"
+    about = "Sandboxed git workspaces for development",
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box create my-feature                        # create a new session\n  box create my-feature -- bash                # create with a command\n  box resume my-feature                        # resume a session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -27,11 +27,9 @@ enum Commands {
     Create(CreateArgs),
     /// Resume an existing session
     Resume(ResumeArgs),
-    /// Remove a session (must be stopped first)
+    /// Remove a session
     Remove(RemoveArgs),
-    /// Stop a running session
-    Stop(StopArgs),
-    /// Run a command in a running session
+    /// Run a command in a session
     Exec(ExecArgs),
     /// List sessions
     #[command(alias = "ls")]
@@ -62,33 +60,12 @@ struct CreateArgs {
     /// Session name (omit to open the interactive session manager)
     name: Option<String>,
 
-    /// Run container in the background (detached)
-    #[arg(short = 'd')]
-    detach: bool,
-
-    /// Docker image to use (default: $BOX_DEFAULT_IMAGE or alpine:latest)
-    #[arg(long)]
-    image: Option<String>,
-
-    /// Extra Docker flags (e.g. -e KEY=VALUE, -v /host:/container, --network host).
-    /// Overrides $BOX_DOCKER_ARGS when provided.
-    #[arg(long = "docker-args", allow_hyphen_values = true)]
-    docker_args: Option<String>,
-
-    /// Create a local session (git workspace only, no Docker container)
-    #[arg(long)]
-    local: bool,
-
-    /// Create a Docker session (container isolation)
-    #[arg(long)]
-    docker: bool,
-
     /// Workspace strategy: clone (git clone --local) or worktree (git worktree add)
     /// Default: $BOX_STRATEGY or "clone"
     #[arg(long)]
     strategy: Option<String>,
 
-    /// Command to run in container (default: $BOX_DEFAULT_CMD if set)
+    /// Command to run in the workspace (default: $BOX_DEFAULT_CMD if set)
     #[arg(last = true)]
     cmd: Vec<String>,
 }
@@ -97,28 +74,10 @@ struct CreateArgs {
 struct ResumeArgs {
     /// Session name
     name: String,
-
-    /// Run container in the background (detached)
-    #[arg(short = 'd')]
-    detach: bool,
-
-    /// Extra Docker flags (e.g. -e KEY=VALUE, -v /host:/container, --network host).
-    /// Overrides $BOX_DOCKER_ARGS when provided.
-    #[arg(long = "docker-args", allow_hyphen_values = true)]
-    docker_args: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
 struct RemoveArgs {
-    /// Session name
-    name: String,
-    /// Stop running sessions before removing
-    #[arg(short, long)]
-    force: bool,
-}
-
-#[derive(clap::Args, Debug)]
-struct StopArgs {
     /// Session name
     name: String,
 }
@@ -128,19 +87,13 @@ struct ExecArgs {
     /// Session name
     name: String,
 
-    /// Command to run in the container
+    /// Command to run in the workspace
     #[arg(last = true, required = true)]
     cmd: Vec<String>,
 }
 
 #[derive(clap::Args, Debug)]
 struct ListArgs {
-    /// Show only running sessions
-    #[arg(long, short)]
-    running: bool,
-    /// Show only stopped sessions
-    #[arg(long, short)]
-    stopped: bool,
     /// Show only sessions for the current project directory
     #[arg(long, short)]
     project: bool,
@@ -155,12 +108,6 @@ enum ConfigShell {
     Zsh,
     /// Output Bash completions
     Bash,
-}
-
-fn is_local_mode() -> bool {
-    std::env::var("BOX_MODE")
-        .map(|v| v != "docker")
-        .unwrap_or(true)
 }
 
 fn main() {
@@ -178,15 +125,6 @@ fn main() {
             match args.name {
                 None => cmd_create_tui(),
                 Some(name) => {
-                    let local = if args.docker {
-                        false
-                    } else {
-                        args.local || is_local_mode()
-                    };
-                    let docker_args = args
-                        .docker_args
-                        .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
-                        .unwrap_or_default();
                     let cmd = if args.cmd.is_empty() {
                         None
                     } else {
@@ -196,17 +134,7 @@ fn main() {
                         .strategy
                         .map(|s| s.parse::<config::Strategy>())
                         .transpose();
-                    strategy.and_then(|strategy| {
-                        cmd_create(
-                            &name,
-                            args.image,
-                            &docker_args,
-                            cmd,
-                            args.detach,
-                            local,
-                            strategy,
-                        )
-                    })
+                    strategy.and_then(|strategy| cmd_create(&name, cmd, strategy))
                 }
             }
         }
@@ -218,14 +146,9 @@ fn main() {
                 );
                 std::process::exit(1);
             }
-            let docker_args = args
-                .docker_args
-                .or_else(|| std::env::var("BOX_DOCKER_ARGS").ok())
-                .unwrap_or_default();
-            cmd_resume(&args.name, &docker_args, args.detach)
+            cmd_resume(&args.name)
         }
-        Some(Commands::Remove(args)) => cmd_remove(&args.name, args.force),
-        Some(Commands::Stop(args)) => cmd_stop(&args.name),
+        Some(Commands::Remove(args)) => cmd_remove(&args.name),
         Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
         Some(Commands::List(args)) => cmd_list_sessions(&args),
         Some(Commands::Cd { name }) => cmd_cd(&name),
@@ -348,38 +271,22 @@ fn resolve_project_dir(
 
 /// `box` with no args: resume the first session, or prompt to create if none exist.
 fn cmd_default() -> Result<i32> {
-    let mut sessions = session::list()?;
+    let sessions = session::list()?;
     if sessions.is_empty() {
         return cmd_create_tui();
     }
 
-    // Populate running status
-    let has_docker_sessions = sessions.iter().any(|s| !s.local);
-    if has_docker_sessions && docker::check().is_ok() {
-        let running = docker::running_sessions();
-        for s in &mut sessions {
-            if !s.local {
-                s.running = running.contains(&s.name.replace('/', "-"));
-            }
-        }
-    }
-    // Prefer first running session, otherwise first session
-    let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
-    let target = sessions.iter().find(|s| s.running).unwrap_or(&sessions[0]);
-    cmd_resume(&target.name, &docker_args, false)
+    cmd_resume(&sessions[0].name)
 }
 
 /// `box create` with no name: prompt for session details.
 fn cmd_create_tui() -> Result<i32> {
-    let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
     match tui::create_session()? {
         tui::TuiAction::New {
             name,
-            image,
             command,
-            local,
             strategy,
-        } => cmd_create(&name, image, &docker_args, command, false, local, strategy),
+        } => cmd_create(&name, command, strategy),
         _ => Ok(0),
     }
 }
@@ -387,22 +294,6 @@ fn cmd_create_tui() -> Result<i32> {
 fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     let mut sessions = session::list()?;
 
-    let has_docker_sessions = sessions.iter().any(|s| !s.local);
-    if has_docker_sessions {
-        docker::check()?;
-        let running = docker::running_sessions();
-        for s in &mut sessions {
-            if !s.local {
-                s.running = running.contains(&s.name.replace('/', "-"));
-            }
-        }
-    }
-    if args.running {
-        sessions.retain(|s| s.running);
-    }
-    if args.stopped {
-        sessions.retain(|s| !s.running);
-    }
     if args.project {
         let cwd = std::env::current_dir()?;
         let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
@@ -435,14 +326,6 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max()
         .unwrap_or(0)
         .max(4);
-    let mode_w = 6; // "docker" or "local"
-    let status_w = 7; // "running" or "stopped"
-    let image_w = sessions
-        .iter()
-        .map(|s| s.image.len())
-        .max()
-        .unwrap_or(0)
-        .max(5);
 
     let shorten_path = |p: &str| -> String { shorten_project_path(p, &home) };
 
@@ -460,31 +343,24 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max(3);
 
     println!(
-        "\x1b[2m  {:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  CREATED\x1b[0m",
-        "NAME", "PROJECT", "MODE", "STATUS", "CMD", "IMAGE",
+        "\x1b[2m  {:<name_w$}  {:<project_w$}  {:<command_w$}  CREATED\x1b[0m",
+        "NAME", "PROJECT", "CMD",
     );
 
     for s in &sessions {
-        let mode = if s.local { "local" } else { "docker" };
-        let status = if s.running { "running" } else { "stopped" };
         let project = shorten_path(&s.project_dir);
         println!(
-            "  {:<name_w$}  {:<project_w$}  {:<mode_w$}  {:<status_w$}  {:<command_w$}  {:<image_w$}  {}",
-            s.name, project, mode, status, s.command, s.image, s.created_at,
+            "  {:<name_w$}  {:<project_w$}  {:<command_w$}  {}",
+            s.name, project, s.command, s.created_at,
         );
     }
 
     Ok(0)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cmd_create(
     name: &str,
-    image: Option<String>,
-    docker_args: &str,
     cmd: Option<Vec<String>>,
-    detach: bool,
-    local: bool,
     strategy: Option<config::Strategy>,
 ) -> Result<i32> {
     session::validate_name(name)?;
@@ -493,15 +369,11 @@ fn cmd_create(
     let has_explicit_session = name.contains('/');
 
     // If workspace already exists, inherit settings from the first session
-    let (project_dir, inherited_image, inherited_strategy) = if session::workspace_exists(ws)? {
+    let (project_dir, inherited_strategy) = if session::workspace_exists(ws)? {
         let ws_sessions = session::workspace_sessions(ws)?;
         if let Some(first) = ws_sessions.first() {
             let parent = session::load(&format!("{}/{}", ws, first))?;
-            (
-                parent.project_dir.clone(),
-                Some(parent.image.clone()),
-                Some(parent.strategy.clone()),
-            )
+            (parent.project_dir.clone(), Some(parent.strategy.clone()))
         } else {
             return Err(anyhow::anyhow!("Workspace '{}' has no sessions.", ws));
         }
@@ -513,18 +385,15 @@ fn cmd_create(
             .to_string_lossy()
             .to_string();
         let project_dir = session::resolve_original_project_dir(&project_dir);
-        (project_dir, None, None)
+        (project_dir, None)
     };
 
-    // Resolve config first to know the command
+    // Resolve config
     let mut cfg = config::resolve(config::BoxConfigInput {
         name: String::new(), // placeholder, set below
-        image: image.or(inherited_image),
-        mount_path: None,
         project_dir,
         command: cmd,
         env: vec![],
-        local,
         strategy: strategy.or(inherited_strategy),
     })?;
 
@@ -553,39 +422,10 @@ fn cmd_create(
         );
     }
 
-    if local {
-        eprintln!("\x1b[2msession:\x1b[0m {}", full);
-        eprintln!("\x1b[2mmode:\x1b[0m local");
-        eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
-        if !cfg.command.is_empty() {
-            eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
-        }
-        eprintln!();
-
-        let sess = session::Session::from(cfg);
-        session::save(&sess)?;
-
-        let home = config::home_dir()?;
-        let workspace = docker::ensure_workspace(&home, ws, &sess.project_dir, &sess.strategy)?;
-        output_cd_path(&workspace);
-
-        if !sess.command.is_empty() {
-            return run_local_command(&sess.name, &sess.command);
-        }
-        return Ok(0);
-    }
-
-    docker::check()?;
-
     eprintln!("\x1b[2msession:\x1b[0m {}", full);
-    eprintln!("\x1b[2mimage:\x1b[0m {}", cfg.image);
-    eprintln!("\x1b[2mmount:\x1b[0m {}", cfg.mount_path);
     eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
     if !cfg.command.is_empty() {
         eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
-    }
-    if !docker_args.is_empty() {
-        eprintln!("\x1b[2mdocker args:\x1b[0m {}", docker_args);
     }
     eprintln!();
 
@@ -593,28 +433,16 @@ fn cmd_create(
     session::save(&sess)?;
 
     let home = config::home_dir()?;
-    let docker_args_opt = if docker_args.is_empty() {
-        None
-    } else {
-        Some(docker_args)
-    };
+    let workspace_path = workspace::ensure_workspace(&home, ws, &sess.project_dir, &sess.strategy)?;
+    output_cd_path(&workspace_path);
 
-    docker::remove_container(&full);
-    docker::run_container(&docker::DockerRunConfig {
-        name: &full,
-        project_dir: &sess.project_dir,
-        image: &sess.image,
-        mount_path: &sess.mount_path,
-        cmd: &sess.command,
-        env: &sess.env,
-        home: &home,
-        docker_args: docker_args_opt,
-        detach,
-        strategy: &sess.strategy,
-    })
+    if !sess.command.is_empty() {
+        return run_local_command(&sess.name, &sess.command);
+    }
+    Ok(0)
 }
 
-fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
+fn cmd_resume(name: &str) -> Result<i32> {
     session::validate_name(name)?;
 
     let full = session::full_name(name);
@@ -625,62 +453,18 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
         bail!("Project directory '{}' no longer exists.", sess.project_dir);
     }
 
-    if sess.local {
-        session::touch_resumed_at(&full)?;
-        let home = config::home_dir()?;
-        let workspace = Path::new(&home).join(".box").join("workspaces").join(ws);
-        output_cd_path(&workspace.to_string_lossy());
-
-        if !sess.command.is_empty() {
-            return run_local_command(&full, &sess.command);
-        }
-        return Ok(0);
-    }
-
-    docker::check()?;
-
-    if docker::container_is_running(&full) {
-        if detach {
-            println!("Session '{}' is already running.", full);
-            return Ok(0);
-        }
-        return docker::attach_container(&full);
-    }
-
-    println!("Resuming session '{}'...", full);
     session::touch_resumed_at(&full)?;
+    let home = config::home_dir()?;
+    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(ws);
+    output_cd_path(&workspace_path.to_string_lossy());
 
-    if docker::container_exists(&full) {
-        if detach {
-            docker::start_container_detached(&full)
-        } else {
-            docker::start_container(&full)
-        }
-    } else {
-        let home = config::home_dir()?;
-        let docker_args_opt = if docker_args.is_empty() {
-            None
-        } else {
-            Some(docker_args)
-        };
-
-        docker::remove_container(&full);
-        docker::run_container(&docker::DockerRunConfig {
-            name: &full,
-            project_dir: &sess.project_dir,
-            image: &sess.image,
-            mount_path: &sess.mount_path,
-            cmd: &sess.command,
-            env: &sess.env,
-            home: &home,
-            docker_args: docker_args_opt,
-            detach,
-            strategy: &sess.strategy,
-        })
+    if !sess.command.is_empty() {
+        return run_local_command(&full, &sess.command);
     }
+    Ok(0)
 }
 
-fn cmd_remove(name: &str, force: bool) -> Result<i32> {
+fn cmd_remove(name: &str) -> Result<i32> {
     session::validate_name(name)?;
 
     // If no '/' in name, remove entire workspace (all sessions)
@@ -693,7 +477,6 @@ fn cmd_remove(name: &str, force: bool) -> Result<i32> {
         let mut strategy = config::Strategy::Clone;
         let mut project_dir = String::new();
 
-        // Check all sessions are stopped (or stop them if --force)
         for sess_name in &ws_sessions {
             let full = format!("{}/{}", ws, sess_name);
             let sess = session::load(&full)?;
@@ -701,33 +484,9 @@ fn cmd_remove(name: &str, force: bool) -> Result<i32> {
                 project_dir = sess.project_dir.clone();
                 strategy = sess.strategy.clone();
             }
-            if !sess.local {
-                docker::check()?;
-                if docker::container_is_running(&full) {
-                    if force {
-                        docker::stop_container(&full)?;
-                        println!("Session '{}' stopped.", full);
-                    } else {
-                        bail!(
-                            "Session '{}' is still running. Stop it first with `box stop {}`.",
-                            full,
-                            full
-                        );
-                    }
-                }
-            }
         }
 
-        // Remove all sessions and containers
-        for sess_name in &ws_sessions {
-            let full = format!("{}/{}", ws, sess_name);
-            let sess = session::load(&full)?;
-            if !sess.local {
-                docker::remove_container(&full);
-            }
-        }
-
-        docker::remove_workspace(ws, &strategy);
+        workspace::remove_workspace(ws, &strategy);
         session::remove_workspace_dir(ws)?;
 
         if !project_dir.is_empty() {
@@ -751,70 +510,16 @@ fn cmd_remove(name: &str, force: bool) -> Result<i32> {
 
     let sess = session::load(&full)?;
 
-    if sess.local {
-        session::remove_dir(&full)?;
-        // If last session in workspace, remove workspace too
-        let remaining = session::workspace_sessions(ws).unwrap_or_default();
-        if remaining.is_empty() {
-            docker::remove_workspace(ws, &sess.strategy);
-            let _ = session::remove_workspace_dir(ws);
-        }
-        output_cd_path(&sess.project_dir);
-        println!("Session '{}' removed.", full);
-        return Ok(0);
-    }
-
-    docker::check()?;
-
-    if docker::container_is_running(&full) {
-        if force {
-            docker::stop_container(&full)?;
-            println!("Session '{}' stopped.", full);
-        } else {
-            bail!(
-                "Session '{}' is still running. Stop it first with `box stop {}`.",
-                full,
-                full
-            );
-        }
-    }
-
-    docker::remove_container(&full);
     session::remove_dir(&full)?;
     // If last session in workspace, remove workspace too
     let remaining = session::workspace_sessions(ws).unwrap_or_default();
     if remaining.is_empty() {
-        docker::remove_workspace(ws, &sess.strategy);
+        workspace::remove_workspace(ws, &sess.strategy);
         let _ = session::remove_workspace_dir(ws);
     }
-
     output_cd_path(&sess.project_dir);
     println!("Session '{}' removed.", full);
     Ok(0)
-}
-
-fn cmd_stop(name: &str) -> Result<i32> {
-    session::validate_name(name)?;
-
-    let full = session::full_name(name);
-
-    if !session::session_exists(&full)? {
-        bail!("Session '{}' not found.", full);
-    }
-
-    let sess = session::load(&full)?;
-
-    if sess.local {
-        bail!("Local sessions cannot run in the background.");
-    }
-
-    docker::check()?;
-
-    if !docker::container_is_running(&full) {
-        bail!("Session '{}' is not running.", full);
-    }
-
-    docker::stop_container(&full)
 }
 
 fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
@@ -827,25 +532,13 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
         bail!("Session '{}' not found.", full);
     }
 
-    let sess = session::load(&full)?;
-
-    if sess.local {
-        let home = config::home_dir()?;
-        let workspace = Path::new(&home).join(".box").join("workspaces").join(ws);
-        let status = std::process::Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .current_dir(workspace)
-            .status()?;
-        return Ok(status.code().unwrap_or(1));
-    }
-
-    docker::check()?;
-
-    if !docker::container_is_running(&full) {
-        bail!("Session '{}' is not running.", full);
-    }
-
-    docker::exec_container(&full, cmd)
+    let home = config::home_dir()?;
+    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(ws);
+    let status = std::process::Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .current_dir(workspace_path)
+        .status()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn cmd_cd(name: &str) -> Result<i32> {
@@ -945,8 +638,7 @@ _box() {{
                 'create:Create a new session'
                 'resume:Resume an existing session'
                 'remove:Remove a session'
-                'stop:Stop a running session'
-                'exec:Run a command in a running session'
+                'exec:Run a command in a session'
                 'list:List sessions'
                 'cd:Print the host project directory for a session'
                 'path:Print workspace path for a session'
@@ -960,19 +652,12 @@ _box() {{
             case $words[1] in
                 create)
                     _arguments \
-                        '-d[Run in the background]' \
-                        '--image=[Docker image to use]:image' \
-                        '--docker-args=[Extra Docker flags]:args' \
-                        '--local[Create a local session (default)]' \
-                        '--docker[Create a Docker session]' \
                         '--strategy=[Workspace strategy (clone or worktree)]:strategy:(clone worktree)' \
                         '1:session name:' \
                         '*:command:'
                     ;;
                 resume)
                     _arguments \
-                        '-d[Run container in the background]' \
-                        '--docker-args=[Extra Docker flags]:args' \
                         '1:session name:__box_sessions'
                     ;;
                 exec)
@@ -982,16 +667,12 @@ _box() {{
                     ;;
                 list|ls)
                     _arguments \
-                        '--running[Show only running sessions]' \
-                        '-r[Show only running sessions]' \
-                        '--stopped[Show only stopped sessions]' \
-                        '-s[Show only stopped sessions]' \
                         '--project[Show only sessions for the current project]' \
                         '-p[Show only sessions for the current project]' \
                         '--quiet[Only print session names]' \
                         '-q[Only print session names]'
                     ;;
-                remove|stop|path|cd)
+                remove|path|cd)
                     if (( CURRENT == 2 )); then
                         __box_sessions
                     fi
@@ -1033,8 +714,8 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="create resume remove stop exec list cd path origin upgrade config"
-    local session_cmds="resume remove stop exec cd path"
+    local subcommands="create resume remove exec list cd path origin upgrade config"
+    local session_cmds="resume remove exec cd path"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
@@ -1047,30 +728,23 @@ fn cmd_config_bash() -> Result<i32> {
         create)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "-d --image --docker-args --local --docker --strategy" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--strategy" -- "$cur"))
                     ;;
             esac
             ;;
         resume)
-            case "$cur" in
-                -*)
-                    COMPREPLY=($(compgen -W "-d --docker-args" -- "$cur"))
-                    ;;
-                *)
-                    if [[ $cword -eq 2 ]]; then
-                        local sessions=""
-                        if [[ -d "$HOME/.box/sessions" ]]; then
-                            for ws in "$HOME/.box/sessions"/*/; do
-                                local ws_name=$(basename "$ws")
-                                for sess in "$ws"*/; do
-                                    [[ -f "$sess/project_dir" ]] && sessions+=" $ws_name/$(basename "$sess")"
-                                done
-                            done
-                        fi
-                        COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
-                    fi
-                    ;;
-            esac
+            if [[ $cword -eq 2 ]]; then
+                local sessions=""
+                if [[ -d "$HOME/.box/sessions" ]]; then
+                    for ws in "$HOME/.box/sessions"/*/; do
+                        local ws_name=$(basename "$ws")
+                        for sess in "$ws"*/; do
+                            [[ -f "$sess/project_dir" ]] && sessions+=" $ws_name/$(basename "$sess")"
+                        done
+                    done
+                fi
+                COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+            fi
             ;;
         exec)
             if [[ $cword -eq 2 ]]; then
@@ -1089,11 +763,11 @@ fn cmd_config_bash() -> Result<i32> {
         list|ls)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--running -r --stopped -s --project -p --quiet -q" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--project -p --quiet -q" -- "$cur"))
                     ;;
             esac
             ;;
-        remove|stop|path|cd)
+        remove|path|cd)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
@@ -1275,65 +949,7 @@ mod tests {
         match cli.command {
             Some(Commands::Create(args)) => {
                 assert_eq!(args.name.as_deref(), Some("my-session"));
-                assert!(!args.detach);
-                assert!(!args.local);
-                assert!(args.image.is_none());
-                assert!(args.docker_args.is_none());
                 assert!(args.cmd.is_empty());
-            }
-            other => panic!("expected Create, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_create_local_flag() {
-        let cli = parse(&["create", "my-session", "--local"]);
-        match cli.command {
-            Some(Commands::Create(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
-                assert!(args.local);
-                assert!(!args.detach);
-            }
-            other => panic!("expected Create, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_create_with_all_options() {
-        let cli = parse(&[
-            "create",
-            "full-session",
-            "-d",
-            "--image",
-            "python:3.11",
-            "--docker-args",
-            "-e FOO=bar --network host",
-            "--",
-            "python",
-            "main.py",
-        ]);
-        match cli.command {
-            Some(Commands::Create(args)) => {
-                assert_eq!(args.name.as_deref(), Some("full-session"));
-                assert!(args.detach);
-                assert_eq!(args.image.as_deref(), Some("python:3.11"));
-                assert_eq!(
-                    args.docker_args.as_deref(),
-                    Some("-e FOO=bar --network host")
-                );
-                assert_eq!(args.cmd, vec!["python", "main.py"]);
-            }
-            other => panic!("expected Create, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_create_with_image() {
-        let cli = parse(&["create", "my-session", "--image", "ubuntu:latest"]);
-        match cli.command {
-            Some(Commands::Create(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
-                assert_eq!(args.image.as_deref(), Some("ubuntu:latest"));
             }
             other => panic!("expected Create, got {:?}", other),
         }
@@ -1352,18 +968,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_detach() {
-        let cli = parse(&["create", "my-session", "-d"]);
-        match cli.command {
-            Some(Commands::Create(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
-                assert!(args.detach);
-            }
-            other => panic!("expected Create, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn test_create_no_name_opens_tui() {
         let cli = parse(&["create"]);
         match cli.command {
@@ -1371,6 +975,18 @@ mod tests {
                 assert!(args.name.is_none());
             }
             _ => panic!("expected Create"),
+        }
+    }
+
+    #[test]
+    fn test_create_with_strategy() {
+        let cli = parse(&["create", "my-session", "--strategy", "worktree"]);
+        match cli.command {
+            Some(Commands::Create(args)) => {
+                assert_eq!(args.name.as_deref(), Some("my-session"));
+                assert_eq!(args.strategy.as_deref(), Some("worktree"));
+            }
+            other => panic!("expected Create, got {:?}", other),
         }
     }
 
@@ -1382,32 +998,6 @@ mod tests {
         match cli.command {
             Some(Commands::Resume(args)) => {
                 assert_eq!(args.name, "my-session");
-                assert!(!args.detach);
-                assert!(args.docker_args.is_none());
-            }
-            other => panic!("expected Resume, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_resume_detach() {
-        let cli = parse(&["resume", "my-session", "-d"]);
-        match cli.command {
-            Some(Commands::Resume(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert!(args.detach);
-            }
-            other => panic!("expected Resume, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_resume_with_docker_args() {
-        let cli = parse(&["resume", "my-session", "--docker-args", "-e KEY=val"]);
-        match cli.command {
-            Some(Commands::Resume(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert_eq!(args.docker_args.as_deref(), Some("-e KEY=val"));
             }
             other => panic!("expected Resume, got {:?}", other),
         }
@@ -1416,12 +1006,6 @@ mod tests {
     #[test]
     fn test_resume_requires_name() {
         let result = try_parse(&["resume"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resume_rejects_image() {
-        let result = try_parse(&["resume", "my-session", "--image", "ubuntu"]);
         assert!(result.is_err());
     }
 
@@ -1447,55 +1031,6 @@ mod tests {
     #[test]
     fn test_remove_rejects_unknown_flags() {
         let result = try_parse(&["remove", "my-session", "-d"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_remove_force_flag() {
-        let cli = parse(&["remove", "--force", "my-session"]);
-        match cli.command {
-            Some(Commands::Remove(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert!(args.force);
-            }
-            other => panic!("expected Remove, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_remove_short_force_flag() {
-        let cli = parse(&["remove", "-f", "my-session"]);
-        match cli.command {
-            Some(Commands::Remove(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert!(args.force);
-            }
-            other => panic!("expected Remove, got {:?}", other),
-        }
-    }
-
-    // -- stop subcommand --
-
-    #[test]
-    fn test_stop_parses() {
-        let cli = parse(&["stop", "my-session"]);
-        match cli.command {
-            Some(Commands::Stop(args)) => {
-                assert_eq!(args.name, "my-session");
-            }
-            other => panic!("expected Stop, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_stop_requires_name() {
-        let result = try_parse(&["stop"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_stop_rejects_flags() {
-        let result = try_parse(&["stop", "my-session", "-d"]);
         assert!(result.is_err());
     }
 
@@ -1610,33 +1145,7 @@ mod tests {
         let cli = parse(&["list"]);
         match cli.command {
             Some(Commands::List(args)) => {
-                assert!(!args.running);
-                assert!(!args.stopped);
                 assert!(!args.quiet);
-            }
-            other => panic!("expected List, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_list_running_flag() {
-        let cli = parse(&["list", "--running"]);
-        match cli.command {
-            Some(Commands::List(args)) => {
-                assert!(args.running);
-                assert!(!args.stopped);
-            }
-            other => panic!("expected List, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_list_stopped_flag() {
-        let cli = parse(&["list", "--stopped"]);
-        match cli.command {
-            Some(Commands::List(args)) => {
-                assert!(!args.running);
-                assert!(args.stopped);
             }
             other => panic!("expected List, got {:?}", other),
         }
@@ -1654,38 +1163,10 @@ mod tests {
     }
 
     #[test]
-    fn test_list_combined_flags() {
-        let cli = parse(&["list", "-q", "--running"]);
-        match cli.command {
-            Some(Commands::List(args)) => {
-                assert!(args.quiet);
-                assert!(args.running);
-                assert!(!args.stopped);
-            }
-            other => panic!("expected List, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_list_short_flags() {
-        let cli = parse(&["list", "-r", "-s", "-q"]);
-        match cli.command {
-            Some(Commands::List(args)) => {
-                assert!(args.running);
-                assert!(args.stopped);
-                assert!(args.quiet);
-            }
-            other => panic!("expected List, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn test_list_alias_ls() {
         let cli = parse(&["ls"]);
         match cli.command {
             Some(Commands::List(args)) => {
-                assert!(!args.running);
-                assert!(!args.stopped);
                 assert!(!args.quiet);
             }
             other => panic!("expected List, got {:?}", other),

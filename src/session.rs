@@ -11,11 +11,8 @@ use crate::config;
 pub struct Session {
     pub name: String,
     pub project_dir: String,
-    pub image: String,
-    pub mount_path: String,
     pub command: Vec<String>,
     pub env: Vec<String>,
-    pub local: bool,
     pub strategy: config::Strategy,
 }
 
@@ -24,11 +21,8 @@ impl From<config::BoxConfig> for Session {
         Session {
             name: cfg.name,
             project_dir: cfg.project_dir,
-            image: cfg.image,
-            mount_path: cfg.mount_path,
             command: cfg.command,
             env: cfg.env,
-            local: cfg.local,
             strategy: cfg.strategy,
         }
     }
@@ -38,11 +32,8 @@ impl From<config::BoxConfig> for Session {
 pub struct SessionSummary {
     pub name: String,
     pub project_dir: String,
-    pub image: String,
     pub command: String,
     pub created_at: String,
-    pub running: bool,
-    pub local: bool,
     pub _strategy: config::Strategy,
 }
 
@@ -54,7 +45,7 @@ pub fn sessions_dir() -> Result<PathBuf> {
 }
 
 const RESERVED_NAMES: &[&str] = &[
-    "create", "resume", "remove", "stop", "exec", "upgrade", "path", "config", "list", "ls",
+    "create", "resume", "remove", "exec", "upgrade", "path", "config", "list", "ls",
 ];
 
 /// Parse a user-supplied name into (workspace, session).
@@ -213,19 +204,10 @@ pub fn save(session: &Session) -> Result<()> {
     let full = full_name(&session.name);
     let dir = sessions_dir()?.join(&full);
     fs::create_dir_all(&dir).context("Failed to create session directory")?;
-    // Restrict session directory to owner-only access (0o700) to prevent
-    // other local users from connecting to the Unix socket or tampering
-    // with PID files.
     #[cfg(unix)]
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
 
     fs::write(dir.join("project_dir"), &session.project_dir)?;
-    fs::write(dir.join("image"), &session.image)?;
-    fs::write(dir.join("mount_path"), &session.mount_path)?;
-    fs::write(
-        dir.join("mode"),
-        if session.local { "local" } else { "docker" },
-    )?;
     fs::write(
         dir.join("created_at"),
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
@@ -269,14 +251,6 @@ pub fn load(name: &str) -> Result<Session> {
     }
     let project_dir = fs::read_to_string(&project_dir_path)?.trim().to_string();
 
-    let image = fs::read_to_string(dir.join("image"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| config::DEFAULT_IMAGE.to_string());
-
-    let mount_path = fs::read_to_string(dir.join("mount_path"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| config::derive_mount_path(&project_dir));
-
     let command = fs::read_to_string(dir.join("command"))
         .map(|s| {
             s.split('\0')
@@ -295,10 +269,6 @@ pub fn load(name: &str) -> Result<Session> {
         })
         .unwrap_or_default();
 
-    let local = fs::read_to_string(dir.join("mode"))
-        .map(|s| s.trim() == "local")
-        .unwrap_or(false);
-
     let strategy: config::Strategy = fs::read_to_string(dir.join("strategy"))
         .ok()
         .and_then(|s| s.trim().parse().ok())
@@ -307,11 +277,8 @@ pub fn load(name: &str) -> Result<Session> {
     Ok(Session {
         name: full,
         project_dir,
-        image,
-        mount_path,
         command,
         env,
-        local,
         strategy,
     })
 }
@@ -341,9 +308,6 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
     let project_dir = fs::read_to_string(session_path.join("project_dir"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let image = fs::read_to_string(session_path.join("image"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
     let created_at = fs::read_to_string(session_path.join("created_at"))
         .map(|s| {
             let trimmed = s.trim();
@@ -367,10 +331,6 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
         })
         .unwrap_or_default();
 
-    let local = fs::read_to_string(session_path.join("mode"))
-        .map(|s| s.trim() == "local")
-        .unwrap_or(false);
-
     let strategy: config::Strategy = fs::read_to_string(session_path.join("strategy"))
         .ok()
         .and_then(|s| s.trim().parse().ok())
@@ -379,11 +339,8 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
     SessionSummary {
         name,
         project_dir,
-        image,
         command,
         created_at,
-        running: false,
-        local,
         _strategy: strategy,
     }
 }
@@ -471,6 +428,16 @@ mod tests {
         match old_home {
             Some(h) => std::env::set_var("HOME", h),
             None => std::env::remove_var("HOME"),
+        }
+    }
+
+    fn make_session(name: &str, project_dir: &str) -> Session {
+        Session {
+            name: name.to_string(),
+            project_dir: project_dir.to_string(),
+            command: vec![],
+            env: vec![],
+            strategy: config::Strategy::Clone,
         }
     }
 
@@ -573,24 +540,12 @@ mod tests {
     #[test]
     fn test_save_and_load_basic() {
         with_temp_home(|_| {
-            let sess = Session {
-                name: "test-ws/default".to_string(),
-                project_dir: "/tmp/myproject".to_string(),
-                image: "ubuntu:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("test-ws/default", "/tmp/myproject");
             save(&sess).unwrap();
 
             let loaded = load("test-ws/default").unwrap();
             assert_eq!(loaded.name, "test-ws/default");
             assert_eq!(loaded.project_dir, "/tmp/myproject");
-            assert_eq!(loaded.image, "ubuntu:latest");
-            assert_eq!(loaded.mount_path, "/workspace");
             assert!(loaded.command.is_empty());
         });
     }
@@ -598,20 +553,9 @@ mod tests {
     #[test]
     fn test_save_and_load_bare_name_resolves_to_default() {
         with_temp_home(|_| {
-            let sess = Session {
-                name: "test-ws".to_string(),
-                project_dir: "/tmp/myproject".to_string(),
-                image: "ubuntu:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("test-ws", "/tmp/myproject");
             save(&sess).unwrap();
 
-            // Loading with bare name should resolve to workspace/default
             let loaded = load("test-ws").unwrap();
             assert_eq!(loaded.name, "test-ws/default");
         });
@@ -623,16 +567,12 @@ mod tests {
             let sess = Session {
                 name: "full-ws/default".to_string(),
                 project_dir: "/tmp/project".to_string(),
-                image: "box-full:latest".to_string(),
-                mount_path: "/src".to_string(),
                 command: vec![
                     "bash".to_string(),
                     "-c".to_string(),
                     "echo hello".to_string(),
                 ],
                 env: vec![],
-                local: false,
-
                 strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
@@ -645,23 +585,11 @@ mod tests {
     #[test]
     fn test_save_creates_metadata_files() {
         with_temp_home(|_| {
-            let sess = Session {
-                name: "meta-test/default".to_string(),
-                project_dir: "/tmp/p".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("meta-test/default", "/tmp/p");
             save(&sess).unwrap();
 
             let dir = sessions_dir().unwrap().join("meta-test/default");
             assert!(dir.join("project_dir").exists());
-            assert!(dir.join("image").exists());
-            assert!(dir.join("mount_path").exists());
             assert!(dir.join("created_at").exists());
             assert!(!dir.join("command").exists());
 
@@ -683,7 +611,6 @@ mod tests {
         with_temp_home(|_| {
             let dir = sessions_dir().unwrap().join("broken/default");
             fs::create_dir_all(&dir).unwrap();
-            // Don't write project_dir file
 
             let err = load("broken/default").unwrap_err();
             assert!(err
@@ -698,11 +625,9 @@ mod tests {
             let dir = sessions_dir().unwrap().join("minimal/default");
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("project_dir"), "/tmp/project").unwrap();
-            // Don't write image or mount_path
 
             let loaded = load("minimal/default").unwrap();
-            assert_eq!(loaded.image, config::DEFAULT_IMAGE);
-            assert_eq!(loaded.mount_path, config::derive_mount_path("/tmp/project"));
+            assert_eq!(loaded.project_dir, "/tmp/project");
         });
     }
 
@@ -711,20 +636,9 @@ mod tests {
         with_temp_home(|_| {
             assert!(!session_exists("nope").unwrap());
 
-            let sess = Session {
-                name: "exists-test/default".to_string(),
-                project_dir: "/tmp/p".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("exists-test/default", "/tmp/p");
             save(&sess).unwrap();
             assert!(session_exists("exists-test/default").unwrap());
-            // Bare name should also find via default
             assert!(session_exists("exists-test").unwrap());
         });
     }
@@ -741,23 +655,12 @@ mod tests {
     fn test_list_multiple_sessions() {
         with_temp_home(|_| {
             for name in &["alpha/default", "beta/default", "gamma/default"] {
-                let sess = Session {
-                    name: name.to_string(),
-                    project_dir: format!("/tmp/{}", name.split('/').next().unwrap()),
-                    image: "alpine:latest".to_string(),
-                    mount_path: "/workspace".to_string(),
-                    command: vec![],
-                    env: vec![],
-                    local: false,
-
-                    strategy: config::Strategy::Clone,
-                };
+                let sess = make_session(name, &format!("/tmp/{}", name.split('/').next().unwrap()));
                 save(&sess).unwrap();
             }
 
             let sessions = list().unwrap();
             assert_eq!(sessions.len(), 3);
-            // Should be sorted alphabetically by full name
             assert_eq!(sessions[0].name, "alpha/default");
             assert_eq!(sessions[1].name, "beta/default");
             assert_eq!(sessions[2].name, "gamma/default");
@@ -768,17 +671,7 @@ mod tests {
     fn test_list_multiple_sessions_same_workspace() {
         with_temp_home(|_| {
             for sess_name in &["ws/default", "ws/server", "ws/test"] {
-                let sess = Session {
-                    name: sess_name.to_string(),
-                    project_dir: "/tmp/project".to_string(),
-                    image: "alpine:latest".to_string(),
-                    mount_path: "/workspace".to_string(),
-                    command: vec![],
-                    env: vec![],
-                    local: false,
-
-                    strategy: config::Strategy::Clone,
-                };
+                let sess = make_session(sess_name, "/tmp/project");
                 save(&sess).unwrap();
             }
 
@@ -793,23 +686,12 @@ mod tests {
     #[test]
     fn test_list_reads_metadata() {
         with_temp_home(|_| {
-            let sess = Session {
-                name: "list-meta/default".to_string(),
-                project_dir: "/home/user/project".to_string(),
-                image: "ubuntu:22.04".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("list-meta/default", "/home/user/project");
             save(&sess).unwrap();
 
             let sessions = list().unwrap();
             assert_eq!(sessions.len(), 1);
             assert_eq!(sessions[0].project_dir, "/home/user/project");
-            assert_eq!(sessions[0].image, "ubuntu:22.04");
             assert!(!sessions[0].created_at.is_empty());
         });
     }
@@ -817,17 +699,7 @@ mod tests {
     #[test]
     fn test_remove_dir() {
         with_temp_home(|_| {
-            let sess = Session {
-                name: "to-remove/default".to_string(),
-                project_dir: "/tmp/p".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("to-remove/default", "/tmp/p");
             save(&sess).unwrap();
             assert!(session_exists("to-remove/default").unwrap());
 
@@ -847,17 +719,7 @@ mod tests {
     #[test]
     fn test_touch_resumed_at() {
         with_temp_home(|_| {
-            let sess = Session {
-                name: "resume-test/default".to_string(),
-                project_dir: "/tmp/p".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("resume-test/default", "/tmp/p");
             save(&sess).unwrap();
 
             touch_resumed_at("resume-test/default").unwrap();
@@ -874,13 +736,9 @@ mod tests {
             let dir = sessions_dir().unwrap().join("trim-test/default");
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("project_dir"), "  /tmp/project  \n").unwrap();
-            fs::write(dir.join("image"), " ubuntu:latest \n").unwrap();
-            fs::write(dir.join("mount_path"), " /src \n").unwrap();
 
             let loaded = load("trim-test/default").unwrap();
             assert_eq!(loaded.project_dir, "/tmp/project");
-            assert_eq!(loaded.image, "ubuntu:latest");
-            assert_eq!(loaded.mount_path, "/src");
         });
     }
 
@@ -890,12 +748,8 @@ mod tests {
             let sess = Session {
                 name: "cmd-format/default".to_string(),
                 project_dir: "/tmp/p".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
                 command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
                 env: vec![],
-                local: false,
-
                 strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
@@ -912,12 +766,8 @@ mod tests {
             let sess = Session {
                 name: "env-test/default".to_string(),
                 project_dir: "/tmp/project".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
-                local: false,
-
                 strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
@@ -934,17 +784,7 @@ mod tests {
     #[test]
     fn test_save_and_load_empty_env() {
         with_temp_home(|_| {
-            let sess = Session {
-                name: "no-env/default".to_string(),
-                project_dir: "/tmp/project".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("no-env/default", "/tmp/project");
             save(&sess).unwrap();
 
             let dir = sessions_dir().unwrap().join("no-env/default");
@@ -958,20 +798,15 @@ mod tests {
     #[test]
     fn test_migration_flat_to_nested() {
         with_temp_home(|_| {
-            // Create a flat (old-format) session manually
             let dir = sessions_dir().unwrap().join("old-session");
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("project_dir"), "/tmp/project").unwrap();
-            fs::write(dir.join("image"), "alpine:latest").unwrap();
-            fs::write(dir.join("mode"), "local").unwrap();
             fs::write(dir.join("strategy"), "clone").unwrap();
 
-            // list() should auto-migrate
             let sessions = list().unwrap();
             assert_eq!(sessions.len(), 1);
             assert_eq!(sessions[0].name, "old-session/default");
 
-            // The old flat file should be moved to default/
             assert!(!dir.join("project_dir").exists());
             assert!(dir.join("default").join("project_dir").exists());
         });
@@ -980,15 +815,11 @@ mod tests {
     #[test]
     fn test_migration_on_load() {
         with_temp_home(|_| {
-            // Create a flat (old-format) session manually
             let dir = sessions_dir().unwrap().join("old-load");
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("project_dir"), "/tmp/project").unwrap();
-            fs::write(dir.join("image"), "alpine:latest").unwrap();
-            fs::write(dir.join("mode"), "local").unwrap();
             fs::write(dir.join("strategy"), "clone").unwrap();
 
-            // load with bare name should auto-migrate and succeed
             let loaded = load("old-load").unwrap();
             assert_eq!(loaded.name, "old-load/default");
             assert_eq!(loaded.project_dir, "/tmp/project");
@@ -1000,17 +831,7 @@ mod tests {
         with_temp_home(|_| {
             assert!(!workspace_exists("nope").unwrap());
 
-            let sess = Session {
-                name: "ws-test/default".to_string(),
-                project_dir: "/tmp/p".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("ws-test/default", "/tmp/p");
             save(&sess).unwrap();
             assert!(workspace_exists("ws-test").unwrap());
         });
@@ -1020,17 +841,7 @@ mod tests {
     fn test_workspace_sessions() {
         with_temp_home(|_| {
             for name in &["ws/default", "ws/server", "ws/test"] {
-                let sess = Session {
-                    name: name.to_string(),
-                    project_dir: "/tmp/p".to_string(),
-                    image: "alpine:latest".to_string(),
-                    mount_path: "/workspace".to_string(),
-                    command: vec![],
-                    env: vec![],
-                    local: false,
-
-                    strategy: config::Strategy::Clone,
-                };
+                let sess = make_session(name, "/tmp/p");
                 save(&sess).unwrap();
             }
 
@@ -1050,21 +861,10 @@ mod tests {
     #[test]
     fn test_resolve_original_single_hop() {
         with_temp_home(|tmp| {
-            // Create a workspace directory that looks like a real workspace
             let ws_dir = tmp.join(".box").join("workspaces").join("ws-a");
             fs::create_dir_all(&ws_dir).unwrap();
 
-            // Create a session for ws-a pointing to the real repo
-            let sess = Session {
-                name: "ws-a/default".to_string(),
-                project_dir: "/tmp/real-repo".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-                strategy: config::Strategy::Clone,
-            };
+            let sess = make_session("ws-a/default", "/tmp/real-repo");
             save(&sess).unwrap();
 
             let result = resolve_original_project_dir(&ws_dir.to_string_lossy());
@@ -1075,34 +875,19 @@ mod tests {
     #[test]
     fn test_resolve_original_chained() {
         with_temp_home(|tmp| {
-            // ws-b workspace dir points to ws-a workspace dir
             let ws_a_dir = tmp.join(".box").join("workspaces").join("ws-a");
             let ws_b_dir = tmp.join(".box").join("workspaces").join("ws-b");
             fs::create_dir_all(&ws_a_dir).unwrap();
             fs::create_dir_all(&ws_b_dir).unwrap();
 
-            // ws-a session points to the real repo
-            let sess_a = Session {
-                name: "ws-a/default".to_string(),
-                project_dir: "/tmp/real-repo".to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
-                command: vec![],
-                env: vec![],
-                local: false,
-                strategy: config::Strategy::Clone,
-            };
+            let sess_a = make_session("ws-a/default", "/tmp/real-repo");
             save(&sess_a).unwrap();
 
-            // ws-b session points to ws-a workspace dir
             let sess_b = Session {
                 name: "ws-b/default".to_string(),
                 project_dir: ws_a_dir.to_string_lossy().to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                local: false,
                 strategy: config::Strategy::Clone,
             };
             save(&sess_b).unwrap();
@@ -1115,11 +900,9 @@ mod tests {
     #[test]
     fn test_resolve_original_missing_workspace() {
         with_temp_home(|tmp| {
-            // Create the workspaces parent dir but not the specific workspace session
             let ws_dir = tmp.join(".box").join("workspaces").join("ghost");
             fs::create_dir_all(&ws_dir).unwrap();
 
-            // No session metadata exists for "ghost" — should fall back gracefully
             let input = ws_dir.to_string_lossy().to_string();
             let result = resolve_original_project_dir(&input);
             assert_eq!(result, input);
@@ -1132,20 +915,15 @@ mod tests {
             let ws_dir = tmp.join(".box").join("workspaces").join("loop-ws");
             fs::create_dir_all(&ws_dir).unwrap();
 
-            // Session points to its own workspace dir (self-referencing)
             let sess = Session {
                 name: "loop-ws/default".to_string(),
                 project_dir: ws_dir.to_string_lossy().to_string(),
-                image: "alpine:latest".to_string(),
-                mount_path: "/workspace".to_string(),
                 command: vec![],
                 env: vec![],
-                local: false,
                 strategy: config::Strategy::Clone,
             };
             save(&sess).unwrap();
 
-            // Should not infinite loop — returns the self-referencing path
             let input = ws_dir.to_string_lossy().to_string();
             let result = resolve_original_project_dir(&input);
             assert_eq!(result, input);
