@@ -10,7 +10,7 @@ use super::terminal::{
     self, extract_selection_text, scrollback_line_count, write_osc52_clipboard, DrawFrameParams,
     InputAction, InputState, ScrollState,
 };
-use crate::{docker, session};
+use crate::session;
 
 pub enum ClientResult {
     /// Session process exited (may fall through to another session)
@@ -75,29 +75,6 @@ fn default_new_session_cmd(sidebar: &SidebarState) -> String {
         std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string())
     } else {
         String::new()
-    }
-}
-
-/// Delete a session: stop if running, remove container and session directory.
-/// If the workspace becomes empty, remove it too.
-fn delete_session(name: &str) {
-    let sess = match session::load(name) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    if sess.local {
-        if session::is_local_running(name) {
-            let _ = super::send_kill(name);
-        }
-    } else {
-        docker::remove_container(name);
-    }
-    let _ = session::remove_dir(name);
-    let ws = session::workspace_name(name);
-    let remaining = session::workspace_sessions(ws).unwrap_or_default();
-    if remaining.is_empty() {
-        docker::remove_workspace(ws, &sess.strategy);
-        let _ = session::remove_workspace_dir(ws);
     }
 }
 
@@ -192,7 +169,7 @@ fn sidebar_width(entries: &[SidebarEntry]) -> u16 {
         })
         .max()
         .unwrap_or(8);
-    let w = (max_name + 2).clamp(20, 30);
+    let w = (max_name + 2).clamp(24, 30);
     w as u16
 }
 
@@ -360,48 +337,6 @@ fn draw_sidebar(f: &mut ratatui::Frame, sidebar: &SidebarState, area: Rect) {
                 cell.set_style(fg_style);
             }
         }
-
-        // Draw "+" button for workspace headers (" +")
-        if entry.kind == SidebarEntryKind::WorkspaceHeader {
-            let plus_style = if focused {
-                Style::default()
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            let space_pos = area.x + content_width - 3;
-            let plus_pos = area.x + content_width - 2;
-            if space_pos < buf.area().width && row_y < buf.area().height {
-                let cell = &mut buf[(space_pos, row_y)];
-                cell.set_symbol(" ");
-                cell.set_style(plus_style);
-            }
-            if plus_pos < buf.area().width && row_y < buf.area().height {
-                let cell = &mut buf[(plus_pos, row_y)];
-                cell.set_symbol("+");
-                cell.set_style(plus_style);
-            }
-            let trail_pos = area.x + content_width - 1;
-            if trail_pos < buf.area().width && row_y < buf.area().height {
-                let cell = &mut buf[(trail_pos, row_y)];
-                cell.set_symbol(" ");
-                cell.set_style(plus_style);
-            }
-        }
-
-        // Draw "x" button for session entries
-        if entry.kind == SidebarEntryKind::Session {
-            let x_pos = area.x + content_width - 2;
-            if x_pos < buf.area().width && row_y < buf.area().height {
-                let x_style = if is_selected {
-                    fg_style
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                let cell = &mut buf[(x_pos, row_y)];
-                cell.set_symbol("x");
-                cell.set_style(x_style);
-            }
-        }
     }
 
     // Right border
@@ -427,8 +362,6 @@ enum SidebarAction {
     },
     /// Create a new session with the given command
     NewSession(String),
-    /// Delete a stopped session
-    DeleteSession(String),
     /// Return focus to the main pane
     Unfocus,
     Redraw,
@@ -637,15 +570,6 @@ fn process_sidebar_input(
             i += 1;
             continue;
         }
-        // x → delete selected session
-        if b == b'x' {
-            let entry = &sidebar.entries[sidebar.selected];
-            if entry.kind == SidebarEntryKind::Session {
-                return SidebarAction::DeleteSession(entry.full_name.clone());
-            }
-            i += 1;
-            continue;
-        }
         // Enter → switch to selected session and unfocus
         if b == b'\r' || b == b'\n' {
             let entry = &sidebar.entries[sidebar.selected];
@@ -705,26 +629,8 @@ fn parse_sidebar_mouse(
                     let entry_idx = (row - 1) as usize;
                     if entry_idx < sidebar.entries.len() {
                         let entry = &sidebar.entries[entry_idx];
-                        // Workspace header: check for "+" button click
                         if entry.kind == SidebarEntryKind::WorkspaceHeader {
-                            let content_width = sb_width.saturating_sub(1);
-                            let plus_col = content_width;
-                            if col >= plus_col.saturating_sub(1) && col <= plus_col {
-                                sidebar.new_session_input = Some(default_new_session_cmd(sidebar));
-                                return Some((SidebarAction::Redraw, consumed));
-                            }
                             return Some((SidebarAction::None, consumed));
-                        }
-
-                        // Click on "x" button (last 2 chars before border)
-                        let content_width = sb_width.saturating_sub(1);
-                        let x_col = content_width; // 1-indexed col of the "x"
-                        if col >= x_col.saturating_sub(1) && col <= x_col {
-                            sidebar.selected = entry_idx;
-                            return Some((
-                                SidebarAction::DeleteSession(entry.full_name.clone()),
-                                consumed,
-                            ));
                         }
 
                         if entry.full_name == current_session {
@@ -856,25 +762,6 @@ pub fn view_history(
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::NewSession(cmd));
                         }
-                        SidebarAction::DeleteSession(name) => {
-                            delete_session(&name);
-                            if name == session_name {
-                                match find_any_running_session(&name) {
-                                    Some(next_session) => {
-                                        unsafe { libc::close(tty_input_fd) };
-                                        return Ok(ClientResult::SwitchSession(next_session, None));
-                                    }
-                                    None => {
-                                        unsafe { libc::close(tty_input_fd) };
-                                        return Ok(ClientResult::Exit(0));
-                                    }
-                                }
-                            }
-                            let (entries, selected) = build_sidebar_entries(session_name);
-                            sidebar.entries = entries;
-                            sidebar.selected = selected;
-                            dirty = true;
-                        }
                         SidebarAction::Unfocus | SidebarAction::Redraw => {
                             dirty = true;
                         }
@@ -930,25 +817,6 @@ pub fn view_history(
                         SidebarAction::NewSession(cmd) => {
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::NewSession(cmd));
-                        }
-                        SidebarAction::DeleteSession(name) => {
-                            delete_session(&name);
-                            if name == session_name {
-                                match find_any_running_session(&name) {
-                                    Some(next_session) => {
-                                        unsafe { libc::close(tty_input_fd) };
-                                        return Ok(ClientResult::SwitchSession(next_session, None));
-                                    }
-                                    None => {
-                                        unsafe { libc::close(tty_input_fd) };
-                                        return Ok(ClientResult::Exit(0));
-                                    }
-                                }
-                            }
-                            let (entries, selected) = build_sidebar_entries(session_name);
-                            sidebar.entries = entries;
-                            sidebar.selected = selected;
-                            dirty = true;
                         }
                         SidebarAction::Unfocus | SidebarAction::Redraw => {
                             dirty = true;
@@ -1354,25 +1222,6 @@ pub fn run(
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::NewSession(cmd));
                         }
-                        SidebarAction::DeleteSession(name) => {
-                            delete_session(&name);
-                            if name == session_name {
-                                match find_any_running_session(&name) {
-                                    Some(next_session) => {
-                                        unsafe { libc::close(tty_input_fd) };
-                                        return Ok(ClientResult::SwitchSession(next_session, None));
-                                    }
-                                    None => {
-                                        unsafe { libc::close(tty_input_fd) };
-                                        return Ok(ClientResult::Exit(0));
-                                    }
-                                }
-                            }
-                            let (entries, selected) = build_sidebar_entries(session_name);
-                            sidebar.entries = entries;
-                            sidebar.selected = selected;
-                            dirty = true;
-                        }
                         SidebarAction::Unfocus | SidebarAction::Redraw => {
                             dirty = true;
                         }
@@ -1426,25 +1275,6 @@ pub fn run(
                         SidebarAction::NewSession(cmd) => {
                             unsafe { libc::close(tty_input_fd) };
                             return Ok(ClientResult::NewSession(cmd));
-                        }
-                        SidebarAction::DeleteSession(name) => {
-                            delete_session(&name);
-                            if name == session_name {
-                                match find_any_running_session(&name) {
-                                    Some(next_session) => {
-                                        unsafe { libc::close(tty_input_fd) };
-                                        return Ok(ClientResult::SwitchSession(next_session, None));
-                                    }
-                                    None => {
-                                        unsafe { libc::close(tty_input_fd) };
-                                        return Ok(ClientResult::Exit(0));
-                                    }
-                                }
-                            }
-                            let (entries, selected) = build_sidebar_entries(session_name);
-                            sidebar.entries = entries;
-                            sidebar.selected = selected;
-                            dirty = true;
                         }
                         SidebarAction::Unfocus | SidebarAction::Redraw => {
                             dirty = true;
