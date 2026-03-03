@@ -47,6 +47,8 @@ pub(super) struct SidebarState {
     history_index: Option<usize>,
     /// Preserves user's typed text when browsing history
     saved_input: String,
+    /// Whether the sidebar panel is visible (toggled with Ctrl+P,Z or command bar click)
+    pub(super) sidebar_visible: bool,
 }
 
 pub(super) struct SidebarEntry {
@@ -175,6 +177,7 @@ fn draw_command_bar(
     area: Rect,
     sidebar: &SidebarState,
     command_mode: bool,
+    session_name: &str,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -195,6 +198,9 @@ fn draw_command_bar(
     // Determine content as styled spans: (text, style) pairs
     let key_style = Style::default().add_modifier(Modifier::BOLD);
     let input_style = Style::default();
+    let normal_style = Style::default();
+    let (ws, sess) = session::parse_name(session_name);
+    let session_label = format!(" {} > {}", ws, sess);
     let spans: Vec<(&str, Style)> = if sidebar.new_session_input.is_some() {
         // Built below from formatted string
         vec![]
@@ -205,10 +211,15 @@ fn draw_command_bar(
             ("A", key_style),
             (" Focus sidebar  ", bar_style),
             ("N", key_style),
-            (" New session", bar_style),
+            (" New session  ", bar_style),
+            ("Z", key_style),
+            (" Toggle sidebar", bar_style),
         ]
     } else {
-        vec![(" Ctrl+P to enter command mode", bar_style)]
+        vec![
+            (&session_label, normal_style),
+            ("  Ctrl+P to enter command mode", bar_style),
+        ]
     };
 
     // For input mode, build the formatted string separately
@@ -628,6 +639,42 @@ fn process_sidebar_input(
     result
 }
 
+/// Check if raw input is a left-click on the command bar row (last row).
+/// SGR mouse row is 1-indexed; `term_rows` is the total terminal height.
+/// Returns true and the number of bytes consumed if matched, false otherwise.
+fn is_command_bar_click(data: &[u8], term_rows: u16) -> Option<usize> {
+    if data.len() < 3 || data[0] != 0x1b || data[1] != b'[' || data[2] != b'<' {
+        return None;
+    }
+    let mut j = 3usize;
+    let mut params = [0u32; 3];
+    let mut pi = 0;
+    while j < data.len() {
+        match data[j] {
+            b'0'..=b'9' => {
+                params[pi] = params[pi].saturating_mul(10) + (data[j] - b'0') as u32;
+            }
+            b';' => {
+                pi += 1;
+                if pi >= 3 {
+                    return None;
+                }
+            }
+            b'M' => {
+                // Left button press on the command bar row
+                if pi == 2 && params[0] == 0 && params[2] as u16 == term_rows {
+                    return Some(j + 1);
+                }
+                return None;
+            }
+            b'm' => return None,
+            _ => return None,
+        }
+        j += 1;
+    }
+    None
+}
+
 /// Parse SGR mouse event within sidebar context.
 fn parse_sidebar_mouse(
     data: &[u8],
@@ -721,9 +768,14 @@ pub fn view_history(
             command_history: Vec::new(),
             history_index: None,
             saved_input: String::new(),
+            sidebar_visible: true,
         }
     });
-    let sb_w = sidebar_width(&sidebar.entries);
+    let sb_w = if sidebar.sidebar_visible {
+        sidebar_width(&sidebar.entries)
+    } else {
+        0
+    };
     let content_cols = term_cols.saturating_sub(sb_w);
 
     // Load history file and create parser
@@ -783,7 +835,11 @@ pub fn view_history(
         match event {
             Ok(data) => {
                 sidebar.pending_esc = false;
-                let sb_width = sidebar_width(&sidebar.entries);
+                let sb_width = if sidebar.sidebar_visible {
+                    sidebar_width(&sidebar.entries)
+                } else {
+                    0
+                };
 
                 if sidebar.focused || sidebar.new_session_input.is_some() {
                     match process_sidebar_input(&data, &mut sidebar, session_name, sb_width) {
@@ -807,6 +863,28 @@ pub fn view_history(
                         }
                         SidebarAction::None => {}
                     }
+                    continue;
+                }
+
+                // Check for command bar click (toggle sidebar)
+                if is_command_bar_click(&data, last_rows).is_some() {
+                    sidebar.sidebar_visible = !sidebar.sidebar_visible;
+                    let new_sb_w = if sidebar.sidebar_visible {
+                        sidebar_width(&sidebar.entries)
+                    } else {
+                        0
+                    };
+                    let new_content_cols = last_cols.saturating_sub(new_sb_w);
+                    if new_content_cols > 0 {
+                        parser = vt100::Parser::new(
+                            current_inner_rows,
+                            new_content_cols,
+                            super::SCROLLBACK_LINES,
+                        );
+                        parser.process(&history_data);
+                        parser.process(b"\r\n\x1b[2m[stopped]\x1b[0m");
+                    }
+                    dirty = true;
                     continue;
                 }
 
@@ -901,6 +979,7 @@ pub fn view_history(
                                 command_history: Vec::new(),
                                 history_index: None,
                                 saved_input: String::new(),
+                                sidebar_visible: true,
                             };
                             dirty = true;
                         }
@@ -921,6 +1000,25 @@ pub fn view_history(
                                 }
                             }
                         }
+                        InputAction::ToggleSidebar => {
+                            sidebar.sidebar_visible = !sidebar.sidebar_visible;
+                            let new_sb_w = if sidebar.sidebar_visible {
+                                sidebar_width(&sidebar.entries)
+                            } else {
+                                0
+                            };
+                            let new_content_cols = last_cols.saturating_sub(new_sb_w);
+                            if new_content_cols > 0 {
+                                parser = vt100::Parser::new(
+                                    current_inner_rows,
+                                    new_content_cols,
+                                    super::SCROLLBACK_LINES,
+                                );
+                                parser.process(&history_data);
+                                parser.process(b"\r\n\x1b[2m[stopped]\x1b[0m");
+                            }
+                            dirty = true;
+                        }
                     }
                 }
             }
@@ -940,7 +1038,11 @@ pub fn view_history(
                 // Flush buffered incomplete escape sequence
                 if sidebar.new_session_input.is_none() {
                     let max_scrollback = scrollback_line_count(&mut parser);
-                    let sb_w = sidebar_width(&sidebar.entries);
+                    let sb_w = if sidebar.sidebar_visible {
+                        sidebar_width(&sidebar.entries)
+                    } else {
+                        0
+                    };
                     let content_cols = last_cols.saturating_sub(sb_w);
                     let pending_actions = input_state.flush_pending(
                         current_inner_rows,
@@ -981,7 +1083,11 @@ pub fn view_history(
                         last_cols = cols;
                         last_rows = rows;
                         let new_inner = rows.saturating_sub(1);
-                        let sb_w = sidebar_width(&sidebar.entries);
+                        let sb_w = if sidebar.sidebar_visible {
+                            sidebar_width(&sidebar.entries)
+                        } else {
+                            0
+                        };
                         let content_cols = cols.saturating_sub(sb_w);
                         if new_inner > 0 && content_cols > 0 {
                             current_inner_rows = new_inner;
@@ -1026,19 +1132,26 @@ pub fn view_history(
                         use std::io::Write;
                         let _ = terminal.backend_mut().write_all(b"\x1b[?2026h");
                     }
-                    let sb_w = sidebar_width(&sidebar.entries);
+                    let sb_w = if sidebar.sidebar_visible {
+                        sidebar_width(&sidebar.entries)
+                    } else {
+                        0
+                    };
                     terminal
                         .draw(|f| {
                             let full = f.area();
                             let body_height = full.height.saturating_sub(1);
                             let sb_width = sb_w.min(full.width);
                             let right_width = full.width.saturating_sub(sb_width);
-                            let sb_area = Rect {
-                                x: full.x,
-                                y: full.y,
-                                width: sb_width,
-                                height: body_height,
-                            };
+                            if sb_width > 0 {
+                                let sb_area = Rect {
+                                    x: full.x,
+                                    y: full.y,
+                                    width: sb_width,
+                                    height: body_height,
+                                };
+                                draw_sidebar(f, &sidebar, sb_area);
+                            }
                             let right_area = Rect {
                                 x: full.x + sb_width,
                                 y: full.y,
@@ -1051,9 +1164,14 @@ pub fn view_history(
                                 width: full.width,
                                 height: 1,
                             };
-                            draw_sidebar(f, &sidebar, sb_area);
                             terminal::draw_frame(f, &params, right_area);
-                            draw_command_bar(f, bar_area, &sidebar, input_state.command_mode);
+                            draw_command_bar(
+                                f,
+                                bar_area,
+                                &sidebar,
+                                input_state.command_mode,
+                                session_name,
+                            );
                         })
                         .context("Failed to draw terminal frame")?;
                     {
@@ -1099,9 +1217,14 @@ pub fn run(
             command_history: Vec::new(),
             history_index: None,
             saved_input: String::new(),
+            sidebar_visible: true,
         }
     });
-    let sb_w = sidebar_width(&sidebar.entries);
+    let sb_w = if sidebar.sidebar_visible {
+        sidebar_width(&sidebar.entries)
+    } else {
+        0
+    };
     let content_cols = term_cols.saturating_sub(sb_w);
 
     // Connect to server
@@ -1254,7 +1377,11 @@ pub fn run(
                 sidebar.pending_esc = false;
 
                 // Sidebar always handles mouse events in its area
-                let sb_width = sidebar_width(&sidebar.entries);
+                let sb_width = if sidebar.sidebar_visible {
+                    sidebar_width(&sidebar.entries)
+                } else {
+                    0
+                };
 
                 // Check if input should go to sidebar (focused, new_session_input,
                 // or mouse in sidebar area)
@@ -1276,6 +1403,30 @@ pub fn run(
                         }
                         SidebarAction::None => {}
                     }
+                    continue;
+                }
+
+                // Check for command bar click (toggle sidebar)
+                if is_command_bar_click(&data, last_rows).is_some() {
+                    sidebar.sidebar_visible = !sidebar.sidebar_visible;
+                    let new_sb_w = if sidebar.sidebar_visible {
+                        sidebar_width(&sidebar.entries)
+                    } else {
+                        0
+                    };
+                    let new_content_cols = last_cols.saturating_sub(new_sb_w);
+                    if new_content_cols > 0 {
+                        let _ = protocol::write_client_msg(
+                            &mut sock_writer,
+                            &ClientMsg::Resize {
+                                cols: new_content_cols,
+                                rows: current_inner_rows,
+                            },
+                        );
+                        parser.set_size(current_inner_rows, new_content_cols);
+                        parser.process(b"\x1b[H\x1b[2J");
+                    }
+                    dirty = true;
                     continue;
                 }
 
@@ -1373,6 +1524,7 @@ pub fn run(
                                 command_history: Vec::new(),
                                 history_index: None,
                                 saved_input: String::new(),
+                                sidebar_visible: true,
                             };
                             dirty = true;
                         }
@@ -1392,6 +1544,27 @@ pub fn run(
                                     write_osc52_clipboard(tty_fd, &text);
                                 }
                             }
+                        }
+                        InputAction::ToggleSidebar => {
+                            sidebar.sidebar_visible = !sidebar.sidebar_visible;
+                            let new_sb_w = if sidebar.sidebar_visible {
+                                sidebar_width(&sidebar.entries)
+                            } else {
+                                0
+                            };
+                            let new_content_cols = last_cols.saturating_sub(new_sb_w);
+                            if new_content_cols > 0 {
+                                let _ = protocol::write_client_msg(
+                                    &mut sock_writer,
+                                    &ClientMsg::Resize {
+                                        cols: new_content_cols,
+                                        rows: current_inner_rows,
+                                    },
+                                );
+                                parser.set_size(current_inner_rows, new_content_cols);
+                                parser.process(b"\x1b[H\x1b[2J");
+                            }
+                            dirty = true;
                         }
                     }
                 }
@@ -1416,7 +1589,11 @@ pub fn run(
                 // Flush any buffered incomplete escape sequence
                 if sidebar.new_session_input.is_none() {
                     let max_scrollback = scrollback_line_count(&mut parser);
-                    let sb_w = sidebar_width(&sidebar.entries);
+                    let sb_w = if sidebar.sidebar_visible {
+                        sidebar_width(&sidebar.entries)
+                    } else {
+                        0
+                    };
                     let content_cols = last_cols.saturating_sub(sb_w);
                     let pending_actions = input_state.flush_pending(
                         current_inner_rows,
@@ -1467,7 +1644,11 @@ pub fn run(
                         last_cols = cols;
                         last_rows = rows;
                         let new_inner = rows.saturating_sub(1); // reserve 1 row for command bar
-                        let sb_w = sidebar_width(&sidebar.entries);
+                        let sb_w = if sidebar.sidebar_visible {
+                            sidebar_width(&sidebar.entries)
+                        } else {
+                            0
+                        };
                         let content_cols = cols.saturating_sub(sb_w);
                         if new_inner > 0 && content_cols > 0 {
                             current_inner_rows = new_inner;
@@ -1520,19 +1701,26 @@ pub fn run(
                         use std::io::Write;
                         let _ = terminal.backend_mut().write_all(b"\x1b[?2026h");
                     }
-                    let sb_w = sidebar_width(&sidebar.entries);
+                    let sb_w = if sidebar.sidebar_visible {
+                        sidebar_width(&sidebar.entries)
+                    } else {
+                        0
+                    };
                     terminal
                         .draw(|f| {
                             let full = f.area();
                             let body_height = full.height.saturating_sub(1);
                             let sb_width = sb_w.min(full.width);
                             let right_width = full.width.saturating_sub(sb_width);
-                            let sb_area = Rect {
-                                x: full.x,
-                                y: full.y,
-                                width: sb_width,
-                                height: body_height,
-                            };
+                            if sb_width > 0 {
+                                let sb_area = Rect {
+                                    x: full.x,
+                                    y: full.y,
+                                    width: sb_width,
+                                    height: body_height,
+                                };
+                                draw_sidebar(f, &sidebar, sb_area);
+                            }
                             let right_area = Rect {
                                 x: full.x + sb_width,
                                 y: full.y,
@@ -1545,9 +1733,14 @@ pub fn run(
                                 width: full.width,
                                 height: 1,
                             };
-                            draw_sidebar(f, &sidebar, sb_area);
                             terminal::draw_frame(f, &params, right_area);
-                            draw_command_bar(f, bar_area, &sidebar, input_state.command_mode);
+                            draw_command_bar(
+                                f,
+                                bar_area,
+                                &sidebar,
+                                input_state.command_mode,
+                                session_name,
+                            );
                         })
                         .context("Failed to draw terminal frame")?;
                     {

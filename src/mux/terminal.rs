@@ -374,6 +374,8 @@ pub enum InputAction {
     NewSession,
     /// Copy the current selection to clipboard via OSC 52
     CopyToClipboard,
+    /// Toggle sidebar visibility
+    ToggleSidebar,
 }
 
 struct SgrMouseEvent {
@@ -649,6 +651,13 @@ impl InputState {
                 if b == b'n' {
                     self.command_mode = false;
                     actions.push(InputAction::NewSession);
+                    i += 1;
+                    continue;
+                }
+                // 'z' — toggle sidebar visibility
+                if b == b'z' {
+                    self.command_mode = false;
+                    actions.push(InputAction::ToggleSidebar);
                     i += 1;
                     continue;
                 }
