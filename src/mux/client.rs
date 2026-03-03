@@ -78,16 +78,6 @@ fn default_new_session_cmd(sidebar: &SidebarState) -> String {
     }
 }
 
-/// Find any running session across all workspaces, excluding `exclude`.
-fn find_any_running_session(exclude: &str) -> Option<String> {
-    session::list()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|s| s.local && s.name != exclude)
-        .map(|s| s.name)
-        .find(|n| session::is_local_running(n))
-}
-
 /// Build the sidebar session list with workspace grouping.
 /// Returns entries and the index of the current session.
 fn build_sidebar_entries(current_session: &str) -> (Vec<SidebarEntry>, usize) {
