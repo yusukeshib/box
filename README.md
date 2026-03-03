@@ -25,7 +25,7 @@ Every session runs inside a terminal multiplexer with scrollback, mouse support,
 ## Features
 
 - **Isolated git workspaces** — `git clone --local` (default) or `git worktree` for per-session workspaces; host files are never modified
-- **Persistent sessions** — detach with `Ctrl+P` → `Ctrl+Q`, reattach with `box resume`; processes keep running
+- **Persistent sessions** — detach with `Ctrl+P` → `Q`, reattach with `box resume`; processes keep running
 - **Terminal multiplexer** — scrollback history, mouse scroll, scrollbar, COMMAND mode for navigation
 - **Multi-session workspaces** — run multiple sessions per workspace (e.g. `my-feature/zsh`, `my-feature/server`) with a sidebar for quick switching
 - **Docker mode** — optional full container isolation with any Docker image (`BOX_MODE=docker`)
@@ -80,7 +80,7 @@ Box must be run inside a git repository. It clones the current repo into `~/.box
 $ git checkout -b experiment
 $ make test  # break things freely
 
-# Detach (Ctrl+P enters COMMAND mode, then Ctrl+Q)
+# Detach (Ctrl+P enters COMMAND mode, then Q)
 # Your process keeps running in the background
 
 # Reattach later
@@ -108,10 +108,11 @@ Press `Ctrl+P` (configurable) to enter COMMAND mode:
 | `Ctrl+D` | Scroll down half page |
 | `Arrow keys` | Scroll up/down |
 | `PgUp` / `PgDn` | Scroll by half page |
-| `Ctrl+Q` | Quit box |
+| `Q` | Quit box |
 | `Ctrl+X` | Stop/kill the session |
 | `A` | Focus the session sidebar (Enter to switch, Esc to cancel) |
 | `N` | Create a new session in the current workspace |
+| `Z` | Toggle sidebar |
 | `Esc` | Exit COMMAND mode (snap to bottom) |
 
 Mouse scroll works in both normal and COMMAND mode. A scrollbar appears when there is scrollback content.

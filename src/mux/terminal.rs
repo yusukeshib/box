@@ -635,13 +635,13 @@ impl InputState {
                     i += 1;
                     continue;
                 }
-                // Ctrl+Q — detach
-                if b == 0x11 {
+                // 'q' — detach
+                if b == b'q' {
                     actions.push(InputAction::Detach);
                     return actions;
                 }
-                // 'a' or Ctrl+A — refresh session sidebar
-                if b == b'a' || b == 0x01 {
+                // 'a' — refresh session sidebar
+                if b == b'a' {
                     self.command_mode = false;
                     actions.push(InputAction::FocusSidebar);
                     i += 1;
