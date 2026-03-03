@@ -154,9 +154,8 @@ fn main() {
 }
 
 fn run_local_command(name: &str, cmd: &[String]) -> Result<i32> {
-    let ws = session::workspace_name(name);
     let home = config::home_dir()?;
-    let workspace = Path::new(&home).join(".box").join("workspaces").join(ws);
+    let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
     let status = std::process::Command::new(&cmd[0])
         .args(&cmd[1..])
         .current_dir(workspace)
@@ -235,11 +234,8 @@ fn resolve_project_dir(
                         .next()
                         .map(|c| c.as_os_str().to_string_lossy().to_string())
                 }) {
-                    // Find any session in this workspace's project_dir
-                    if let Some(s) = sessions
-                        .iter()
-                        .find(|s| session::workspace_name(&s.name) == ws_name)
-                    {
+                    // Find session with this name to get its project_dir
+                    if let Some(s) = sessions.iter().find(|s| s.name == ws_name) {
                         return Some(s.project_dir.clone());
                     }
                 }
@@ -259,22 +255,18 @@ fn cmd_default() -> Result<i32> {
     }
 
     let name = &sessions[0].name;
-    session::validate_name(name)?;
-
-    let full = session::full_name(name);
-    let ws = session::workspace_name(&full);
-    let sess = session::load(&full)?;
+    let sess = session::load(name)?;
 
     if !Path::new(&sess.project_dir).is_dir() {
         bail!("Project directory '{}' no longer exists.", sess.project_dir);
     }
 
     let home = config::home_dir()?;
-    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(ws);
+    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(name);
     output_cd_path(&workspace_path.to_string_lossy());
 
     if !sess.command.is_empty() {
-        return run_local_command(&full, &sess.command);
+        return run_local_command(name, &sess.command);
     }
     Ok(0)
 }
@@ -365,60 +357,27 @@ fn cmd_create(
 ) -> Result<i32> {
     session::validate_name(name)?;
 
-    let (ws, _sess_part) = session::parse_name(name);
-    let has_explicit_session = name.contains('/');
-
-    // If workspace already exists, inherit settings from the first session
-    let (project_dir, inherited_strategy) = if session::workspace_exists(ws)? {
-        let ws_sessions = session::workspace_sessions(ws)?;
-        if let Some(first) = ws_sessions.first() {
-            let parent = session::load(&format!("{}/{}", ws, first))?;
-            (parent.project_dir.clone(), Some(parent.strategy.clone()))
-        } else {
-            return Err(anyhow::anyhow!("Workspace '{}' has no sessions.", ws));
-        }
-    } else {
-        let cwd = fs::canonicalize(".")
-            .map_err(|_| anyhow::anyhow!("Cannot resolve current directory."))?;
-        let project_dir = git::find_root(&cwd)
-            .ok_or_else(|| anyhow::anyhow!("'{}' is not inside a git repository.", cwd.display()))?
-            .to_string_lossy()
-            .to_string();
-        let project_dir = session::resolve_original_project_dir(&project_dir);
-        (project_dir, None)
-    };
+    let cwd =
+        fs::canonicalize(".").map_err(|_| anyhow::anyhow!("Cannot resolve current directory."))?;
+    let project_dir = git::find_root(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("'{}' is not inside a git repository.", cwd.display()))?
+        .to_string_lossy()
+        .to_string();
 
     // Resolve config
-    let mut cfg = config::resolve(config::BoxConfigInput {
-        name: String::new(), // placeholder, set below
+    let cfg = config::resolve(config::BoxConfigInput {
+        name: name.to_string(),
         project_dir,
         command: cmd,
         env: vec![],
-        strategy: strategy.or(inherited_strategy),
+        strategy,
     })?;
 
-    // Derive session part from command basename when user gave a bare workspace name
-    let full = if has_explicit_session {
-        session::full_name(name)
-    } else {
-        let sess_part = cfg
-            .command
-            .first()
-            .and_then(|s| {
-                std::path::Path::new(s)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-            })
-            .unwrap_or_else(|| "default".to_string());
-        format!("{}/{}", ws, sess_part)
-    };
-    cfg.name = full.clone();
-
-    if session::session_exists(&full)? {
-        bail!("Session '{}' already exists.", full);
+    if session::session_exists(name)? {
+        bail!("Session '{}' already exists.", name);
     }
 
-    eprintln!("\x1b[2msession:\x1b[0m {}", full);
+    eprintln!("\x1b[2msession:\x1b[0m {}", name);
     eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
     if !cfg.command.is_empty() {
         eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
@@ -429,11 +388,12 @@ fn cmd_create(
     session::save(&sess)?;
 
     let home = config::home_dir()?;
-    let workspace_path = workspace::ensure_workspace(&home, ws, &sess.project_dir, &sess.strategy)?;
+    let workspace_path =
+        workspace::ensure_workspace(&home, name, &sess.project_dir, &sess.strategy)?;
     output_cd_path(&workspace_path);
 
     if !sess.command.is_empty() {
-        return run_local_command(&sess.name, &sess.command);
+        return run_local_command(name, &sess.command);
     }
     Ok(0)
 }
@@ -441,73 +401,29 @@ fn cmd_create(
 fn cmd_remove(name: &str) -> Result<i32> {
     session::validate_name(name)?;
 
-    // If no '/' in name, remove entire workspace (all sessions)
-    if !name.contains('/') {
-        let ws = name;
-        if !session::workspace_exists(ws)? {
-            bail!("Workspace '{}' not found.", ws);
-        }
-        let ws_sessions = session::workspace_sessions(ws)?;
-        let mut strategy = config::Strategy::Clone;
-        let mut project_dir = String::new();
-
-        for sess_name in &ws_sessions {
-            let full = format!("{}/{}", ws, sess_name);
-            let sess = session::load(&full)?;
-            if project_dir.is_empty() {
-                project_dir = sess.project_dir.clone();
-                strategy = sess.strategy.clone();
-            }
-        }
-
-        workspace::remove_workspace(ws, &strategy);
-        session::remove_workspace_dir(ws)?;
-
-        if !project_dir.is_empty() {
-            output_cd_path(&project_dir);
-        }
-        println!(
-            "Workspace '{}' removed ({} session(s)).",
-            ws,
-            ws_sessions.len()
-        );
-        return Ok(0);
+    if !session::session_exists(name)? {
+        bail!("Session '{}' not found.", name);
     }
 
-    // Individual session removal
-    let full = session::full_name(name);
-    let ws = session::workspace_name(&full);
+    let sess = session::load(name)?;
 
-    if !session::session_exists(&full)? {
-        bail!("Session '{}' not found.", full);
-    }
+    workspace::remove_workspace(name, &sess.strategy);
+    session::remove_dir(name)?;
 
-    let sess = session::load(&full)?;
-
-    session::remove_dir(&full)?;
-    // If last session in workspace, remove workspace too
-    let remaining = session::workspace_sessions(ws).unwrap_or_default();
-    if remaining.is_empty() {
-        workspace::remove_workspace(ws, &sess.strategy);
-        let _ = session::remove_workspace_dir(ws);
-    }
     output_cd_path(&sess.project_dir);
-    println!("Session '{}' removed.", full);
+    println!("Session '{}' removed.", name);
     Ok(0)
 }
 
 fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     session::validate_name(name)?;
 
-    let full = session::full_name(name);
-    let ws = session::workspace_name(&full);
-
-    if !session::session_exists(&full)? {
-        bail!("Session '{}' not found.", full);
+    if !session::session_exists(name)? {
+        bail!("Session '{}' not found.", name);
     }
 
     let home = config::home_dir()?;
-    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(ws);
+    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(name);
     let status = std::process::Command::new(&cmd[0])
         .args(&cmd[1..])
         .current_dir(workspace_path)
@@ -517,26 +433,22 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
 
 fn cmd_cd(name: &str) -> Result<i32> {
     session::validate_name(name)?;
-    let full = session::full_name(name);
-    let ws = session::workspace_name(&full);
-    if !session::session_exists(&full)? {
-        bail!("Session '{}' not found.", full);
+    if !session::session_exists(name)? {
+        bail!("Session '{}' not found.", name);
     }
     let home = config::home_dir()?;
-    let path = Path::new(&home).join(".box").join("workspaces").join(ws);
+    let path = Path::new(&home).join(".box").join("workspaces").join(name);
     output_cd_path(&path.to_string_lossy());
     Ok(0)
 }
 
 fn cmd_path(name: &str) -> Result<i32> {
     session::validate_name(name)?;
-    let full = session::full_name(name);
-    let ws = session::workspace_name(&full);
-    if !session::session_exists(&full)? {
-        bail!("Session '{}' not found.", full);
+    if !session::session_exists(name)? {
+        bail!("Session '{}' not found.", name);
     }
     let home = config::home_dir()?;
-    let path = Path::new(&home).join(".box").join("workspaces").join(ws);
+    let path = Path::new(&home).join(".box").join("workspaces").join(name);
     println!("{}", path.display());
     Ok(0)
 }
@@ -559,16 +471,11 @@ fn cmd_origin() -> Result<i32> {
         None => bail!("Not inside a box workspace."),
     };
 
-    if !session::workspace_exists(&ws_name)? {
-        bail!("Workspace '{}' not found.", ws_name);
+    if !session::session_exists(&ws_name)? {
+        bail!("Session '{}' not found.", ws_name);
     }
 
-    // Load any session in the workspace to get the project_dir
-    let ws_sessions = session::workspace_sessions(&ws_name)?;
-    let first = ws_sessions
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("Workspace '{}' has no sessions.", ws_name))?;
-    let sess = session::load(&format!("{}/{}", ws_name, first))?;
+    let sess = session::load(&ws_name)?;
     output_cd_path(&sess.project_dir);
     Ok(0)
 }
@@ -578,18 +485,14 @@ fn cmd_config_zsh() -> Result<i32> {
         r#"__box_sessions() {{
     local -a sessions
     if [[ -d "$HOME/.box/sessions" ]]; then
-        for ws in "$HOME/.box/sessions"/*(N/); do
-            local ws_name=${{ws:t}}
-            for sess in "$ws"/*(N/); do
-                if [[ -f "$sess/project_dir" ]]; then
-                    local sess_name=${{sess:t}}
-                    local full_name="$ws_name/$sess_name"
-                    local desc=""
-                    desc=$(< "$sess/project_dir")
-                    desc=${{desc/#$HOME/\~}}
-                    sessions+=("$full_name:[$desc]")
-                fi
-            done
+        for sess in "$HOME/.box/sessions"/*(N/); do
+            if [[ -f "$sess/project_dir" ]]; then
+                local sess_name=${{sess:t}}
+                local desc=""
+                desc=$(< "$sess/project_dir")
+                desc=${{desc/#$HOME/\~}}
+                sessions+=("$sess_name:[$desc]")
+            fi
         done
     fi
     if (( ${{#sessions}} )); then
@@ -705,11 +608,8 @@ fn cmd_config_bash() -> Result<i32> {
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
-                    for ws in "$HOME/.box/sessions"/*/; do
-                        local ws_name=$(basename "$ws")
-                        for sess in "$ws"*/; do
-                            [[ -f "$sess/project_dir" ]] && sessions+=" $ws_name/$(basename "$sess")"
-                        done
+                    for sess in "$HOME/.box/sessions"/*/; do
+                        [[ -f "$sess/project_dir" ]] && sessions+=" $(basename "$sess")"
                     done
                 fi
                 COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
@@ -726,11 +626,8 @@ fn cmd_config_bash() -> Result<i32> {
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
-                    for ws in "$HOME/.box/sessions"/*/; do
-                        local ws_name=$(basename "$ws")
-                        for sess in "$ws"*/; do
-                            [[ -f "$sess/project_dir" ]] && sessions+=" $ws_name/$(basename "$sess")"
-                        done
+                    for sess in "$HOME/.box/sessions"/*/; do
+                        [[ -f "$sess/project_dir" ]] && sessions+=" $(basename "$sess")"
                     done
                 fi
                 COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
