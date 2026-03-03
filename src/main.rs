@@ -14,7 +14,7 @@ use std::path::Path;
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box create my-feature                        # create a new session\n  box create my-feature -- bash                # create with a command\n  box resume my-feature                        # resume a session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -24,9 +24,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Create a new session
-    Create(CreateArgs),
-    /// Resume an existing session
-    Resume(ResumeArgs),
+    New(CreateArgs),
     /// Remove a session
     Remove(RemoveArgs),
     /// Run a command in a session
@@ -71,12 +69,6 @@ struct CreateArgs {
 }
 
 #[derive(clap::Args, Debug)]
-struct ResumeArgs {
-    /// Session name
-    name: String,
-}
-
-#[derive(clap::Args, Debug)]
 struct RemoveArgs {
     /// Session name
     name: String,
@@ -114,7 +106,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Commands::Create(args)) => {
+        Some(Commands::New(args)) => {
             if std::env::var_os("BOX_SESSION").is_some() {
                 eprintln!(
                     "Error: cannot nest box sessions (already inside session {:?})",
@@ -137,16 +129,6 @@ fn main() {
                     strategy.and_then(|strategy| cmd_create(&name, cmd, strategy))
                 }
             }
-        }
-        Some(Commands::Resume(args)) => {
-            if std::env::var_os("BOX_SESSION").is_some() {
-                eprintln!(
-                    "Error: cannot nest box sessions (already inside session {:?})",
-                    std::env::var("BOX_SESSION").unwrap_or_default()
-                );
-                std::process::exit(1);
-            }
-            cmd_resume(&args.name)
         }
         Some(Commands::Remove(args)) => cmd_remove(&args.name),
         Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
@@ -269,14 +251,32 @@ fn resolve_project_dir(
     git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
 }
 
-/// `box` with no args: resume the first session, or prompt to create if none exist.
+/// `box` with no args: open the first session, or prompt to create if none exist.
 fn cmd_default() -> Result<i32> {
     let sessions = session::list()?;
     if sessions.is_empty() {
         return cmd_create_tui();
     }
 
-    cmd_resume(&sessions[0].name)
+    let name = &sessions[0].name;
+    session::validate_name(name)?;
+
+    let full = session::full_name(name);
+    let ws = session::workspace_name(&full);
+    let sess = session::load(&full)?;
+
+    if !Path::new(&sess.project_dir).is_dir() {
+        bail!("Project directory '{}' no longer exists.", sess.project_dir);
+    }
+
+    let home = config::home_dir()?;
+    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(ws);
+    output_cd_path(&workspace_path.to_string_lossy());
+
+    if !sess.command.is_empty() {
+        return run_local_command(&full, &sess.command);
+    }
+    Ok(0)
 }
 
 /// `box create` with no name: prompt for session details.
@@ -415,11 +415,7 @@ fn cmd_create(
     cfg.name = full.clone();
 
     if session::session_exists(&full)? {
-        bail!(
-            "Session '{}' already exists. Use `box resume {}` to resume it.",
-            full,
-            full
-        );
+        bail!("Session '{}' already exists.", full);
     }
 
     eprintln!("\x1b[2msession:\x1b[0m {}", full);
@@ -438,28 +434,6 @@ fn cmd_create(
 
     if !sess.command.is_empty() {
         return run_local_command(&sess.name, &sess.command);
-    }
-    Ok(0)
-}
-
-fn cmd_resume(name: &str) -> Result<i32> {
-    session::validate_name(name)?;
-
-    let full = session::full_name(name);
-    let ws = session::workspace_name(&full);
-    let sess = session::load(&full)?;
-
-    if !Path::new(&sess.project_dir).is_dir() {
-        bail!("Project directory '{}' no longer exists.", sess.project_dir);
-    }
-
-    session::touch_resumed_at(&full)?;
-    let home = config::home_dir()?;
-    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(ws);
-    output_cd_path(&workspace_path.to_string_lossy());
-
-    if !sess.command.is_empty() {
-        return run_local_command(&full, &sess.command);
     }
     Ok(0)
 }
@@ -635,8 +609,7 @@ _box() {{
         subcmd)
             local -a subcmds
             subcmds=(
-                'create:Create a new session'
-                'resume:Resume an existing session'
+                'new:Create a new session'
                 'remove:Remove a session'
                 'exec:Run a command in a session'
                 'list:List sessions'
@@ -650,15 +623,11 @@ _box() {{
             ;;
         args)
             case $words[1] in
-                create)
+                new)
                     _arguments \
                         '--strategy=[Workspace strategy (clone or worktree)]:strategy:(clone worktree)' \
                         '1:session name:' \
                         '*:command:'
-                    ;;
-                resume)
-                    _arguments \
-                        '1:session name:__box_sessions'
                     ;;
                 exec)
                     _arguments \
@@ -714,8 +683,8 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="create resume remove exec list cd path origin upgrade config"
-    local session_cmds="resume remove exec cd path"
+    local subcommands="new remove exec list cd path origin upgrade config"
+    local session_cmds="remove exec cd path"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
@@ -725,26 +694,12 @@ fn cmd_config_bash() -> Result<i32> {
     local subcmd="${{words[1]}}"
 
     case "$subcmd" in
-        create)
+        new)
             case "$cur" in
                 -*)
                     COMPREPLY=($(compgen -W "--strategy" -- "$cur"))
                     ;;
             esac
-            ;;
-        resume)
-            if [[ $cword -eq 2 ]]; then
-                local sessions=""
-                if [[ -d "$HOME/.box/sessions" ]]; then
-                    for ws in "$HOME/.box/sessions"/*/; do
-                        local ws_name=$(basename "$ws")
-                        for sess in "$ws"*/; do
-                            [[ -f "$sess/project_dir" ]] && sessions+=" $ws_name/$(basename "$sess")"
-                        done
-                    done
-                fi
-                COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
-            fi
             ;;
         exec)
             if [[ $cword -eq 2 ]]; then
@@ -941,72 +896,53 @@ mod tests {
         assert!(cli.command.is_none());
     }
 
-    // -- create subcommand --
+    // -- new subcommand --
 
     #[test]
-    fn test_create_name_only() {
-        let cli = parse(&["create", "my-session"]);
+    fn test_new_name_only() {
+        let cli = parse(&["new", "my-session"]);
         match cli.command {
-            Some(Commands::Create(args)) => {
+            Some(Commands::New(args)) => {
                 assert_eq!(args.name.as_deref(), Some("my-session"));
                 assert!(args.cmd.is_empty());
             }
-            other => panic!("expected Create, got {:?}", other),
+            other => panic!("expected New, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_create_with_command() {
-        let cli = parse(&["create", "my-session", "--", "bash", "-c", "echo hi"]);
+    fn test_new_with_command() {
+        let cli = parse(&["new", "my-session", "--", "bash", "-c", "echo hi"]);
         match cli.command {
-            Some(Commands::Create(args)) => {
+            Some(Commands::New(args)) => {
                 assert_eq!(args.name.as_deref(), Some("my-session"));
                 assert_eq!(args.cmd, vec!["bash", "-c", "echo hi"]);
             }
-            other => panic!("expected Create, got {:?}", other),
+            other => panic!("expected New, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_create_no_name_opens_tui() {
-        let cli = parse(&["create"]);
+    fn test_new_no_name_opens_tui() {
+        let cli = parse(&["new"]);
         match cli.command {
-            Some(Commands::Create(args)) => {
+            Some(Commands::New(args)) => {
                 assert!(args.name.is_none());
             }
-            _ => panic!("expected Create"),
+            _ => panic!("expected New"),
         }
     }
 
     #[test]
-    fn test_create_with_strategy() {
-        let cli = parse(&["create", "my-session", "--strategy", "worktree"]);
+    fn test_new_with_strategy() {
+        let cli = parse(&["new", "my-session", "--strategy", "worktree"]);
         match cli.command {
-            Some(Commands::Create(args)) => {
+            Some(Commands::New(args)) => {
                 assert_eq!(args.name.as_deref(), Some("my-session"));
                 assert_eq!(args.strategy.as_deref(), Some("worktree"));
             }
-            other => panic!("expected Create, got {:?}", other),
+            other => panic!("expected New, got {:?}", other),
         }
-    }
-
-    // -- resume subcommand --
-
-    #[test]
-    fn test_resume_name_only() {
-        let cli = parse(&["resume", "my-session"]);
-        match cli.command {
-            Some(Commands::Resume(args)) => {
-                assert_eq!(args.name, "my-session");
-            }
-            other => panic!("expected Resume, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_resume_requires_name() {
-        let result = try_parse(&["resume"]);
-        assert!(result.is_err());
     }
 
     // -- remove subcommand --

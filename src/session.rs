@@ -45,7 +45,7 @@ pub fn sessions_dir() -> Result<PathBuf> {
 }
 
 const RESERVED_NAMES: &[&str] = &[
-    "create", "resume", "remove", "exec", "upgrade", "path", "config", "list", "ls",
+    "new", "remove", "exec", "upgrade", "path", "config", "list", "ls",
 ];
 
 /// Parse a user-supplied name into (workspace, session).
@@ -401,16 +401,6 @@ pub fn remove_workspace_dir(workspace: &str) -> Result<()> {
     ))
 }
 
-pub fn touch_resumed_at(name: &str) -> Result<()> {
-    let full = full_name(name);
-    let dir = sessions_dir()?.join(&full);
-    fs::write(
-        dir.join("resumed_at"),
-        Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,20 +703,6 @@ mod tests {
         with_temp_home(|_| {
             let err = remove_dir("nonexistent/default").unwrap_err();
             assert!(err.to_string().contains("Failed to remove"));
-        });
-    }
-
-    #[test]
-    fn test_touch_resumed_at() {
-        with_temp_home(|_| {
-            let sess = make_session("resume-test/default", "/tmp/p");
-            save(&sess).unwrap();
-
-            touch_resumed_at("resume-test/default").unwrap();
-
-            let dir = sessions_dir().unwrap().join("resume-test/default");
-            let content = fs::read_to_string(dir.join("resumed_at")).unwrap();
-            assert!(content.ends_with("UTC"));
         });
     }
 
