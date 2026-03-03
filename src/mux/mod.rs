@@ -118,23 +118,16 @@ pub fn run(session_name: &str) -> Result<i32> {
         match result {
             client::ClientResult::Quit => return Ok(0),
             client::ClientResult::Exit(code) => {
-                // If another session in the same workspace is running, switch to it
-                let ws = session::workspace_name(&current);
-                let next = session::workspace_sessions(ws)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|s| format!("{}/{}", ws, s))
-                    .find(|name| name != &current && session::is_local_running(name));
-                match next {
-                    Some(next_session) => {
-                        terminal::set_mouse_tracking(tty_fd, false);
-                        use std::io::Write;
-                        let _ = tty.write_all(b"\x1b[H\x1b[2J");
-                        let _ = tty.flush();
-                        sidebar_state = None;
-                        current = next_session;
-                    }
-                    None => return Ok(code),
+                // Stay on the current session — if it has saved history the
+                // next loop iteration will open the history viewer.
+                if session::has_history(&current) {
+                    terminal::set_mouse_tracking(tty_fd, false);
+                    use std::io::Write;
+                    let _ = tty.write_all(b"\x1b[H\x1b[2J");
+                    let _ = tty.flush();
+                    sidebar_state = None;
+                } else {
+                    return Ok(code);
                 }
             }
             client::ClientResult::SwitchSession(next, sb)

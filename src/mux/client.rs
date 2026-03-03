@@ -1328,10 +1328,6 @@ pub fn run(
                     dirty = true;
                 }
                 ServerMsg::Exited(code) => {
-                    if let Some(next) = find_any_running_session(session_name) {
-                        unsafe { libc::close(tty_input_fd) };
-                        return Ok(ClientResult::SwitchSession(next, None));
-                    }
                     return Ok(ClientResult::Exit(code));
                 }
             },
