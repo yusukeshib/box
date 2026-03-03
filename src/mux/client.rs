@@ -41,6 +41,12 @@ pub(super) struct SidebarState {
     /// A lone ESC was received but may be an incomplete escape sequence.
     /// Flushed on timeout to unfocus the sidebar.
     pending_esc: bool,
+    /// Command history loaded when input mode activates
+    command_history: Vec<String>,
+    /// None = typing new text, Some(i) = browsing history at index i
+    history_index: Option<usize>,
+    /// Preserves user's typed text when browsing history
+    saved_input: String,
 }
 
 pub(super) struct SidebarEntry {
@@ -404,9 +410,6 @@ fn process_sidebar_input(
                     if i + 1 < data.len() && data[i + 1] == b'[' {
                         if i + 2 < data.len() && data[i + 2] == b'<' {
                             // SGR mouse sequence — skip parameter bytes
-                            // (digits + semicolons) then the terminator M/m.
-                            // Stop at any other byte so we don't accidentally
-                            // consume unrelated input (like ENTER).
                             let mut j = i + 3;
                             while j < data.len() {
                                 match data[j] {
@@ -415,10 +418,48 @@ fn process_sidebar_input(
                                         j += 1;
                                         break;
                                     }
-                                    _ => break, // not part of mouse event
+                                    _ => break,
                                 }
                             }
                             i = j;
+                            continue;
+                        }
+                        // Up arrow — browse command history backward (wraps around)
+                        if i + 2 < data.len() && data[i + 2] == b'A' {
+                            if !sidebar.command_history.is_empty() {
+                                let len = sidebar.command_history.len();
+                                let new_idx = match sidebar.history_index {
+                                    None => {
+                                        sidebar.saved_input = input.clone();
+                                        len - 1
+                                    }
+                                    Some(0) => len - 1,
+                                    Some(idx) => idx - 1,
+                                };
+                                sidebar.history_index = Some(new_idx);
+                                *input = sidebar.command_history[new_idx].clone();
+                                needs_redraw = true;
+                            }
+                            i += 3;
+                            continue;
+                        }
+                        // Down arrow — browse command history forward (wraps around)
+                        if i + 2 < data.len() && data[i + 2] == b'B' {
+                            if !sidebar.command_history.is_empty() {
+                                let len = sidebar.command_history.len();
+                                let new_idx = match sidebar.history_index {
+                                    None => {
+                                        sidebar.saved_input = input.clone();
+                                        0
+                                    }
+                                    Some(idx) if idx + 1 >= len => 0,
+                                    Some(idx) => idx + 1,
+                                };
+                                sidebar.history_index = Some(new_idx);
+                                *input = sidebar.command_history[new_idx].clone();
+                                needs_redraw = true;
+                            }
+                            i += 3;
                             continue;
                         }
                         // Other CSI sequence — skip until final byte (>= 0x40)
@@ -440,21 +481,25 @@ fn process_sidebar_input(
                 b'\r' | b'\n' => {
                     let cmd = input.clone();
                     sidebar.new_session_input = None;
+                    session::append_command_history(&cmd);
                     return SidebarAction::NewSession(cmd);
                 }
                 // Backspace
                 0x7f | 0x08 => {
                     input.pop();
+                    sidebar.history_index = None;
                     needs_redraw = true;
                 }
                 // Ctrl+U → clear input
                 0x15 => {
                     input.clear();
+                    sidebar.history_index = None;
                     needs_redraw = true;
                 }
                 // Printable ASCII
                 0x20..=0x7e => {
                     input.push(b as char);
+                    sidebar.history_index = None;
                     needs_redraw = true;
                 }
                 _ => {}
@@ -673,6 +718,9 @@ pub fn view_history(
             new_session_input: None,
             focused: false,
             pending_esc: false,
+            command_history: Vec::new(),
+            history_index: None,
+            saved_input: String::new(),
         }
     });
     let sb_w = sidebar_width(&sidebar.entries);
@@ -850,10 +898,16 @@ pub fn view_history(
                                 new_session_input: None,
                                 focused: true,
                                 pending_esc: false,
+                                command_history: Vec::new(),
+                                history_index: None,
+                                saved_input: String::new(),
                             };
                             dirty = true;
                         }
                         InputAction::NewSession => {
+                            sidebar.command_history = session::load_command_history();
+                            sidebar.history_index = None;
+                            sidebar.saved_input = String::new();
                             sidebar.new_session_input = Some(default_new_session_cmd(&sidebar));
                             dirty = true;
                         }
@@ -1042,6 +1096,9 @@ pub fn run(
             new_session_input: None,
             focused: false,
             pending_esc: false,
+            command_history: Vec::new(),
+            history_index: None,
+            saved_input: String::new(),
         }
     });
     let sb_w = sidebar_width(&sidebar.entries);
@@ -1313,10 +1370,16 @@ pub fn run(
                                 new_session_input: None,
                                 focused: true,
                                 pending_esc: false,
+                                command_history: Vec::new(),
+                                history_index: None,
+                                saved_input: String::new(),
                             };
                             dirty = true;
                         }
                         InputAction::NewSession => {
+                            sidebar.command_history = session::load_command_history();
+                            sidebar.history_index = None;
+                            sidebar.saved_input = String::new();
                             sidebar.new_session_input = Some(default_new_session_cmd(&sidebar));
                             dirty = true;
                         }

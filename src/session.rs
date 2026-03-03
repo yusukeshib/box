@@ -498,6 +498,68 @@ pub fn remove_socket(name: &str) {
     }
 }
 
+const MAX_COMMAND_HISTORY: usize = 100;
+
+pub fn command_history_path() -> Result<PathBuf> {
+    let dir = PathBuf::from(config::home_dir()?).join(".box");
+    Ok(dir.join("command_history"))
+}
+
+pub fn load_command_history() -> Vec<String> {
+    let path = match command_history_path() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let content = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if !line.is_empty() && seen.insert(line.to_string()) {
+            result.push(line.to_string());
+        }
+    }
+    // Keep only the last MAX_COMMAND_HISTORY entries
+    if result.len() > MAX_COMMAND_HISTORY {
+        result = result.split_off(result.len() - MAX_COMMAND_HISTORY);
+    }
+    result
+}
+
+pub fn append_command_history(cmd: &str) {
+    let cmd = cmd.trim();
+    if cmd.is_empty() {
+        return;
+    }
+    let path = match command_history_path() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    // Read existing lines, append new one, deduplicate, and truncate
+    let mut lines: Vec<String> = fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .collect();
+    // Remove any prior occurrence so the new entry goes to the end
+    lines.retain(|l| l != cmd);
+    lines.push(cmd.to_string());
+    // Truncate to last MAX_COMMAND_HISTORY entries
+    if lines.len() > MAX_COMMAND_HISTORY {
+        lines = lines.split_off(lines.len() - MAX_COMMAND_HISTORY);
+    }
+    let content = lines.join("\n") + "\n";
+    let _ = fs::write(&path, content);
+}
+
 pub fn is_local_running(name: &str) -> bool {
     let full = full_name(name);
     // Check socket first (authoritative if server is up)
