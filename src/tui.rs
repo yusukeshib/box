@@ -5,15 +5,12 @@ use ratatui::prelude::*;
 use ratatui::{TerminalOptions, Viewport};
 use std::io;
 
-use crate::config;
 use crate::session;
 
 pub enum TuiAction {
     New {
         name: String,
-        image: Option<String>,
         command: Option<Vec<String>>,
-        local: bool,
         strategy: Option<crate::config::Strategy>,
     },
     Quit,
@@ -22,7 +19,6 @@ pub enum TuiAction {
 #[derive(PartialEq)]
 enum Mode {
     Name,
-    Image,
     Command,
 }
 
@@ -137,7 +133,7 @@ fn clear_viewport(
     Ok(())
 }
 
-/// Minimal create-session TUI: prompts for name, (image), command.
+/// Minimal create-session TUI: prompts for name, command.
 /// Returns `TuiAction::New` or `TuiAction::Quit`.
 pub fn create_session() -> Result<TuiAction> {
     let viewport_height = 1;
@@ -154,8 +150,6 @@ pub fn create_session() -> Result<TuiAction> {
     let mut mode = Mode::Name;
     let mut footer_msg = String::new();
     let mut new_name = String::new();
-    let mut new_image: Option<String> = None;
-    let mut new_local = false;
 
     loop {
         terminal.draw(|f| {
@@ -168,7 +162,6 @@ pub fn create_session() -> Result<TuiAction> {
             } else {
                 match &mode {
                     Mode::Name => Line::from(input.to_spans("Session name: ")),
-                    Mode::Image => Line::from(input.to_spans("Image: ")),
                     Mode::Command => Line::from(input.to_spans("Command (optional): ")),
                 }
             };
@@ -205,43 +198,12 @@ pub fn create_session() -> Result<TuiAction> {
                         } else if session::session_exists(&name).unwrap_or(false) {
                             footer_msg = format!("Session '{}' already exists.", name);
                             input = TextInput::new();
-                        } else if std::env::var("BOX_MODE")
-                            .map(|v| v != "docker")
-                            .unwrap_or(true)
-                        {
+                        } else {
                             new_name = name;
-                            new_image = None;
-                            new_local = true;
                             let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
                             input = TextInput::with_text(default_cmd);
                             mode = Mode::Command;
-                        } else {
-                            new_name = name;
-                            let default_image = std::env::var("BOX_DEFAULT_IMAGE")
-                                .unwrap_or_else(|_| config::DEFAULT_IMAGE.to_string());
-                            input = TextInput::with_text(default_image);
-                            mode = Mode::Image;
                         }
-                    }
-                    KeyCode::Esc => {
-                        clear_viewport(&mut terminal, viewport_height)?;
-                        return Ok(TuiAction::Quit);
-                    }
-                    _ => {
-                        input.handle_key(key.code);
-                    }
-                },
-                Mode::Image => match key.code {
-                    KeyCode::Enter => {
-                        let image_text = input.text.trim().to_string();
-                        new_image = if image_text.is_empty() {
-                            None
-                        } else {
-                            Some(image_text)
-                        };
-                        let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
-                        input = TextInput::with_text(default_cmd);
-                        mode = Mode::Command;
                     }
                     KeyCode::Esc => {
                         clear_viewport(&mut terminal, viewport_height)?;
@@ -269,9 +231,7 @@ pub fn create_session() -> Result<TuiAction> {
                         clear_viewport(&mut terminal, viewport_height)?;
                         return Ok(TuiAction::New {
                             name: new_name,
-                            image: new_image,
                             command,
-                            local: new_local,
                             strategy: None,
                         });
                     }
