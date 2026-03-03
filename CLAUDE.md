@@ -18,5 +18,5 @@ Sandboxed git workspaces for development. Written in Rust.
 - Shell completions (zsh + bash) are inline in `src/main.rs` — update both when adding CLI flags
 - Use raw ANSI escape codes (`\x1b[2m` for dim, `\x1b[0m` for reset) for styled CLI output
 - Session metadata is stored as flat files under `~/.box/sessions/<name>/`
-- Workspace git clones live under `~/.box/workspaces/<name>/`
+- Session git clones live under `~/.box/workspaces/<name>/`
 - `project_dir` is always resolved to the git root via `git::find_root()`
