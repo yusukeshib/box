@@ -399,7 +399,9 @@ pub fn run_standalone(config: MuxConfig) -> Result<i32> {
                         InputAction::Redraw => {
                             dirty = true;
                         }
-                        InputAction::FocusSidebar | InputAction::NewSession => {
+                        InputAction::FocusSidebar
+                        | InputAction::NewSession
+                        | InputAction::ToggleSidebar => {
                             // Sidebar/new session not available in standalone mode
                         }
                         InputAction::CopyToClipboard => {
