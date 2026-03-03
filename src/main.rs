@@ -1,7 +1,6 @@
 mod config;
 mod docker;
 mod git;
-mod mux;
 mod session;
 mod tui;
 
@@ -165,14 +164,6 @@ fn is_local_mode() -> bool {
 }
 
 fn main() {
-    // Server mode: if __BOX_MUX_SERVER is set, run as mux server daemon
-    if let Ok(session_name) = std::env::var("__BOX_MUX_SERVER") {
-        if let Err(e) = mux::server::run(&session_name) {
-            eprintln!("mux server: {:#}", e);
-        }
-        std::process::exit(0);
-    }
-
     let cli = Cli::parse();
 
     let result = match cli.command {
@@ -257,8 +248,15 @@ fn main() {
     }
 }
 
-fn run_local_command(session_name: &str) -> Result<i32> {
-    mux::run(session_name)
+fn run_local_command(name: &str, cmd: &[String]) -> Result<i32> {
+    let ws = session::workspace_name(name);
+    let home = config::home_dir()?;
+    let workspace = Path::new(&home).join(".box").join("workspaces").join(ws);
+    let status = std::process::Command::new(&cmd[0])
+        .args(&cmd[1..])
+        .current_dir(workspace)
+        .status()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn output_cd_path(path: &str) {
@@ -365,12 +363,6 @@ fn cmd_default() -> Result<i32> {
             }
         }
     }
-    for s in &mut sessions {
-        if s.local {
-            s.running = session::is_local_running(&s.name);
-        }
-    }
-
     // Prefer first running session, otherwise first session
     let docker_args = std::env::var("BOX_DOCKER_ARGS").unwrap_or_default();
     let target = sessions.iter().find(|s| s.running).unwrap_or(&sessions[0]);
@@ -405,12 +397,6 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
             }
         }
     }
-    for s in &mut sessions {
-        if s.local {
-            s.running = session::is_local_running(&s.name);
-        }
-    }
-
     if args.running {
         sessions.retain(|s| s.running);
     }
@@ -584,7 +570,7 @@ fn cmd_create(
         output_cd_path(&workspace);
 
         if !sess.command.is_empty() {
-            return run_local_command(&sess.name);
+            return run_local_command(&sess.name, &sess.command);
         }
         return Ok(0);
     }
@@ -646,7 +632,7 @@ fn cmd_resume(name: &str, docker_args: &str, detach: bool) -> Result<i32> {
         output_cd_path(&workspace.to_string_lossy());
 
         if !sess.command.is_empty() {
-            return run_local_command(&full);
+            return run_local_command(&full, &sess.command);
         }
         return Ok(0);
     }
@@ -715,20 +701,7 @@ fn cmd_remove(name: &str, force: bool) -> Result<i32> {
                 project_dir = sess.project_dir.clone();
                 strategy = sess.strategy.clone();
             }
-            if sess.local {
-                if session::is_local_running(&full) {
-                    if force {
-                        mux::send_kill(&full)?;
-                        println!("Session '{}' stopped.", full);
-                    } else {
-                        bail!(
-                            "Session '{}' is still running. Stop it first with `box stop {}`.",
-                            full,
-                            full
-                        );
-                    }
-                }
-            } else {
+            if !sess.local {
                 docker::check()?;
                 if docker::container_is_running(&full) {
                     if force {
@@ -779,18 +752,6 @@ fn cmd_remove(name: &str, force: bool) -> Result<i32> {
     let sess = session::load(&full)?;
 
     if sess.local {
-        if session::is_local_running(&full) {
-            if force {
-                mux::send_kill(&full)?;
-                println!("Session '{}' stopped.", full);
-            } else {
-                bail!(
-                    "Session '{}' is still running. Stop it first with `box stop {}`.",
-                    full,
-                    full
-                );
-            }
-        }
         session::remove_dir(&full)?;
         // If last session in workspace, remove workspace too
         let remaining = session::workspace_sessions(ws).unwrap_or_default();
@@ -844,12 +805,7 @@ fn cmd_stop(name: &str) -> Result<i32> {
     let sess = session::load(&full)?;
 
     if sess.local {
-        if !session::is_local_running(&full) {
-            bail!("Session '{}' is not running.", full);
-        }
-        mux::send_kill(&full)?;
-        println!("Session '{}' stopped.", full);
-        return Ok(0);
+        bail!("Local sessions cannot run in the background.");
     }
 
     docker::check()?;
@@ -876,12 +832,11 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     if sess.local {
         let home = config::home_dir()?;
         let workspace = Path::new(&home).join(".box").join("workspaces").join(ws);
-        return mux::run_standalone(mux::MuxConfig {
-            session_name: full.clone(),
-            command: cmd.to_vec(),
-            working_dir: Some(workspace.to_string_lossy().to_string()),
-            prefix_key: config::load_mux_prefix_key(),
-        });
+        let status = std::process::Command::new(&cmd[0])
+            .args(&cmd[1..])
+            .current_dir(workspace)
+            .status()?;
+        return Ok(status.code().unwrap_or(1));
     }
 
     docker::check()?;

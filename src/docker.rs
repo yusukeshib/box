@@ -3,7 +3,6 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::config;
-use crate::mux;
 use crate::session;
 
 /// Create a workspace directory on the host for the session.
@@ -231,14 +230,8 @@ pub fn run_container(cfg: &DockerRunConfig) -> Result<i32> {
         println!("Run `box {}` to attach.", cfg.name);
         Ok(0)
     } else {
-        let mut docker_cmd = vec!["docker".to_string()];
-        docker_cmd.extend(args);
-        mux::run_standalone(mux::MuxConfig {
-            session_name: cfg.name.to_string(),
-            command: docker_cmd,
-            working_dir: None,
-            prefix_key: crate::config::load_mux_prefix_key(),
-        })
+        let status = Command::new("docker").args(&args).status()?;
+        Ok(status.code().unwrap_or(1))
     }
 }
 
@@ -311,30 +304,17 @@ pub fn start_container(name: &str) -> Result<i32> {
 
 pub fn attach_container(name: &str) -> Result<i32> {
     let label = container_label(name);
-    mux::run_standalone(mux::MuxConfig {
-        session_name: name.to_string(),
-        command: vec!["docker".to_string(), "attach".to_string(), label],
-        working_dir: None,
-        prefix_key: crate::config::load_mux_prefix_key(),
-    })
+    let status = Command::new("docker").args(["attach", &label]).status()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 pub fn exec_container(name: &str, cmd: &[String]) -> Result<i32> {
     let label = container_label(name);
-    let mut docker_cmd = vec![
-        "docker".to_string(),
-        "exec".to_string(),
-        "-it".to_string(),
-        label,
-    ];
-    docker_cmd.extend(cmd.iter().cloned());
-
-    mux::run_standalone(mux::MuxConfig {
-        session_name: name.to_string(),
-        command: docker_cmd,
-        working_dir: None,
-        prefix_key: crate::config::load_mux_prefix_key(),
-    })
+    let status = Command::new("docker")
+        .args(["exec", "-it", &label])
+        .args(cmd)
+        .status()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 pub fn start_container_detached(name: &str) -> Result<i32> {
