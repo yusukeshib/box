@@ -555,10 +555,12 @@ fn cmd_origin() -> Result<i32> {
                 }
             }
         }
-        // Not in a specific repo subdir, just stay in cwd
-        bail!("Not inside a repo subdirectory of this workspace.");
+        bail!("Navigate into a repo subdirectory first (e.g. cd <repo-name>).");
     }
 
+    if sess.project_dir.is_empty() {
+        bail!("Session '{}' has no origin project directory.", ws_name);
+    }
     output_cd_path(&sess.project_dir);
     Ok(0)
 }
