@@ -276,29 +276,9 @@ fn resolve_project_dir(
     git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
 }
 
-/// `box` with no args: open the first session, or prompt to create if none exist.
+/// `box` with no args: alias for `box new` (interactive TUI).
 fn cmd_default() -> Result<i32> {
-    let sessions = session::list()?;
-    if sessions.is_empty() {
-        return cmd_create_tui();
-    }
-
-    let name = &sessions[0].name;
-    let sess = session::load(name)?;
-
-    // For legacy single-repo sessions, check project_dir exists
-    if !sess.project_dir.is_empty() && !Path::new(&sess.project_dir).is_dir() {
-        bail!("Project directory '{}' no longer exists.", sess.project_dir);
-    }
-
-    let home = config::home_dir()?;
-    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(name);
-    output_cd_path(&workspace_path.to_string_lossy());
-
-    if !sess.command.is_empty() {
-        return run_local_command(name, &sess.command);
-    }
-    Ok(0)
+    cmd_create_tui()
 }
 
 /// `box create` with no name: prompt for session details.
