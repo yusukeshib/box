@@ -2,6 +2,8 @@ mod config;
 mod git;
 mod repo;
 mod session;
+#[cfg(test)]
+mod test_util;
 mod tui;
 mod workspace;
 

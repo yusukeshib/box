@@ -282,20 +282,22 @@ pub fn remove_dir(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Serialize tests that mutate HOME env var
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::test_util::ENV_LOCK;
 
     fn with_temp_home<F: FnOnce(&std::path::Path)>(f: F) {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let old_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
-        f(tmp.path());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            f(tmp.path());
+        }));
         match old_home {
             Some(h) => std::env::set_var("HOME", h),
             None => std::env::remove_var("HOME"),
+        }
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
         }
     }
 
