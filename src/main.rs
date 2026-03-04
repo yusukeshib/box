@@ -11,7 +11,7 @@ use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -171,7 +171,7 @@ fn main() {
 
 fn run_local_command(name: &str, cmd: &[String]) -> Result<i32> {
     let home = config::home_dir()?;
-    let workspace = Path::new(&home).join(".box").join("workspaces").join(name);
+    let workspace = resolve_workspace_path(&home, name)?;
     let status = std::process::Command::new(&cmd[0])
         .args(&cmd[1..])
         .current_dir(workspace)
@@ -184,6 +184,18 @@ fn output_cd_path(path: &str) {
         let _ = fs::write(cd_file, path);
     } else {
         println!("{}", path);
+    }
+}
+
+/// Resolve the workspace path for a session. For single-repo sessions,
+/// returns the repo subdirectory; for multi-repo, returns the workspace root.
+fn resolve_workspace_path(home: &str, name: &str) -> Result<PathBuf> {
+    let workspace_root = Path::new(home).join(".box").join("workspaces").join(name);
+    let sess = session::load(name)?;
+    if sess.repos.len() == 1 {
+        Ok(workspace_root.join(&sess.repos[0]))
+    } else {
+        Ok(workspace_root)
     }
 }
 
@@ -423,7 +435,12 @@ fn cmd_create(
 
     let home = config::home_dir()?;
     let workspace_path = workspace::ensure_workspace_multi(&home, name, &selected_repos)?;
-    output_cd_path(&workspace_path);
+    if selected_repos.len() == 1 {
+        let repo_path = Path::new(&workspace_path).join(&selected_repos[0].name);
+        output_cd_path(&repo_path.to_string_lossy());
+    } else {
+        output_cd_path(&workspace_path);
+    }
 
     if !sess.command.is_empty() {
         return run_local_command(name, &sess.command);
@@ -458,7 +475,7 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
     }
 
     let home = config::home_dir()?;
-    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(name);
+    let workspace_path = resolve_workspace_path(&home, name)?;
     let status = std::process::Command::new(&cmd[0])
         .args(&cmd[1..])
         .current_dir(workspace_path)
@@ -472,7 +489,7 @@ fn cmd_cd(name: &str) -> Result<i32> {
         bail!("Session '{}' not found.", name);
     }
     let home = config::home_dir()?;
-    let path = Path::new(&home).join(".box").join("workspaces").join(name);
+    let path = resolve_workspace_path(&home, name)?;
     output_cd_path(&path.to_string_lossy());
     Ok(0)
 }
