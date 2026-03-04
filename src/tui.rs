@@ -5,8 +5,65 @@ use ratatui::prelude::*;
 use ratatui::{TerminalOptions, Viewport};
 use std::io;
 
+use crate::config;
 use crate::repo;
 use crate::session;
+
+const MAX_COMMAND_HISTORY: usize = 100;
+
+fn last_selected_repos_path() -> Result<std::path::PathBuf> {
+    let home = config::home_dir()?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".box")
+        .join("last_selected_repos"))
+}
+
+fn command_history_path() -> Result<std::path::PathBuf> {
+    let home = config::home_dir()?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".box")
+        .join("command_history"))
+}
+
+fn load_last_selected_repos() -> Vec<String> {
+    last_selected_repos_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_last_selected_repos(repos: &[String]) {
+    if let Ok(path) = last_selected_repos_path() {
+        let _ = std::fs::write(path, repos.join("\n") + "\n");
+    }
+}
+
+fn load_command_history() -> Vec<String> {
+    command_history_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_command_history(history: &[String]) {
+    if let Ok(path) = command_history_path() {
+        let capped: Vec<&String> = history.iter().take(MAX_COMMAND_HISTORY).collect();
+        let content: Vec<&str> = capped.iter().map(|s| s.as_str()).collect();
+        let _ = std::fs::write(path, content.join("\n") + "\n");
+    }
+}
 
 pub enum TuiAction {
     New {
@@ -160,10 +217,23 @@ pub fn create_session() -> Result<TuiAction> {
     let mut footer_msg = String::new();
     let mut new_name = String::new();
 
-    // Repo selection state
-    let mut selected: Vec<bool> = vec![true; repo_count];
+    // Repo selection state — restore from last session if available
+    let last_selected = load_last_selected_repos();
+    let mut selected: Vec<bool> = if last_selected.is_empty() {
+        vec![true; repo_count]
+    } else {
+        all_repos
+            .iter()
+            .map(|r| last_selected.contains(&r.name))
+            .collect()
+    };
     let mut cursor_pos: usize = 0;
     let mut selected_repos: Vec<String> = Vec::new();
+
+    // Command history state
+    let mut cmd_history = load_command_history();
+    let mut history_index: Option<usize> = None;
+    let mut saved_input = String::new();
 
     loop {
         terminal.draw(|f| {
@@ -258,6 +328,7 @@ pub fn create_session() -> Result<TuiAction> {
                         if selected_repos.is_empty() {
                             footer_msg = "At least one repo must be selected.".to_string();
                         } else {
+                            save_last_selected_repos(&selected_repos);
                             // Resize viewport to 1 line for text input
                             clear_viewport(&mut terminal, viewport_height)?;
                             drop(terminal);
@@ -312,10 +383,19 @@ pub fn create_session() -> Result<TuiAction> {
                                 Err(e) => {
                                     footer_msg = format!("Invalid command: {e}");
                                     input = TextInput::new();
+                                    history_index = None;
+                                    saved_input.clear();
                                     continue;
                                 }
                             }
                         };
+                        // Save non-empty commands to history
+                        if !cmd_text.is_empty() {
+                            // Remove duplicate if exists, then prepend
+                            cmd_history.retain(|h| h != &cmd_text);
+                            cmd_history.insert(0, cmd_text);
+                            save_command_history(&cmd_history);
+                        }
                         clear_viewport(&mut terminal, 1)?;
                         return Ok(TuiAction::New {
                             name: new_name,
@@ -323,6 +403,33 @@ pub fn create_session() -> Result<TuiAction> {
                             repos: selected_repos,
                         });
                     }
+                    KeyCode::Up => {
+                        if !cmd_history.is_empty() {
+                            match history_index {
+                                None => {
+                                    saved_input = input.text.clone();
+                                    history_index = Some(0);
+                                    input = TextInput::with_text(cmd_history[0].clone());
+                                }
+                                Some(idx) if idx + 1 < cmd_history.len() => {
+                                    history_index = Some(idx + 1);
+                                    input = TextInput::with_text(cmd_history[idx + 1].clone());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    KeyCode::Down => match history_index {
+                        Some(0) => {
+                            history_index = None;
+                            input = TextInput::with_text(saved_input.clone());
+                        }
+                        Some(idx) => {
+                            history_index = Some(idx - 1);
+                            input = TextInput::with_text(cmd_history[idx - 1].clone());
+                        }
+                        None => {}
+                    },
                     KeyCode::Esc => {
                         clear_viewport(&mut terminal, 1)?;
                         return Ok(TuiAction::Quit);
