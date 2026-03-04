@@ -21,7 +21,7 @@ Each session gets its own workspace. By default, `git clone --local` creates a f
 - **Isolated git workspaces** — `git clone --local` (default) or `git worktree` for per-session workspaces; host files are never modified
 - **Session tracking** — metadata tracks project directory, command, strategy, and creation time
 - **Multi-session workspaces** — run multiple sessions per workspace (e.g. `my-feature/default`, `my-feature/server`)
-- **Shell integration** — `cd` into workspaces automatically, navigate back with `box origin`
+- **Shell integration** — `cd` into workspaces automatically
 
 ## Requirements
 
@@ -99,8 +99,6 @@ box exec <name> -- <cmd...>            Run a command in a session
 box list [options]                     List sessions (alias: ls)
 box remove <name>                      Remove a session or workspace
 box cd <name>                          Print host project directory
-box path <name>                        Print workspace path
-box origin                             Cd back to origin project from workspace
 box config zsh|bash                    Output shell completions
 box upgrade                            Upgrade to latest version
 ```
@@ -143,8 +141,6 @@ box remove my-feature           # Remove session, workspace, and data
 
 ```bash
 box cd my-feature               # Print the host project directory
-cd "$(box path my-feature)"    # cd to the workspace
-box origin                      # From workspace, cd back to origin
 ```
 
 ## Options

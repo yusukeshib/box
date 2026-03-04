@@ -21,7 +21,7 @@ Boxは**隔離された**gitワークスペースと**セッション管理**を
 - **隔離されたgitワークスペース** — `git clone --local`（デフォルト）または `git worktree` でセッションごとにワークスペースを作成。ホストのファイルは変更されない
 - **セッション管理** — プロジェクトディレクトリ、コマンド、戦略、作成日時をメタデータで追跡
 - **マルチセッションワークスペース** — ワークスペースごとに複数セッションを実行（例: `my-feature/default`、`my-feature/server`）
-- **シェル連携** — ワークスペースへの自動cd、`box origin` で元のプロジェクトに戻る
+- **シェル連携** — ワークスペースへの自動cd
 
 ## 必要なもの
 
@@ -99,8 +99,6 @@ box exec <name> -- <cmd...>            セッションでコマンドを実行
 box list [options]                     セッション一覧を表示（エイリアス: ls）
 box remove <name>                      セッションまたはワークスペースを削除
 box cd <name>                          ホストのプロジェクトディレクトリを表示
-box path <name>                        ワークスペースパスを表示
-box origin                             ワークスペースから元のプロジェクトディレクトリにcd
 box config zsh|bash                    シェル補完を出力
 box upgrade                            最新版にアップグレード
 ```
@@ -143,8 +141,6 @@ box remove my-feature           # セッション、ワークスペース、デ�
 
 ```bash
 box cd my-feature               # ホストプロジェクトディレクトリを表示
-cd "$(box path my-feature)"    # ワークスペースにcd
-box origin                      # ワークスペースから元のプロジェクトにcd
 ```
 
 ## オプション
