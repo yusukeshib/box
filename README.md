@@ -20,7 +20,7 @@ Each session gets its own workspace. By default, `git clone --local` creates a f
 
 - **Isolated git workspaces** — `git clone --local` (default) or `git worktree` for per-session workspaces; host files are never modified
 - **Session tracking** — metadata tracks project directory, command, strategy, and creation time
-- **Multi-session workspaces** — run multiple sessions per workspace (e.g. `my-feature/default`, `my-feature/server`)
+- **Multi-repo workspaces** — register repos and create workspaces spanning multiple repos
 - **Shell integration** — `cd` into workspaces automatically
 
 ## Requirements
@@ -79,15 +79,12 @@ Running `box` with no arguments launches the interactive TUI. If sessions exist,
 
 ## Session Naming
 
-Sessions use a `workspace/session` naming convention:
+Each session gets a simple name:
 
 ```bash
-box new my-feature                # → my-feature/default
-box new my-feature -- python      # → my-feature/python
-box new my-feature/server -- node # → my-feature/server
+box new my-feature
+box new my-feature -- make test
 ```
-
-Multiple sessions can share a workspace — each is tracked independently but uses the same git workspace directory.
 
 ## Usage
 
@@ -113,10 +110,6 @@ box new
 
 # With a specific command
 box new my-feature -- make test
-
-# Multiple sessions in the same workspace
-box new my-feature/server -- node server.js
-box new my-feature/test -- make test
 
 # Multi-repo workspace (select specific repos)
 box new my-feature --repo app-a --repo app-b
@@ -194,7 +187,7 @@ With `--strategy worktree`, box uses `git worktree add --detach` instead. This s
 | Workspace location | `~/.box/workspaces/<name>/` |
 | Session metadata | `~/.box/sessions/<name>/` |
 | Git isolation | Full with `clone` (default); shared object store with `worktree` |
-| Cleanup | `box remove` deletes workspace and session data |
+| Cleanup | `box remove` deletes workspace and session |
 
 ## Design Decisions
 

@@ -20,7 +20,7 @@ Boxは**隔離された**gitワークスペースと**セッション管理**を
 
 - **隔離されたgitワークスペース** — `git clone --local`（デフォルト）または `git worktree` でセッションごとにワークスペースを作成。ホストのファイルは変更されない
 - **セッション管理** — プロジェクトディレクトリ、コマンド、戦略、作成日時をメタデータで追跡
-- **マルチセッションワークスペース** — ワークスペースごとに複数セッションを実行（例: `my-feature/default`、`my-feature/server`）
+- **マルチリポジトリワークスペース** — リポジトリを登録し、複数リポジトリにまたがるワークスペースを作成
 - **シェル連携** — ワークスペースへの自動cd
 
 ## 必要なもの
@@ -79,15 +79,12 @@ box remove my-feature
 
 ## セッション名
 
-セッションは `ワークスペース/セッション` の命名規則を使用します：
+各セッションはシンプルな名前を持ちます：
 
 ```bash
-box new my-feature                # → my-feature/default
-box new my-feature -- python      # → my-feature/python
-box new my-feature/server -- node # → my-feature/server
+box new my-feature
+box new my-feature -- make test
 ```
-
-複数のセッションがワークスペースを共有できます — それぞれ独立して追跡されますが、同じgitワークスペースディレクトリを使用します。
 
 ## 使い方
 
@@ -113,10 +110,6 @@ box new
 
 # コマンドを指定して作成
 box new my-feature -- make test
-
-# 同じワークスペースに複数セッション
-box new my-feature/server -- node server.js
-box new my-feature/test -- make test
 
 # マルチリポジトリワークスペース（特定のリポジトリを選択）
 box new my-feature --repo app-a --repo app-b
