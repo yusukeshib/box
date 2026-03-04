@@ -77,8 +77,8 @@ enum RepoAction {
 
 #[derive(clap::Args, Debug)]
 struct CreateArgs {
-    /// Session name (omit to open the interactive session manager)
-    name: Option<String>,
+    /// Session name
+    name: String,
 
     /// Select specific repos by name (can be repeated; defaults to all)
     #[arg(long)]
@@ -135,22 +135,17 @@ fn main() {
                 );
                 std::process::exit(1);
             }
-            match args.name {
-                None => cmd_create_tui(),
-                Some(name) => {
-                    let cmd = if args.cmd.is_empty() {
-                        None
-                    } else {
-                        Some(args.cmd)
-                    };
-                    let repos = if args.repo.is_empty() {
-                        None
-                    } else {
-                        Some(args.repo)
-                    };
-                    cmd_create(&name, cmd, repos)
-                }
-            }
+            let cmd = if args.cmd.is_empty() {
+                None
+            } else {
+                Some(args.cmd)
+            };
+            let repos = if args.repo.is_empty() {
+                None
+            } else {
+                Some(args.repo)
+            };
+            cmd_create(&args.name, cmd, repos)
         }
         Some(Commands::Remove(args)) => cmd_remove(&args.name),
         Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
@@ -276,8 +271,14 @@ fn resolve_project_dir(
     git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
 }
 
-/// `box` with no args: alias for `box new` (interactive TUI).
+/// `box` with no args: interactive TUI to create a session.
 fn cmd_default() -> Result<i32> {
+    if std::env::var_os("BOX_SESSION").is_some() {
+        bail!(
+            "Cannot nest box sessions (already inside session {:?}).",
+            std::env::var("BOX_SESSION").unwrap_or_default()
+        );
+    }
     cmd_create_tui()
 }
 
@@ -941,7 +942,7 @@ mod tests {
         let cli = parse(&["new", "my-session"]);
         match cli.command {
             Some(Commands::New(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
+                assert_eq!(args.name, "my-session");
                 assert!(args.cmd.is_empty());
             }
             other => panic!("expected New, got {:?}", other),
@@ -953,7 +954,7 @@ mod tests {
         let cli = parse(&["new", "my-session", "--", "bash", "-c", "echo hi"]);
         match cli.command {
             Some(Commands::New(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
+                assert_eq!(args.name, "my-session");
                 assert_eq!(args.cmd, vec!["bash", "-c", "echo hi"]);
             }
             other => panic!("expected New, got {:?}", other),
@@ -961,14 +962,9 @@ mod tests {
     }
 
     #[test]
-    fn test_new_no_name_opens_tui() {
-        let cli = parse(&["new"]);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert!(args.name.is_none());
-            }
-            _ => panic!("expected New"),
-        }
+    fn test_new_requires_name() {
+        let result = try_parse(&["new"]);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -976,7 +972,7 @@ mod tests {
         let cli = parse(&["new", "my-session", "--repo", "app-a", "--repo", "app-b"]);
         match cli.command {
             Some(Commands::New(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
+                assert_eq!(args.name, "my-session");
                 assert_eq!(args.repo, vec!["app-a", "app-b"]);
             }
             other => panic!("expected New, got {:?}", other),
