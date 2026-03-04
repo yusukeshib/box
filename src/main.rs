@@ -656,7 +656,11 @@ box() {{
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
         if [[ -n "$ZELLIJ" ]]; then
-            command zellij action rename-tab "${{__box_dir##*/}}" 2>/dev/null
+            local __box_session_name
+            __box_session_name=$(echo "$__box_dir" | sed -n 's|.*/\.box/workspaces/\([^/]*\).*|\1|p')
+            if [[ -n "$__box_session_name" ]]; then
+                command zellij action rename-tab "$__box_session_name" 2>/dev/null
+            fi
         fi
     fi
     rm -f "$__box_cd_file"
@@ -760,7 +764,11 @@ box() {{
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
         if [[ -n "$ZELLIJ" ]]; then
-            command zellij action rename-tab "${{__box_dir##*/}}" 2>/dev/null
+            local __box_session_name
+            __box_session_name=$(echo "$__box_dir" | sed -n 's|.*/\.box/workspaces/\([^/]*\).*|\1|p')
+            if [[ -n "$__box_session_name" ]]; then
+                command zellij action rename-tab "$__box_session_name" 2>/dev/null
+            fi
         fi
     fi
     rm -f "$__box_cd_file"
