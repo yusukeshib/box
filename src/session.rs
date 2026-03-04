@@ -288,7 +288,7 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn with_temp_home<F: FnOnce(&std::path::Path)>(f: F) {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let old_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", tmp.path());
