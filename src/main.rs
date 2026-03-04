@@ -638,6 +638,9 @@ box() {{
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
+        if [[ -n "$ZELLIJ" ]]; then
+            command zellij action rename-pane "${{__box_dir##*/}}" 2>/dev/null
+        fi
     fi
     rm -f "$__box_cd_file"
     return $__box_exit
@@ -739,6 +742,9 @@ box() {{
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
+        if [[ -n "$ZELLIJ" ]]; then
+            command zellij action rename-pane "${{__box_dir##*/}}" 2>/dev/null
+        fi
     fi
     rm -f "$__box_cd_file"
     return $__box_exit
