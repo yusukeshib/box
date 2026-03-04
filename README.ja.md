@@ -20,8 +20,8 @@ Boxは**隔離された**gitワークスペースと**セッション管理**を
 
 - **隔離されたgitワークスペース** — `git clone --local`（デフォルト）または `git worktree` でセッションごとにワークスペースを作成。ホストのファイルは変更されない
 - **セッション管理** — プロジェクトディレクトリ、コマンド、戦略、作成日時をメタデータで追跡
-- **マルチセッションワークスペース** — ワークスペースごとに複数セッションを実行（例: `my-feature/default`、`my-feature/server`）
-- **シェル連携** — ワークスペースへの自動cd、`box origin` で元のプロジェクトに戻る
+- **マルチリポジトリワークスペース** — リポジトリを登録し、複数リポジトリにまたがるワークスペースを作成
+- **シェル連携** — ワークスペースへの自動cd
 
 ## 必要なもの
 
@@ -60,7 +60,7 @@ nix run github:yusukeshib/box
 ## クイックスタート
 
 ```bash
-box create my-feature
+box new my-feature
 # 隔離されたgitワークスペースを作成し、その中にcdする
 ```
 
@@ -75,32 +75,29 @@ $ make test  # 自由に壊してOK
 box remove my-feature
 ```
 
-引数なしで `box` を実行すると、最初のセッションを再開します。セッションがない場合は作成プロンプトが表示されます。
+引数なしで `box` を実行するとインタラクティブTUIが起動します。セッションがある場合は選択して再開、ない場合は作成プロンプトが表示されます。
 
 ## セッション名
 
-セッションは `ワークスペース/セッション` の命名規則を使用します：
+各セッションはシンプルな名前を持ちます：
 
 ```bash
-box create my-feature                # → my-feature/default
-box create my-feature -- python      # → my-feature/python
-box create my-feature/server -- node # → my-feature/server
+box new my-feature
+box new my-feature -- make test
 ```
-
-複数のセッションがワークスペースを共有できます — それぞれ独立して追跡されますが、同じgitワークスペースディレクトリを使用します。
 
 ## 使い方
 
 ```bash
-box                                    最初のセッションを再開または新規作成
-box create [name] [--strategy <s>] [-- cmd...]  新しいセッションを作成
-box resume <name>                      既存のセッションを再開
+box                                    インタラクティブTUIセッションマネージャ
+box new [name] [options] [-- cmd...]   新しいセッションを作成
 box exec <name> -- <cmd...>            セッションでコマンドを実行
 box list [options]                     セッション一覧を表示（エイリアス: ls）
 box remove <name>                      セッションまたはワークスペースを削除
 box cd <name>                          ホストのプロジェクトディレクトリを表示
-box path <name>                        ワークスペースパスを表示
-box origin                             ワークスペースから元のプロジェクトディレクトリにcd
+box repo add [path]                    gitリポジトリを登録
+box repo remove <name>                 リポジトリの登録を解除
+box repo list                          登録リポジトリ一覧（エイリアス: ls）
 box config zsh|bash                    シェル補完を出力
 box upgrade                            最新版にアップグレード
 ```
@@ -109,24 +106,17 @@ box upgrade                            最新版にアップグレード
 
 ```bash
 # 対話型プロンプト（名前、コマンドを入力）
-box create
+box new
 
 # コマンドを指定して作成
-box create my-feature -- make test
+box new my-feature -- make test
 
-# 同じワークスペースに複数セッション
-box create my-feature/server -- node server.js
-box create my-feature/test -- make test
+# マルチリポジトリワークスペース（特定のリポジトリを選択）
+box new my-feature --repo app-a --repo app-b
 
 # cloneの代わりにgit worktreeを使用（より高速、オブジェクトストアを共有）
-box create my-feature --strategy worktree
-BOX_STRATEGY=worktree box create my-feature
-```
-
-### セッションの再開
-
-```bash
-box resume my-feature
+box new my-feature --strategy worktree
+BOX_STRATEGY=worktree box new my-feature
 ```
 
 ### セッションの一覧と管理
@@ -143,17 +133,16 @@ box remove my-feature           # セッション、ワークスペース、デ�
 
 ```bash
 box cd my-feature               # ホストプロジェクトディレクトリを表示
-cd "$(box path my-feature)"    # ワークスペースにcd
-box origin                      # ワークスペースから元のプロジェクトにcd
 ```
 
 ## オプション
 
-### `box create`
+### `box new`
 
 | オプション | 説明 |
 |--------|-------------|
 | `--strategy <strategy>` | ワークスペース戦略: `clone`（デフォルト）または `worktree`。`$BOX_STRATEGY` を上書き |
+| `--repo <name>` | 特定のリポジトリを選択（複数指定可）。登録済みリポジトリのみ |
 | `-- cmd...` | 実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
 
 ### `box list`
@@ -183,7 +172,7 @@ eval "$(box config bash)"
 ## 仕組み
 
 ```
-your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
+your-repo/          box new my-feature            ~/.box/workspaces/my-feature/
   .git/        ──── git clone --local ────>         .git/  (独立)
   src/                                              src/   (ハードリンク)
   ...                                               ...
@@ -224,7 +213,7 @@ your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
 Boxは[Claude Code](https://docs.anthropic.com/en/docs/claude-code)と組み合わせて、隔離されたワークスペースでAIエージェントを実行するのに適しています：
 
 ```bash
-box create ai-experiment -- claude
+box new ai-experiment -- claude
 ```
 
 エージェントが行うすべての操作はワークスペース内に留まります。完了したらセッションを削除すれば消えます。

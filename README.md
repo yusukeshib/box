@@ -20,8 +20,8 @@ Each session gets its own workspace. By default, `git clone --local` creates a f
 
 - **Isolated git workspaces** — `git clone --local` (default) or `git worktree` for per-session workspaces; host files are never modified
 - **Session tracking** — metadata tracks project directory, command, strategy, and creation time
-- **Multi-session workspaces** — run multiple sessions per workspace (e.g. `my-feature/default`, `my-feature/server`)
-- **Shell integration** — `cd` into workspaces automatically, navigate back with `box origin`
+- **Multi-repo workspaces** — register repos and create workspaces spanning multiple repos
+- **Shell integration** — `cd` into workspaces automatically
 
 ## Requirements
 
@@ -60,7 +60,7 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 ## Quick Start
 
 ```bash
-box create my-feature
+box new my-feature
 # Creates an isolated git workspace and cd's into it
 ```
 
@@ -75,32 +75,29 @@ $ make test  # break things freely
 box remove my-feature
 ```
 
-Running `box` with no arguments resumes the first session. If no sessions exist, it prompts to create one.
+Running `box` with no arguments launches the interactive TUI. If sessions exist, you can select one to resume; otherwise it prompts to create one.
 
 ## Session Naming
 
-Sessions use a `workspace/session` naming convention:
+Each session gets a simple name:
 
 ```bash
-box create my-feature                # → my-feature/default
-box create my-feature -- python      # → my-feature/python
-box create my-feature/server -- node # → my-feature/server
+box new my-feature
+box new my-feature -- make test
 ```
-
-Multiple sessions can share a workspace — each is tracked independently but uses the same git workspace directory.
 
 ## Usage
 
 ```bash
-box                                    Resume first session or create new
-box create [name] [--strategy <s>] [-- cmd...]  Create a new session
-box resume <name>                      Resume an existing session
+box                                    Interactive TUI session manager
+box new [name] [options] [-- cmd...]   Create a new session
 box exec <name> -- <cmd...>            Run a command in a session
 box list [options]                     List sessions (alias: ls)
 box remove <name>                      Remove a session or workspace
 box cd <name>                          Print host project directory
-box path <name>                        Print workspace path
-box origin                             Cd back to origin project from workspace
+box repo add [path]                    Register a git repo
+box repo remove <name>                 Unregister a repo
+box repo list                          List registered repos (alias: ls)
 box config zsh|bash                    Output shell completions
 box upgrade                            Upgrade to latest version
 ```
@@ -109,24 +106,17 @@ box upgrade                            Upgrade to latest version
 
 ```bash
 # Interactive prompt (asks for name, command)
-box create
+box new
 
 # With a specific command
-box create my-feature -- make test
+box new my-feature -- make test
 
-# Multiple sessions in the same workspace
-box create my-feature/server -- node server.js
-box create my-feature/test -- make test
+# Multi-repo workspace (select specific repos)
+box new my-feature --repo app-a --repo app-b
 
 # Use git worktree instead of clone (faster, shares object store)
-box create my-feature --strategy worktree
-BOX_STRATEGY=worktree box create my-feature
-```
-
-### Resume a session
-
-```bash
-box resume my-feature
+box new my-feature --strategy worktree
+BOX_STRATEGY=worktree box new my-feature
 ```
 
 ### List and manage sessions
@@ -143,17 +133,16 @@ box remove my-feature           # Remove session, workspace, and data
 
 ```bash
 box cd my-feature               # Print the host project directory
-cd "$(box path my-feature)"    # cd to the workspace
-box origin                      # From workspace, cd back to origin
 ```
 
 ## Options
 
-### `box create`
+### `box new`
 
 | Option | Description |
 |--------|-------------|
 | `--strategy <strategy>` | Workspace strategy: `clone` (default) or `worktree`. Overrides `$BOX_STRATEGY` |
+| `--repo <name>` | Select specific repos (repeatable). Only with registered repos |
 | `-- cmd...` | Command to run (default: `$BOX_DEFAULT_CMD` if set) |
 
 ### `box list`
@@ -183,7 +172,7 @@ eval "$(box config bash)"
 ## How It Works
 
 ```
-your-repo/          box create my-feature         ~/.box/workspaces/my-feature/
+your-repo/          box new my-feature            ~/.box/workspaces/my-feature/
   .git/        ──── git clone --local ────>         .git/  (independent)
   src/                                              src/   (hardlinked)
   ...                                               ...
@@ -198,7 +187,7 @@ With `--strategy worktree`, box uses `git worktree add --detach` instead. This s
 | Workspace location | `~/.box/workspaces/<name>/` |
 | Session metadata | `~/.box/sessions/<name>/` |
 | Git isolation | Full with `clone` (default); shared object store with `worktree` |
-| Cleanup | `box remove` deletes workspace and session data |
+| Cleanup | `box remove` deletes workspace and session |
 
 ## Design Decisions
 
@@ -224,7 +213,7 @@ That said, `git worktree` is available via `--strategy worktree` for cases where
 Box works well with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for running AI agents in isolated workspaces:
 
 ```bash
-box create ai-experiment -- claude
+box new ai-experiment -- claude
 ```
 
 Everything the agent does stays in the workspace. Delete the session when you're done.

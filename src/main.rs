@@ -17,7 +17,7 @@ use std::path::Path;
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -40,13 +40,6 @@ enum Commands {
         /// Session name
         name: String,
     },
-    /// Print workspace path for a session
-    Path {
-        /// Session name
-        name: String,
-    },
-    /// Navigate back to the original project directory from a workspace
-    Origin,
     /// Manage registered repos
     Repo {
         #[command(subcommand)]
@@ -74,6 +67,7 @@ enum RepoAction {
         name: String,
     },
     /// List registered repos
+    #[command(alias = "ls")]
     List,
 }
 
@@ -153,8 +147,6 @@ fn main() {
         Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
         Some(Commands::List(args)) => cmd_list_sessions(&args),
         Some(Commands::Cd { name }) => cmd_cd(&name),
-        Some(Commands::Path { name }) => cmd_path(&name),
-        Some(Commands::Origin) => cmd_origin(),
         Some(Commands::Repo { action }) => match action {
             RepoAction::Add { path } => cmd_repo_add(path),
             RepoAction::Remove { name } => cmd_repo_remove(&name),
@@ -485,69 +477,6 @@ fn cmd_cd(name: &str) -> Result<i32> {
     Ok(0)
 }
 
-fn cmd_path(name: &str) -> Result<i32> {
-    session::validate_name(name)?;
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
-    }
-    let home = config::home_dir()?;
-    let path = Path::new(&home).join(".box").join("workspaces").join(name);
-    println!("{}", path.display());
-    Ok(0)
-}
-
-fn cmd_origin() -> Result<i32> {
-    let cwd = std::env::current_dir()?;
-    let home = config::home_dir()?;
-    let workspaces = Path::new(&home).join(".box").join("workspaces");
-    let workspaces = std::fs::canonicalize(&workspaces).unwrap_or(workspaces);
-    let cwd_canon = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
-
-    let ws_name = cwd_canon
-        .strip_prefix(&workspaces)
-        .ok()
-        .and_then(|rel| rel.components().next())
-        .map(|c| c.as_os_str().to_string_lossy().to_string());
-
-    let ws_name = match ws_name {
-        Some(n) => n,
-        None => bail!("Not inside a box workspace."),
-    };
-
-    if !session::session_exists(&ws_name)? {
-        bail!("Session '{}' not found.", ws_name);
-    }
-
-    let sess = session::load(&ws_name)?;
-
-    // For multi-repo sessions, detect which repo subdir we're in and look up its path
-    if !sess.repos.is_empty() {
-        let ws_root = Path::new(&home)
-            .join(".box")
-            .join("workspaces")
-            .join(&ws_name);
-        let ws_root_canon = std::fs::canonicalize(&ws_root).unwrap_or(ws_root);
-        if let Ok(rel) = cwd_canon.strip_prefix(&ws_root_canon) {
-            if let Some(repo_dir_name) = rel.components().next() {
-                let repo_name = repo_dir_name.as_os_str().to_string_lossy().to_string();
-                if let Ok(repos) = repo::list() {
-                    if let Some(entry) = repos.iter().find(|r| r.name == repo_name) {
-                        output_cd_path(&entry.path);
-                        return Ok(0);
-                    }
-                }
-            }
-        }
-        bail!("Navigate into a repo subdirectory first (e.g. cd <repo-name>).");
-    }
-
-    if sess.project_dir.is_empty() {
-        bail!("Session '{}' has no origin project directory.", ws_name);
-    }
-    output_cd_path(&sess.project_dir);
-    Ok(0)
-}
-
 fn cmd_repo_add(path: Option<String>) -> Result<i32> {
     let path = path.unwrap_or_else(|| ".".to_string());
     repo::add(&path)?;
@@ -565,8 +494,25 @@ fn cmd_repo_list() -> Result<i32> {
         println!("No repos registered.");
         return Ok(0);
     }
-    for r in &repos {
-        println!("  {}  {}", r.name, r.path);
+
+    let home = config::home_dir().unwrap_or_default();
+
+    let name_w = repos.iter().map(|r| r.name.len()).max().unwrap_or(0).max(4);
+    let path_display: Vec<String> = repos
+        .iter()
+        .map(|r| shorten_project_path(&r.path, &home))
+        .collect();
+    let path_w = path_display
+        .iter()
+        .map(|p| p.len())
+        .max()
+        .unwrap_or(0)
+        .max(4);
+
+    println!("\x1b[2m  {:<name_w$}  {:<path_w$}\x1b[0m", "NAME", "PATH",);
+
+    for (r, p) in repos.iter().zip(&path_display) {
+        println!("  {:<name_w$}  {:<path_w$}", r.name, p);
     }
     Ok(0)
 }
@@ -623,8 +569,6 @@ _box() {{
                 'exec:Run a command in a session'
                 'list:List sessions'
                 'cd:Print the host project directory for a session'
-                'path:Print workspace path for a session'
-                'origin:Navigate back to the original project directory'
                 'repo:Manage registered repos'
                 'upgrade:Self-update to the latest version'
                 'config:Output shell configuration'
@@ -651,7 +595,7 @@ _box() {{
                         '--quiet[Only print session names]' \
                         '-q[Only print session names]'
                     ;;
-                remove|path|cd)
+                remove|cd)
                     if (( CURRENT == 2 )); then
                         __box_sessions
                     fi
@@ -659,7 +603,7 @@ _box() {{
                 repo)
                     if (( CURRENT == 2 )); then
                         local -a repo_subcmds
-                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'list:List registered repos')
+                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'list:List registered repos' 'ls:List registered repos')
                         _describe 'repo subcommand' repo_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
@@ -709,8 +653,8 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new remove exec list cd path origin repo upgrade config"
-    local session_cmds="remove exec cd path"
+    local subcommands="new remove exec list cd repo upgrade config"
+    local session_cmds="remove exec cd"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
@@ -745,7 +689,7 @@ fn cmd_config_bash() -> Result<i32> {
                     ;;
             esac
             ;;
-        remove|path|cd)
+        remove|cd)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
@@ -758,7 +702,7 @@ fn cmd_config_bash() -> Result<i32> {
             ;;
         repo)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove list" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove list ls" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${{words[2]}}" in
                     remove)
@@ -1029,23 +973,6 @@ mod tests {
     #[test]
     fn test_exec_requires_command() {
         let result = try_parse(&["exec", "my-session"]);
-        assert!(result.is_err());
-    }
-
-    // -- path subcommand --
-
-    #[test]
-    fn test_path_subcommand_parses() {
-        let cli = parse(&["path", "my-session"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Path { ref name }) if name == "my-session"
-        ));
-    }
-
-    #[test]
-    fn test_path_requires_name() {
-        let result = try_parse(&["path"]);
         assert!(result.is_err());
     }
 
