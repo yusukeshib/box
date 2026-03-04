@@ -1,6 +1,9 @@
 mod config;
 mod git;
+mod repo;
 mod session;
+#[cfg(test)]
+mod test_util;
 mod tui;
 mod workspace;
 
@@ -14,7 +17,7 @@ use std::path::Path;
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box path my-feature                          # print workspace path\n  box origin                                   # cd back to origin project from workspace\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -44,6 +47,11 @@ enum Commands {
     },
     /// Navigate back to the original project directory from a workspace
     Origin,
+    /// Manage registered repos
+    Repo {
+        #[command(subcommand)]
+        action: RepoAction,
+    },
     /// Self-update to the latest version
     Upgrade,
     /// Output shell configuration (e.g. eval "$(box config zsh)")
@@ -53,15 +61,30 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum RepoAction {
+    /// Register a git repo
+    Add {
+        /// Path to the repo (defaults to current directory)
+        path: Option<String>,
+    },
+    /// Unregister a repo by name
+    Remove {
+        /// Repo name
+        name: String,
+    },
+    /// List registered repos
+    List,
+}
+
 #[derive(clap::Args, Debug)]
 struct CreateArgs {
-    /// Session name (omit to open the interactive session manager)
-    name: Option<String>,
+    /// Session name
+    name: String,
 
-    /// Workspace strategy: clone (git clone --local) or worktree (git worktree add)
-    /// Default: $BOX_STRATEGY or "clone"
+    /// Select specific repos by name (can be repeated; defaults to all)
     #[arg(long)]
-    strategy: Option<String>,
+    repo: Vec<String>,
 
     /// Command to run in the workspace (default: $BOX_DEFAULT_CMD if set)
     #[arg(last = true)]
@@ -114,21 +137,17 @@ fn main() {
                 );
                 std::process::exit(1);
             }
-            match args.name {
-                None => cmd_create_tui(),
-                Some(name) => {
-                    let cmd = if args.cmd.is_empty() {
-                        None
-                    } else {
-                        Some(args.cmd)
-                    };
-                    let strategy = args
-                        .strategy
-                        .map(|s| s.parse::<config::Strategy>())
-                        .transpose();
-                    strategy.and_then(|strategy| cmd_create(&name, cmd, strategy))
-                }
-            }
+            let cmd = if args.cmd.is_empty() {
+                None
+            } else {
+                Some(args.cmd)
+            };
+            let repos = if args.repo.is_empty() {
+                None
+            } else {
+                Some(args.repo)
+            };
+            cmd_create(&args.name, cmd, repos)
         }
         Some(Commands::Remove(args)) => cmd_remove(&args.name),
         Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
@@ -136,6 +155,11 @@ fn main() {
         Some(Commands::Cd { name }) => cmd_cd(&name),
         Some(Commands::Path { name }) => cmd_path(&name),
         Some(Commands::Origin) => cmd_origin(),
+        Some(Commands::Repo { action }) => match action {
+            RepoAction::Add { path } => cmd_repo_add(path),
+            RepoAction::Remove { name } => cmd_repo_remove(&name),
+            RepoAction::List => cmd_repo_list(),
+        },
         Some(Commands::Upgrade) => cmd_upgrade(),
         Some(Commands::Config { shell }) => match shell {
             ConfigShell::Zsh => cmd_config_zsh(),
@@ -236,7 +260,9 @@ fn resolve_project_dir(
                 }) {
                     // Find session with this name to get its project_dir
                     if let Some(s) = sessions.iter().find(|s| s.name == ws_name) {
-                        return Some(s.project_dir.clone());
+                        if !s.project_dir.is_empty() {
+                            return Some(s.project_dir.clone());
+                        }
                     }
                 }
             }
@@ -247,28 +273,15 @@ fn resolve_project_dir(
     git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
 }
 
-/// `box` with no args: open the first session, or prompt to create if none exist.
+/// `box` with no args: interactive TUI to create a session.
 fn cmd_default() -> Result<i32> {
-    let sessions = session::list()?;
-    if sessions.is_empty() {
-        return cmd_create_tui();
+    if std::env::var_os("BOX_SESSION").is_some() {
+        bail!(
+            "Cannot nest box sessions (already inside session {:?}).",
+            std::env::var("BOX_SESSION").unwrap_or_default()
+        );
     }
-
-    let name = &sessions[0].name;
-    let sess = session::load(name)?;
-
-    if !Path::new(&sess.project_dir).is_dir() {
-        bail!("Project directory '{}' no longer exists.", sess.project_dir);
-    }
-
-    let home = config::home_dir()?;
-    let workspace_path = Path::new(&home).join(".box").join("workspaces").join(name);
-    output_cd_path(&workspace_path.to_string_lossy());
-
-    if !sess.command.is_empty() {
-        return run_local_command(name, &sess.command);
-    }
-    Ok(0)
+    cmd_create_tui()
 }
 
 /// `box create` with no name: prompt for session details.
@@ -277,8 +290,8 @@ fn cmd_create_tui() -> Result<i32> {
         tui::TuiAction::New {
             name,
             command,
-            strategy,
-        } => cmd_create(&name, command, strategy),
+            repos,
+        } => cmd_create(&name, command, Some(repos)),
         _ => Ok(0),
     }
 }
@@ -321,9 +334,17 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
 
     let shorten_path = |p: &str| -> String { shorten_project_path(p, &home) };
 
+    let project_display = |s: &session::SessionSummary| -> String {
+        if !s.repos.is_empty() {
+            s.repos.join(", ")
+        } else {
+            shorten_path(&s.project_dir)
+        }
+    };
+
     let project_w = sessions
         .iter()
-        .map(|s| shorten_path(&s.project_dir).len())
+        .map(|s| project_display(s).len())
         .max()
         .unwrap_or(0)
         .max(7);
@@ -340,7 +361,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     );
 
     for s in &sessions {
-        let project = shorten_path(&s.project_dir);
+        let project = project_display(s);
         println!(
             "  {:<name_w$}  {:<project_w$}  {:<command_w$}  {}",
             s.name, project, s.command, s.created_at,
@@ -353,32 +374,53 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
 fn cmd_create(
     name: &str,
     cmd: Option<Vec<String>>,
-    strategy: Option<config::Strategy>,
+    repo_names: Option<Vec<String>>,
 ) -> Result<i32> {
     session::validate_name(name)?;
-
-    let cwd =
-        fs::canonicalize(".").map_err(|_| anyhow::anyhow!("Cannot resolve current directory."))?;
-    let project_dir = git::find_root(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("'{}' is not inside a git repository.", cwd.display()))?
-        .to_string_lossy()
-        .to_string();
-
-    // Resolve config
-    let cfg = config::resolve(config::BoxConfigInput {
-        name: name.to_string(),
-        project_dir,
-        command: cmd,
-        env: vec![],
-        strategy,
-    })?;
 
     if session::session_exists(name)? {
         bail!("Session '{}' already exists.", name);
     }
 
+    // Resolve repos
+    let all_repos = repo::list()?;
+    let selected_repos: Vec<repo::RepoEntry> = if let Some(names) = repo_names {
+        if names.is_empty() {
+            // TUI returned empty selection meaning use all
+            all_repos.clone()
+        } else {
+            let mut result = Vec::new();
+            for n in &names {
+                let entry = all_repos
+                    .iter()
+                    .find(|r| r.name == *n)
+                    .ok_or_else(|| anyhow::anyhow!("Repo '{}' not found in registry.", n))?;
+                result.push(entry.clone());
+            }
+            result
+        }
+    } else {
+        // CLI with no --repo flags: use all registered repos
+        all_repos.clone()
+    };
+
+    if selected_repos.is_empty() {
+        bail!("No repos registered. Run `box repo add <path>` first.");
+    }
+
+    let repo_names_list: Vec<String> = selected_repos.iter().map(|r| r.name.clone()).collect();
+
+    // Resolve config (project_dir is empty for multi-repo sessions)
+    let cfg = config::resolve(config::BoxConfigInput {
+        name: name.to_string(),
+        project_dir: String::new(),
+        command: cmd,
+        env: vec![],
+        repos: repo_names_list,
+    })?;
+
     eprintln!("\x1b[2msession:\x1b[0m {}", name);
-    eprintln!("\x1b[2mstrategy:\x1b[0m {}", cfg.strategy);
+    eprintln!("\x1b[2mrepos:\x1b[0m {}", cfg.repos.join(", "));
     if !cfg.command.is_empty() {
         eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
     }
@@ -388,8 +430,7 @@ fn cmd_create(
     session::save(&sess)?;
 
     let home = config::home_dir()?;
-    let workspace_path =
-        workspace::ensure_workspace(&home, name, &sess.project_dir, &sess.strategy)?;
+    let workspace_path = workspace::ensure_workspace_multi(&home, name, &selected_repos)?;
     output_cd_path(&workspace_path);
 
     if !sess.command.is_empty() {
@@ -407,10 +448,12 @@ fn cmd_remove(name: &str) -> Result<i32> {
 
     let sess = session::load(name)?;
 
-    workspace::remove_workspace(name, &sess.strategy);
+    workspace::remove_workspace(name);
     session::remove_dir(name)?;
 
-    output_cd_path(&sess.project_dir);
+    if !sess.project_dir.is_empty() {
+        output_cd_path(&sess.project_dir);
+    }
     println!("Session '{}' removed.", name);
     Ok(0)
 }
@@ -476,7 +519,55 @@ fn cmd_origin() -> Result<i32> {
     }
 
     let sess = session::load(&ws_name)?;
+
+    // For multi-repo sessions, detect which repo subdir we're in and look up its path
+    if !sess.repos.is_empty() {
+        let ws_root = Path::new(&home)
+            .join(".box")
+            .join("workspaces")
+            .join(&ws_name);
+        let ws_root_canon = std::fs::canonicalize(&ws_root).unwrap_or(ws_root);
+        if let Ok(rel) = cwd_canon.strip_prefix(&ws_root_canon) {
+            if let Some(repo_dir_name) = rel.components().next() {
+                let repo_name = repo_dir_name.as_os_str().to_string_lossy().to_string();
+                if let Ok(repos) = repo::list() {
+                    if let Some(entry) = repos.iter().find(|r| r.name == repo_name) {
+                        output_cd_path(&entry.path);
+                        return Ok(0);
+                    }
+                }
+            }
+        }
+        bail!("Navigate into a repo subdirectory first (e.g. cd <repo-name>).");
+    }
+
+    if sess.project_dir.is_empty() {
+        bail!("Session '{}' has no origin project directory.", ws_name);
+    }
     output_cd_path(&sess.project_dir);
+    Ok(0)
+}
+
+fn cmd_repo_add(path: Option<String>) -> Result<i32> {
+    let path = path.unwrap_or_else(|| ".".to_string());
+    repo::add(&path)?;
+    Ok(0)
+}
+
+fn cmd_repo_remove(name: &str) -> Result<i32> {
+    repo::remove(name)?;
+    Ok(0)
+}
+
+fn cmd_repo_list() -> Result<i32> {
+    let repos = repo::list()?;
+    if repos.is_empty() {
+        println!("No repos registered.");
+        return Ok(0);
+    }
+    for r in &repos {
+        println!("  {}  {}", r.name, r.path);
+    }
     Ok(0)
 }
 
@@ -486,17 +577,32 @@ fn cmd_config_zsh() -> Result<i32> {
     local -a sessions
     if [[ -d "$HOME/.box/sessions" ]]; then
         for sess in "$HOME/.box/sessions"/*(N/); do
-            if [[ -f "$sess/project_dir" ]]; then
+            if [[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]; then
                 local sess_name=${{sess:t}}
                 local desc=""
-                desc=$(< "$sess/project_dir")
-                desc=${{desc/#$HOME/\~}}
+                if [[ -f "$sess/project_dir" ]]; then
+                    desc=$(< "$sess/project_dir")
+                    desc=${{desc/#$HOME/\~}}
+                fi
                 sessions+=("$sess_name:[$desc]")
             fi
         done
     fi
     if (( ${{#sessions}} )); then
         _describe 'session' sessions
+    fi
+}}
+
+__box_repos() {{
+    local -a repos
+    if [[ -f "$HOME/.box/repos" ]]; then
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            repos+=("${{line##*/}}")
+        done < "$HOME/.box/repos"
+    fi
+    if (( ${{#repos}} )); then
+        _describe 'repo' repos
     fi
 }}
 
@@ -519,6 +625,7 @@ _box() {{
                 'cd:Print the host project directory for a session'
                 'path:Print workspace path for a session'
                 'origin:Navigate back to the original project directory'
+                'repo:Manage registered repos'
                 'upgrade:Self-update to the latest version'
                 'config:Output shell configuration'
             )
@@ -528,7 +635,7 @@ _box() {{
             case $words[1] in
                 new)
                     _arguments \
-                        '--strategy=[Workspace strategy (clone or worktree)]:strategy:(clone worktree)' \
+                        '*--repo=[Select specific repo]:repo:__box_repos' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -547,6 +654,22 @@ _box() {{
                 remove|path|cd)
                     if (( CURRENT == 2 )); then
                         __box_sessions
+                    fi
+                    ;;
+                repo)
+                    if (( CURRENT == 2 )); then
+                        local -a repo_subcmds
+                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'list:List registered repos')
+                        _describe 'repo subcommand' repo_subcmds
+                    elif (( CURRENT == 3 )); then
+                        case $words[2] in
+                            remove)
+                                __box_repos
+                                ;;
+                            add)
+                                _files -/
+                                ;;
+                        esac
                     fi
                     ;;
                 config)
@@ -586,7 +709,7 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new remove exec list cd path origin upgrade config"
+    local subcommands="new remove exec list cd path origin repo upgrade config"
     local session_cmds="remove exec cd path"
 
     if [[ $cword -eq 1 ]]; then
@@ -600,7 +723,7 @@ fn cmd_config_bash() -> Result<i32> {
         new)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--strategy" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--repo" -- "$cur"))
                     ;;
             esac
             ;;
@@ -609,7 +732,7 @@ fn cmd_config_bash() -> Result<i32> {
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
                     for sess in "$HOME/.box/sessions"/*/; do
-                        [[ -f "$sess/project_dir" ]] && sessions+=" $(basename "$sess")"
+                        ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
                     done
                 fi
                 COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
@@ -627,10 +750,31 @@ fn cmd_config_bash() -> Result<i32> {
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
                     for sess in "$HOME/.box/sessions"/*/; do
-                        [[ -f "$sess/project_dir" ]] && sessions+=" $(basename "$sess")"
+                        ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
                     done
                 fi
                 COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+            fi
+            ;;
+        repo)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "add remove list" -- "$cur"))
+            elif [[ $cword -eq 3 ]]; then
+                case "${{words[2]}}" in
+                    remove)
+                        local repos=""
+                        if [[ -f "$HOME/.box/repos" ]]; then
+                            while IFS= read -r line; do
+                                [[ -z "$line" ]] && continue
+                                repos+=" ${{line##*/}}"
+                            done < "$HOME/.box/repos"
+                        fi
+                        COMPREPLY=($(compgen -W "$repos" -- "$cur"))
+                        ;;
+                    add)
+                        COMPREPLY=($(compgen -d -- "$cur"))
+                        ;;
+                esac
             fi
             ;;
         config)
@@ -800,7 +944,7 @@ mod tests {
         let cli = parse(&["new", "my-session"]);
         match cli.command {
             Some(Commands::New(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
+                assert_eq!(args.name, "my-session");
                 assert!(args.cmd.is_empty());
             }
             other => panic!("expected New, got {:?}", other),
@@ -812,7 +956,7 @@ mod tests {
         let cli = parse(&["new", "my-session", "--", "bash", "-c", "echo hi"]);
         match cli.command {
             Some(Commands::New(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
+                assert_eq!(args.name, "my-session");
                 assert_eq!(args.cmd, vec!["bash", "-c", "echo hi"]);
             }
             other => panic!("expected New, got {:?}", other),
@@ -820,23 +964,18 @@ mod tests {
     }
 
     #[test]
-    fn test_new_no_name_opens_tui() {
-        let cli = parse(&["new"]);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert!(args.name.is_none());
-            }
-            _ => panic!("expected New"),
-        }
+    fn test_new_requires_name() {
+        let result = try_parse(&["new"]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_new_with_strategy() {
-        let cli = parse(&["new", "my-session", "--strategy", "worktree"]);
+    fn test_new_with_repo_flags() {
+        let cli = parse(&["new", "my-session", "--repo", "app-a", "--repo", "app-b"]);
         match cli.command {
             Some(Commands::New(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
-                assert_eq!(args.strategy.as_deref(), Some("worktree"));
+                assert_eq!(args.name, "my-session");
+                assert_eq!(args.repo, vec!["app-a", "app-b"]);
             }
             other => panic!("expected New, got {:?}", other),
         }
@@ -1010,6 +1149,58 @@ mod tests {
     fn test_list_rejects_positional_args() {
         let result = try_parse(&["list", "my-session"]);
         assert!(result.is_err());
+    }
+
+    // -- repo subcommand --
+
+    #[test]
+    fn test_repo_add_no_path() {
+        let cli = parse(&["repo", "add"]);
+        match cli.command {
+            Some(Commands::Repo {
+                action: RepoAction::Add { path },
+            }) => {
+                assert!(path.is_none());
+            }
+            other => panic!("expected Repo Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_repo_add_with_path() {
+        let cli = parse(&["repo", "add", "/tmp/my-repo"]);
+        match cli.command {
+            Some(Commands::Repo {
+                action: RepoAction::Add { path },
+            }) => {
+                assert_eq!(path.as_deref(), Some("/tmp/my-repo"));
+            }
+            other => panic!("expected Repo Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_repo_remove() {
+        let cli = parse(&["repo", "remove", "my-app"]);
+        match cli.command {
+            Some(Commands::Repo {
+                action: RepoAction::Remove { name },
+            }) => {
+                assert_eq!(name, "my-app");
+            }
+            other => panic!("expected Repo Remove, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_repo_list() {
+        let cli = parse(&["repo", "list"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Repo {
+                action: RepoAction::List
+            })
+        ));
     }
 
     // -- bare name is rejected (subcommand required) --

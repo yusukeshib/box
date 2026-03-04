@@ -5,19 +5,21 @@ use ratatui::prelude::*;
 use ratatui::{TerminalOptions, Viewport};
 use std::io;
 
+use crate::repo;
 use crate::session;
 
 pub enum TuiAction {
     New {
         name: String,
         command: Option<Vec<String>>,
-        strategy: Option<crate::config::Strategy>,
+        repos: Vec<String>,
     },
     Quit,
 }
 
 #[derive(PartialEq)]
 enum Mode {
+    RepoSelect,
     Name,
     Command,
 }
@@ -133,10 +135,17 @@ fn clear_viewport(
     Ok(())
 }
 
-/// Minimal create-session TUI: prompts for name, command.
+/// Minimal create-session TUI: prompts for repo selection, name, command.
 /// Returns `TuiAction::New` or `TuiAction::Quit`.
 pub fn create_session() -> Result<TuiAction> {
-    let viewport_height = 1;
+    let all_repos = repo::list()?;
+    if all_repos.is_empty() {
+        anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
+    }
+
+    let repo_count = all_repos.len();
+    // viewport height: repo list + header line
+    let viewport_height = (repo_count as u16) + 1;
 
     terminal::enable_raw_mode()?;
     let _guard = TermGuard;
@@ -147,25 +156,63 @@ pub fn create_session() -> Result<TuiAction> {
     let mut terminal = Terminal::with_options(CrosstermBackend::new(io::stderr()), options)?;
 
     let mut input = TextInput::new();
-    let mut mode = Mode::Name;
+    let mut mode = Mode::RepoSelect;
     let mut footer_msg = String::new();
     let mut new_name = String::new();
+
+    // Repo selection state
+    let mut selected: Vec<bool> = vec![true; repo_count];
+    let mut cursor_pos: usize = 0;
+    let mut selected_repos: Vec<String> = Vec::new();
 
     loop {
         terminal.draw(|f| {
             let area = f.area();
-            let line: Line = if !footer_msg.is_empty() {
-                Line::from(Span::styled(
+
+            if !footer_msg.is_empty() {
+                let line = Line::from(Span::styled(
                     footer_msg.as_str(),
                     Style::default().fg(Color::Red),
-                ))
-            } else {
-                match &mode {
-                    Mode::Name => Line::from(input.to_spans("Session name: ")),
-                    Mode::Command => Line::from(input.to_spans("Command (optional): ")),
+                ));
+                f.render_widget(line, area);
+                return;
+            }
+
+            match &mode {
+                Mode::RepoSelect => {
+                    let mut lines: Vec<Line> = Vec::new();
+                    lines.push(Line::from(Span::styled(
+                        "Select repos (Space=toggle, Enter=confirm):",
+                        Style::default().bold(),
+                    )));
+                    for (i, repo) in all_repos.iter().enumerate() {
+                        let check = if selected[i] { "[x]" } else { "[ ]" };
+                        let style = if i == cursor_pos {
+                            Style::default().reversed()
+                        } else {
+                            Style::default()
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!(" {} {}", check, repo.name),
+                            style,
+                        )));
+                    }
+                    for (i, line) in lines.into_iter().enumerate() {
+                        if (i as u16) < area.height {
+                            let row = Rect::new(area.x, area.y + i as u16, area.width, 1);
+                            f.render_widget(line, row);
+                        }
+                    }
                 }
-            };
-            f.render_widget(line, area);
+                Mode::Name => {
+                    let line = Line::from(input.to_spans("Session name: "));
+                    f.render_widget(line, area);
+                }
+                Mode::Command => {
+                    let line = Line::from(input.to_spans("Command (optional): "));
+                    f.render_widget(line, area);
+                }
+            }
         })?;
 
         // Clear error message on next keypress
@@ -189,6 +236,47 @@ pub fn create_session() -> Result<TuiAction> {
             }
 
             match mode {
+                Mode::RepoSelect => match key.code {
+                    KeyCode::Up => {
+                        cursor_pos = cursor_pos.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if cursor_pos + 1 < repo_count {
+                            cursor_pos += 1;
+                        }
+                    }
+                    KeyCode::Char(' ') => {
+                        selected[cursor_pos] = !selected[cursor_pos];
+                    }
+                    KeyCode::Enter => {
+                        selected_repos = all_repos
+                            .iter()
+                            .enumerate()
+                            .filter(|(i, _)| selected[*i])
+                            .map(|(_, r)| r.name.clone())
+                            .collect();
+                        if selected_repos.is_empty() {
+                            footer_msg = "At least one repo must be selected.".to_string();
+                        } else {
+                            // Resize viewport to 1 line for text input
+                            clear_viewport(&mut terminal, viewport_height)?;
+                            drop(terminal);
+                            let options = TerminalOptions {
+                                viewport: Viewport::Inline(1),
+                            };
+                            terminal = Terminal::with_options(
+                                CrosstermBackend::new(io::stderr()),
+                                options,
+                            )?;
+                            mode = Mode::Name;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Quit);
+                    }
+                    _ => {}
+                },
                 Mode::Name => match key.code {
                     KeyCode::Enter => {
                         let name = input.text.trim().to_string();
@@ -206,7 +294,7 @@ pub fn create_session() -> Result<TuiAction> {
                         }
                     }
                     KeyCode::Esc => {
-                        clear_viewport(&mut terminal, viewport_height)?;
+                        clear_viewport(&mut terminal, 1)?;
                         return Ok(TuiAction::Quit);
                     }
                     _ => {
@@ -228,15 +316,15 @@ pub fn create_session() -> Result<TuiAction> {
                                 }
                             }
                         };
-                        clear_viewport(&mut terminal, viewport_height)?;
+                        clear_viewport(&mut terminal, 1)?;
                         return Ok(TuiAction::New {
                             name: new_name,
                             command,
-                            strategy: None,
+                            repos: selected_repos,
                         });
                     }
                     KeyCode::Esc => {
-                        clear_viewport(&mut terminal, viewport_height)?;
+                        clear_viewport(&mut terminal, 1)?;
                         return Ok(TuiAction::Quit);
                     }
                     _ => {
