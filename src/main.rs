@@ -67,6 +67,7 @@ enum RepoAction {
         name: String,
     },
     /// List registered repos
+    #[command(alias = "ls")]
     List,
 }
 
@@ -602,7 +603,7 @@ _box() {{
                 repo)
                     if (( CURRENT == 2 )); then
                         local -a repo_subcmds
-                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'list:List registered repos')
+                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'list:List registered repos' 'ls:List registered repos')
                         _describe 'repo subcommand' repo_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
@@ -701,7 +702,7 @@ fn cmd_config_bash() -> Result<i32> {
             ;;
         repo)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove list" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove list ls" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${{words[2]}}" in
                     remove)
