@@ -1,32 +1,5 @@
 use anyhow::{bail, Result};
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Strategy {
-    Clone,
-    Worktree,
-}
-
-impl std::fmt::Display for Strategy {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Strategy::Clone => write!(f, "clone"),
-            Strategy::Worktree => write!(f, "worktree"),
-        }
-    }
-}
-
-impl std::str::FromStr for Strategy {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "clone" => Ok(Strategy::Clone),
-            "worktree" => Ok(Strategy::Worktree),
-            _ => bail!("Invalid strategy '{}'. Must be 'clone' or 'worktree'.", s),
-        }
-    }
-}
-
 /// Return the user's home directory from the HOME environment variable.
 /// Returns an error if HOME is not set or is empty.
 pub fn home_dir() -> Result<String> {
@@ -42,7 +15,7 @@ pub struct BoxConfig {
     pub project_dir: String,
     pub command: Vec<String>,
     pub env: Vec<String>,
-    pub strategy: Strategy,
+    pub repos: Vec<String>,
 }
 
 pub struct BoxConfigInput {
@@ -50,7 +23,7 @@ pub struct BoxConfigInput {
     pub project_dir: String,
     pub command: Option<Vec<String>>,
     pub env: Vec<String>,
-    pub strategy: Option<Strategy>,
+    pub repos: Vec<String>,
 }
 
 fn resolve_command(command: Option<Vec<String>>) -> Result<Vec<String>> {
@@ -64,29 +37,15 @@ fn resolve_command(command: Option<Vec<String>>) -> Result<Vec<String>> {
     }
 }
 
-fn resolve_strategy(strategy: Option<Strategy>) -> Result<Strategy> {
-    match strategy {
-        Some(s) => Ok(s),
-        None => {
-            let env_val = std::env::var("BOX_STRATEGY").ok().filter(|v| !v.is_empty());
-            match env_val {
-                Some(s) => s.parse(),
-                None => Ok(Strategy::Clone),
-            }
-        }
-    }
-}
-
 pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
     let command = resolve_command(input.command)?;
-    let strategy = resolve_strategy(input.strategy)?;
 
     Ok(BoxConfig {
         name: input.name,
         project_dir: input.project_dir,
         command,
         env: input.env,
-        strategy,
+        repos: input.repos,
     })
 }
 
@@ -109,7 +68,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
 
@@ -120,7 +79,7 @@ mod tests {
                 project_dir: "/home/user/myproject".to_string(),
                 command: vec![],
                 env: vec![],
-                strategy: Strategy::Clone,
+                repos: vec![],
             }
         );
 
@@ -177,7 +136,7 @@ mod tests {
             project_dir: "/home/user/project".to_string(),
             command: Some(vec!["python".to_string(), "main.py".to_string()]),
             env: vec!["FOO=bar".to_string()],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
 
@@ -188,7 +147,7 @@ mod tests {
                 project_dir: "/home/user/project".to_string(),
                 command: vec!["python".to_string(), "main.py".to_string()],
                 env: vec!["FOO=bar".to_string()],
-                strategy: Strategy::Clone,
+                repos: vec![],
             }
         );
     }
@@ -203,7 +162,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
         assert_eq!(config.command, vec!["bash".to_string()]);
@@ -223,7 +182,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: Some(vec!["sh".to_string()]),
             env: vec![],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
         assert_eq!(config.command, vec!["sh".to_string()]);
@@ -243,7 +202,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
         assert_eq!(
@@ -270,7 +229,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
@@ -290,7 +249,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
-            strategy: None,
+            repos: vec![],
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("BOX_DEFAULT_CMD"));
@@ -310,7 +269,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());
@@ -329,7 +288,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: None,
             env: vec![],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
         assert_eq!(config.command, vec!["bash".to_string()]);
@@ -349,7 +308,7 @@ mod tests {
             project_dir: "/home/user/myproject".to_string(),
             command: Some(vec![]),
             env: vec![],
-            strategy: None,
+            repos: vec![],
         })
         .unwrap();
         assert_eq!(config.command, Vec::<String>::new());

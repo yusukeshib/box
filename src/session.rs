@@ -13,7 +13,7 @@ pub struct Session {
     pub project_dir: String,
     pub command: Vec<String>,
     pub env: Vec<String>,
-    pub strategy: config::Strategy,
+    pub repos: Vec<String>,
 }
 
 impl From<config::BoxConfig> for Session {
@@ -23,7 +23,7 @@ impl From<config::BoxConfig> for Session {
             project_dir: cfg.project_dir,
             command: cfg.command,
             env: cfg.env,
-            strategy: cfg.strategy,
+            repos: cfg.repos,
         }
     }
 }
@@ -34,7 +34,7 @@ pub struct SessionSummary {
     pub project_dir: String,
     pub command: String,
     pub created_at: String,
-    pub _strategy: config::Strategy,
+    pub repos: Vec<String>,
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
@@ -45,7 +45,7 @@ pub fn sessions_dir() -> Result<PathBuf> {
 }
 
 const RESERVED_NAMES: &[&str] = &[
-    "new", "remove", "exec", "upgrade", "path", "config", "list", "ls",
+    "new", "remove", "exec", "upgrade", "path", "config", "list", "ls", "repo",
 ];
 
 pub fn validate_name(name: &str) -> Result<()> {
@@ -78,7 +78,7 @@ pub fn validate_name(name: &str) -> Result<()> {
 
 pub fn session_exists(name: &str) -> Result<bool> {
     let dir = sessions_dir()?.join(name);
-    Ok(dir.join("project_dir").exists())
+    Ok(dir.join("project_dir").exists() || dir.join("repos").exists())
 }
 
 pub fn save(session: &Session) -> Result<()> {
@@ -87,7 +87,9 @@ pub fn save(session: &Session) -> Result<()> {
     #[cfg(unix)]
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
 
-    fs::write(dir.join("project_dir"), &session.project_dir)?;
+    if !session.project_dir.is_empty() {
+        fs::write(dir.join("project_dir"), &session.project_dir)?;
+    }
     fs::write(
         dir.join("created_at"),
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
@@ -104,7 +106,11 @@ pub fn save(session: &Session) -> Result<()> {
     } else {
         let _ = fs::remove_file(dir.join("env"));
     }
-    fs::write(dir.join("strategy"), session.strategy.to_string())?;
+    if !session.repos.is_empty() {
+        fs::write(dir.join("repos"), session.repos.join("\n"))?;
+    } else {
+        let _ = fs::remove_file(dir.join("repos"));
+    }
     Ok(())
 }
 
@@ -148,10 +154,14 @@ pub fn load(name: &str) -> Result<Session> {
     }
 
     let project_dir_path = dir.join("project_dir");
-    if !project_dir_path.exists() {
+    let project_dir = if project_dir_path.exists() {
+        fs::read_to_string(&project_dir_path)?.trim().to_string()
+    } else if dir.join("repos").exists() {
+        // Multi-repo session without a single project_dir
+        String::new()
+    } else {
         bail!("Session '{}' is missing project directory metadata.", name);
-    }
-    let project_dir = fs::read_to_string(&project_dir_path)?.trim().to_string();
+    };
 
     let command = fs::read_to_string(dir.join("command"))
         .map(|s| {
@@ -171,17 +181,21 @@ pub fn load(name: &str) -> Result<Session> {
         })
         .unwrap_or_default();
 
-    let strategy: config::Strategy = fs::read_to_string(dir.join("strategy"))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(config::Strategy::Clone);
+    let repos = fs::read_to_string(dir.join("repos"))
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
 
     Ok(Session {
         name: name.to_string(),
         project_dir,
         command,
         env,
-        strategy,
+        repos,
     })
 }
 
@@ -212,17 +226,21 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
         })
         .unwrap_or_default();
 
-    let strategy: config::Strategy = fs::read_to_string(session_path.join("strategy"))
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(config::Strategy::Clone);
+    let repos: Vec<String> = fs::read_to_string(session_path.join("repos"))
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.trim().is_empty())
+                .map(|l| l.trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
 
     SessionSummary {
         name,
         project_dir,
         command,
         created_at,
-        _strategy: strategy,
+        repos,
     }
 }
 
@@ -248,7 +266,7 @@ pub fn list() -> Result<Vec<SessionSummary>> {
             let _ = migrate_nested_to_flat(&name);
         }
 
-        if path.join("project_dir").exists() {
+        if path.join("project_dir").exists() || path.join("repos").exists() {
             sessions.push(read_session_summary(&path, name));
         }
     }
@@ -287,7 +305,7 @@ mod tests {
             project_dir: project_dir.to_string(),
             command: vec![],
             env: vec![],
-            strategy: config::Strategy::Clone,
+            repos: vec![],
         }
     }
 
@@ -327,6 +345,12 @@ mod tests {
     #[test]
     fn test_validate_name_reserved_config() {
         let err = validate_name("config").unwrap_err();
+        assert!(err.to_string().contains("reserved name"));
+    }
+
+    #[test]
+    fn test_validate_name_reserved_repo() {
+        let err = validate_name("repo").unwrap_err();
         assert!(err.to_string().contains("reserved name"));
     }
 
@@ -376,7 +400,7 @@ mod tests {
                     "echo hello".to_string(),
                 ],
                 env: vec![],
-                strategy: config::Strategy::Clone,
+                repos: vec![],
             };
             save(&sess).unwrap();
 
@@ -522,7 +546,7 @@ mod tests {
                 project_dir: "/tmp/p".to_string(),
                 command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
                 env: vec![],
-                strategy: config::Strategy::Clone,
+                repos: vec![],
             };
             save(&sess).unwrap();
 
@@ -540,7 +564,7 @@ mod tests {
                 project_dir: "/tmp/project".to_string(),
                 command: vec![],
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
-                strategy: config::Strategy::Clone,
+                repos: vec![],
             };
             save(&sess).unwrap();
 
@@ -568,6 +592,25 @@ mod tests {
     }
 
     #[test]
+    fn test_save_and_load_with_repos() {
+        with_temp_home(|_| {
+            let sess = Session {
+                name: "multi".to_string(),
+                project_dir: String::new(),
+                command: vec![],
+                env: vec![],
+                repos: vec!["app-a".to_string(), "app-b".to_string()],
+            };
+            save(&sess).unwrap();
+
+            let loaded = load("multi").unwrap();
+            assert_eq!(loaded.repos, vec!["app-a", "app-b"]);
+            assert!(loaded.project_dir.is_empty());
+            assert!(session_exists("multi").unwrap());
+        });
+    }
+
+    #[test]
     fn test_migration_nested_to_flat_on_list() {
         with_temp_home(|_| {
             // Simulate old nested layout: sessions/<name>/default/project_dir
@@ -575,7 +618,6 @@ mod tests {
             let default_dir = dir.join("default");
             fs::create_dir_all(&default_dir).unwrap();
             fs::write(default_dir.join("project_dir"), "/tmp/project").unwrap();
-            fs::write(default_dir.join("strategy"), "clone").unwrap();
 
             let sessions = list().unwrap();
             assert_eq!(sessions.len(), 1);
@@ -594,7 +636,6 @@ mod tests {
             let default_dir = dir.join("default");
             fs::create_dir_all(&default_dir).unwrap();
             fs::write(default_dir.join("project_dir"), "/tmp/project").unwrap();
-            fs::write(default_dir.join("strategy"), "clone").unwrap();
 
             let loaded = load("old-load").unwrap();
             assert_eq!(loaded.name, "old-load");
