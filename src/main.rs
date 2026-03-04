@@ -689,7 +689,7 @@ fn cmd_config_bash() -> Result<i32> {
                     ;;
             esac
             ;;
-        remove|path|cd)
+        remove|cd)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
