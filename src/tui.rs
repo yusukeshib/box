@@ -18,6 +18,13 @@ fn last_selected_repos_path() -> Result<std::path::PathBuf> {
         .join("last_selected_repos"))
 }
 
+fn name_history_path() -> Result<std::path::PathBuf> {
+    let home = config::home_dir()?;
+    Ok(std::path::PathBuf::from(home)
+        .join(".box")
+        .join("name_history"))
+}
+
 fn command_history_path() -> Result<std::path::PathBuf> {
     let home = config::home_dir()?;
     Ok(std::path::PathBuf::from(home)
@@ -41,6 +48,27 @@ fn load_last_selected_repos() -> Vec<String> {
 fn save_last_selected_repos(repos: &[String]) {
     if let Ok(path) = last_selected_repos_path() {
         let _ = std::fs::write(path, repos.join("\n") + "\n");
+    }
+}
+
+fn load_name_history() -> Vec<String> {
+    name_history_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_name_history(history: &[String]) {
+    if let Ok(path) = name_history_path() {
+        let capped: Vec<&String> = history.iter().take(MAX_COMMAND_HISTORY).collect();
+        let content: Vec<&str> = capped.iter().map(|s| s.as_str()).collect();
+        let _ = std::fs::write(path, content.join("\n") + "\n");
     }
 }
 
@@ -230,6 +258,11 @@ pub fn create_session() -> Result<TuiAction> {
     let mut cursor_pos: usize = 0;
     let mut selected_repos: Vec<String> = Vec::new();
 
+    // Name history state
+    let mut name_history = load_name_history();
+    let mut name_history_index: Option<usize> = None;
+    let mut name_saved_input = String::new();
+
     // Command history state
     let mut cmd_history = load_command_history();
     let mut history_index: Option<usize> = None;
@@ -354,16 +387,51 @@ pub fn create_session() -> Result<TuiAction> {
                         if let Err(e) = session::validate_name(&name) {
                             footer_msg = e.to_string();
                             input = TextInput::new();
+                            name_history_index = None;
+                            name_saved_input.clear();
                         } else if session::session_exists(&name).unwrap_or(false) {
                             footer_msg = format!("Session '{}' already exists.", name);
                             input = TextInput::new();
+                            name_history_index = None;
+                            name_saved_input.clear();
                         } else {
+                            // Save name to history
+                            name_history.retain(|h| h != &name);
+                            name_history.insert(0, name.clone());
+                            save_name_history(&name_history);
                             new_name = name;
                             let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
                             input = TextInput::with_text(default_cmd);
                             mode = Mode::Command;
                         }
                     }
+                    KeyCode::Up => {
+                        if !name_history.is_empty() {
+                            match name_history_index {
+                                None => {
+                                    name_saved_input = input.text.clone();
+                                    name_history_index = Some(0);
+                                    input = TextInput::with_text(name_history[0].clone());
+                                }
+                                Some(idx) if idx + 1 < name_history.len() => {
+                                    name_history_index = Some(idx + 1);
+                                    input = TextInput::with_text(name_history[idx + 1].clone());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    KeyCode::Down => match name_history_index {
+                        Some(0) => {
+                            name_history_index = None;
+                            input = TextInput::with_text(name_saved_input.clone());
+                        }
+                        Some(idx) => {
+                            name_history_index = Some(idx - 1);
+                            input = TextInput::with_text(name_history[idx - 1].clone());
+                        }
+                        None => {}
+                    },
                     KeyCode::Esc => {
                         clear_viewport(&mut terminal, 1)?;
                         return Ok(TuiAction::Quit);
