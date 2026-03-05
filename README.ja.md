@@ -91,6 +91,7 @@ box new my-feature -- make test
 ```bash
 box                                    インタラクティブTUIセッションマネージャ
 box new [name] [options] [-- cmd...]   新しいセッションを作成
+box edit <name>                        セッションのリポジトリを追加・削除
 box exec <name> -- <cmd...>            セッションでコマンドを実行
 box list [options]                     セッション一覧を表示（エイリアス: ls）
 box remove <name>                      セッションまたはワークスペースを削除
@@ -117,6 +118,12 @@ box new my-feature --repo app-a --repo app-b
 # cloneの代わりにgit worktreeを使用（より高速、オブジェクトストアを共有）
 box new my-feature --strategy worktree
 BOX_STRATEGY=worktree box new my-feature
+```
+
+### セッションのリポジトリを編集
+
+```bash
+box edit my-feature             # 既存セッションのリポジトリを追加・削除
 ```
 
 ### セッションの一覧と管理

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box edit my-feature                          # add/remove repos in a session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -28,6 +28,8 @@ struct Cli {
 enum Commands {
     /// Create a new session
     New(CreateArgs),
+    /// Edit repos in an existing session
+    Edit(EditArgs),
     /// Remove a session
     Remove(RemoveArgs),
     /// Run a command in a session
@@ -86,6 +88,12 @@ struct CreateArgs {
 }
 
 #[derive(clap::Args, Debug)]
+struct EditArgs {
+    /// Session name
+    name: String,
+}
+
+#[derive(clap::Args, Debug)]
 struct RemoveArgs {
     /// Session name
     name: String,
@@ -138,6 +146,7 @@ fn main() {
             };
             cmd_create(&args.name, cmd, args.repo)
         }
+        Some(Commands::Edit(args)) => cmd_edit(&args.name),
         Some(Commands::Remove(args)) => cmd_remove(&args.name),
         Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
         Some(Commands::List(args)) => cmd_list_sessions(&args),
@@ -443,6 +452,66 @@ fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> 
     Ok(0)
 }
 
+fn cmd_edit(name: &str) -> Result<i32> {
+    session::validate_name(name)?;
+
+    if !session::session_exists(name)? {
+        bail!("Session '{}' not found.", name);
+    }
+
+    let sess = session::load(name)?;
+    let current_repos = &sess.repos;
+
+    match tui::edit_session(current_repos)? {
+        tui::TuiAction::Edit { repos: new_repos } => {
+            let home = config::home_dir()?;
+            let all_repos = repo::list()?;
+
+            // Determine added and removed repos
+            let added: Vec<&str> = new_repos
+                .iter()
+                .filter(|r| !current_repos.contains(r))
+                .map(|r| r.as_str())
+                .collect();
+            let removed: Vec<&str> = current_repos
+                .iter()
+                .filter(|r| !new_repos.contains(r))
+                .map(|r| r.as_str())
+                .collect();
+
+            // Clone newly added repos
+            if !added.is_empty() {
+                let repos_to_clone: Vec<repo::RepoEntry> = added
+                    .iter()
+                    .filter_map(|name| all_repos.iter().find(|r| r.name == *name).cloned())
+                    .collect();
+                workspace::ensure_workspace_multi(&home, name, &repos_to_clone)?;
+            }
+
+            // Remove workspace directories for removed repos
+            for repo_name in &removed {
+                workspace::remove_repo_from_workspace(&home, name, repo_name);
+            }
+
+            // Update session metadata
+            session::update_repos(name, &new_repos)?;
+
+            if !added.is_empty() {
+                eprintln!("\x1b[2madded:\x1b[0m {}", added.join(", "));
+            }
+            if !removed.is_empty() {
+                eprintln!("\x1b[2mremoved:\x1b[0m {}", removed.join(", "));
+            }
+            if added.is_empty() && removed.is_empty() {
+                eprintln!("No changes.");
+            }
+
+            Ok(0)
+        }
+        _ => Ok(0),
+    }
+}
+
 fn cmd_remove(name: &str) -> Result<i32> {
     session::validate_name(name)?;
 
@@ -578,6 +647,7 @@ _box() {{
             local -a subcmds
             subcmds=(
                 'new:Create a new session'
+                'edit:Edit repos in an existing session'
                 'remove:Remove a session'
                 'exec:Run a command in a session'
                 'list:List sessions'
@@ -608,7 +678,7 @@ _box() {{
                         '--quiet[Only print session names]' \
                         '-q[Only print session names]'
                     ;;
-                remove|cd)
+                edit|remove|cd)
                     if (( CURRENT == 2 )); then
                         __box_sessions
                     fi
@@ -666,8 +736,8 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new remove exec list cd repo upgrade config"
-    local session_cmds="remove exec cd"
+    local subcommands="new edit remove exec list cd repo upgrade config"
+    local session_cmds="edit remove exec cd"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
@@ -702,7 +772,7 @@ fn cmd_config_bash() -> Result<i32> {
                     ;;
             esac
             ;;
-        remove|cd)
+        edit|remove|cd)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$HOME/.box/sessions" ]]; then
@@ -952,6 +1022,25 @@ mod tests {
             }
             other => panic!("expected New, got {:?}", other),
         }
+    }
+
+    // -- edit subcommand --
+
+    #[test]
+    fn test_edit_parses() {
+        let cli = parse(&["edit", "my-session"]);
+        match cli.command {
+            Some(Commands::Edit(args)) => {
+                assert_eq!(args.name, "my-session");
+            }
+            other => panic!("expected Edit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_edit_requires_name() {
+        let result = try_parse(&["edit"]);
+        assert!(result.is_err());
     }
 
     // -- remove subcommand --

@@ -91,6 +91,7 @@ box new my-feature -- make test
 ```bash
 box                                    Interactive TUI session manager
 box new [name] [options] [-- cmd...]   Create a new session
+box edit <name>                        Add/remove repos in a session
 box exec <name> -- <cmd...>            Run a command in a session
 box list [options]                     List sessions (alias: ls)
 box remove <name>                      Remove a session or workspace
@@ -117,6 +118,12 @@ box new my-feature --repo app-a --repo app-b
 # Use git worktree instead of clone (faster, shares object store)
 box new my-feature --strategy worktree
 BOX_STRATEGY=worktree box new my-feature
+```
+
+### Edit session repos
+
+```bash
+box edit my-feature             # Add/remove repos in an existing session
 ```
 
 ### List and manage sessions

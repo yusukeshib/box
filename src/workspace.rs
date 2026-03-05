@@ -51,6 +51,16 @@ pub fn ensure_workspace_multi(
     Ok(root.to_string_lossy().to_string())
 }
 
+/// Remove a single repo subdirectory from a session workspace.
+pub fn remove_repo_from_workspace(home: &str, session_name: &str, repo_name: &str) {
+    let dir = Path::new(home)
+        .join(".box")
+        .join("workspaces")
+        .join(session_name)
+        .join(repo_name);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Re-point origin remote from local path to the real remote URL.
 fn repoint_origin(project_dir: &str, clone_dir: &str) {
     if let Ok(output) = Command::new("git")
