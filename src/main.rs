@@ -182,6 +182,17 @@ fn output_cd_path(path: &str) {
     }
 }
 
+fn rename_zellij_tab(name: &str) {
+    if std::env::var_os("ZELLIJ").is_some() {
+        let _ = std::process::Command::new("zellij")
+            .args(["action", "rename-tab", name])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 /// Resolve the workspace path for a session. For single-repo sessions,
 /// returns the repo subdirectory; for multi-repo, returns the workspace root.
 fn resolve_workspace_path(home: &str, name: &str) -> Result<PathBuf> {
@@ -424,6 +435,7 @@ fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> 
     } else {
         output_cd_path(&workspace_path);
     }
+    rename_zellij_tab(name);
 
     if !sess.command.is_empty() {
         return run_local_command(name, &sess.command);
@@ -474,6 +486,7 @@ fn cmd_cd(name: &str) -> Result<i32> {
     let home = config::home_dir()?;
     let path = resolve_workspace_path(&home, name)?;
     output_cd_path(&path.to_string_lossy());
+    rename_zellij_tab(name);
     Ok(0)
 }
 
@@ -638,13 +651,6 @@ box() {{
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
-        if [[ -n "$ZELLIJ" ]]; then
-            local __box_session_name
-            __box_session_name=$(echo "$__box_dir" | sed -n 's|.*/\.box/workspaces/\([^/]*\).*|\1|p')
-            if [[ -n "$__box_session_name" ]]; then
-                command zellij action rename-tab "$__box_session_name" 2>/dev/null
-            fi
-        fi
     fi
     rm -f "$__box_cd_file"
     return $__box_exit
@@ -746,13 +752,6 @@ box() {{
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
-        if [[ -n "$ZELLIJ" ]]; then
-            local __box_session_name
-            __box_session_name=$(echo "$__box_dir" | sed -n 's|.*/\.box/workspaces/\([^/]*\).*|\1|p')
-            if [[ -n "$__box_session_name" ]]; then
-                command zellij action rename-tab "$__box_session_name" 2>/dev/null
-            fi
-        fi
     fi
     rm -f "$__box_cd_file"
     return $__box_exit
