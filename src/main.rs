@@ -76,8 +76,8 @@ struct CreateArgs {
     /// Session name
     name: String,
 
-    /// Select specific repos by name (can be repeated; defaults to all)
-    #[arg(long)]
+    /// Select specific repos by name (can be repeated)
+    #[arg(long, required = true)]
     repo: Vec<String>,
 
     /// Command to run in the workspace (default: $BOX_DEFAULT_CMD if set)
@@ -136,12 +136,7 @@ fn main() {
             } else {
                 Some(args.cmd)
             };
-            let repos = if args.repo.is_empty() {
-                None
-            } else {
-                Some(args.repo)
-            };
-            cmd_create(&args.name, cmd, repos)
+            cmd_create(&args.name, cmd, args.repo)
         }
         Some(Commands::Remove(args)) => cmd_remove(&args.name),
         Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
@@ -295,7 +290,7 @@ fn cmd_create_tui() -> Result<i32> {
             name,
             command,
             repos,
-        } => cmd_create(&name, command, Some(repos)),
+        } => cmd_create(&name, command, repos),
         _ => Ok(0),
     }
 }
@@ -375,11 +370,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn cmd_create(
-    name: &str,
-    cmd: Option<Vec<String>>,
-    repo_names: Option<Vec<String>>,
-) -> Result<i32> {
+fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> Result<i32> {
     session::validate_name(name)?;
 
     if session::session_exists(name)? {
@@ -388,24 +379,16 @@ fn cmd_create(
 
     // Resolve repos
     let all_repos = repo::list()?;
-    let selected_repos: Vec<repo::RepoEntry> = if let Some(names) = repo_names {
-        if names.is_empty() {
-            // TUI returned empty selection meaning use all
-            all_repos.clone()
-        } else {
-            let mut result = Vec::new();
-            for n in &names {
-                let entry = all_repos
-                    .iter()
-                    .find(|r| r.name == *n)
-                    .ok_or_else(|| anyhow::anyhow!("Repo '{}' not found in registry.", n))?;
-                result.push(entry.clone());
-            }
-            result
+    let selected_repos: Vec<repo::RepoEntry> = {
+        let mut result = Vec::new();
+        for n in &repo_names {
+            let entry = all_repos
+                .iter()
+                .find(|r| r.name == *n)
+                .ok_or_else(|| anyhow::anyhow!("Repo '{}' not found in registry.", n))?;
+            result.push(entry.clone());
         }
-    } else {
-        // CLI with no --repo flags: use all registered repos
-        all_repos.clone()
+        result
     };
 
     if selected_repos.is_empty() {
@@ -916,10 +899,11 @@ mod tests {
 
     #[test]
     fn test_new_name_only() {
-        let cli = parse(&["new", "my-session"]);
+        let cli = parse(&["new", "my-session", "--repo", "app"]);
         match cli.command {
             Some(Commands::New(args)) => {
                 assert_eq!(args.name, "my-session");
+                assert_eq!(args.repo, vec!["app"]);
                 assert!(args.cmd.is_empty());
             }
             other => panic!("expected New, got {:?}", other),
@@ -928,7 +912,16 @@ mod tests {
 
     #[test]
     fn test_new_with_command() {
-        let cli = parse(&["new", "my-session", "--", "bash", "-c", "echo hi"]);
+        let cli = parse(&[
+            "new",
+            "my-session",
+            "--repo",
+            "app",
+            "--",
+            "bash",
+            "-c",
+            "echo hi",
+        ]);
         match cli.command {
             Some(Commands::New(args)) => {
                 assert_eq!(args.name, "my-session");
@@ -941,6 +934,12 @@ mod tests {
     #[test]
     fn test_new_requires_name() {
         let result = try_parse(&["new"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_new_requires_repo() {
+        let result = try_parse(&["new", "my-session"]);
         assert!(result.is_err());
     }
 
