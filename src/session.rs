@@ -45,7 +45,7 @@ pub fn sessions_dir() -> Result<PathBuf> {
 }
 
 const RESERVED_NAMES: &[&str] = &[
-    "new", "remove", "exec", "upgrade", "path", "config", "list", "ls", "repo",
+    "new", "remove", "exec", "edit", "upgrade", "path", "config", "list", "ls", "repo",
 ];
 
 pub fn validate_name(name: &str) -> Result<()> {
@@ -272,6 +272,19 @@ pub fn list() -> Result<Vec<SessionSummary>> {
     }
 
     Ok(sessions)
+}
+
+pub fn update_repos(name: &str, repos: &[String]) -> Result<()> {
+    let dir = sessions_dir()?.join(name);
+    if !dir.is_dir() {
+        bail!("Session '{}' not found.", name);
+    }
+    if repos.is_empty() {
+        let _ = fs::remove_file(dir.join("repos"));
+    } else {
+        fs::write(dir.join("repos"), repos.join("\n"))?;
+    }
+    Ok(())
 }
 
 pub fn remove_dir(name: &str) -> Result<()> {
