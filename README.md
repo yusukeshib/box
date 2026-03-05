@@ -6,22 +6,24 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-Sandboxed git workspaces for development. Clone, branch, break things — your repo stays untouched.
+A CLI tool that manages workspaces via `git clone --local`. Multi-repo support included.
 
 ![demo](./demo.gif)
 
-## Why box?
+## What is box?
 
-Box gives you **isolated** git workspaces with **session tracking** — so you can freely experiment without touching your original repository.
+Box creates and manages named workspaces using `git clone --local`.
 
-Each session gets its own workspace. By default, `git clone --local` creates a fully independent repo with hardlinks — fast even for large repos, and nothing you do can affect the original. Alternatively, `--strategy worktree` uses `git worktree` for even faster, space-efficient workspaces that share the object store.
+- Register repos with `box repo add`, then create sessions — each session clones repos into `~/.box/workspaces/<session>/`
+- Multiple repos can be grouped into a single session
+- Each clone has its own `.git`, so the original repo is never affected
 
 ## Features
 
-- **Isolated git workspaces** — `git clone --local` (default) or `git worktree` for per-session workspaces; host files are never modified
-- **Session tracking** — metadata tracks project directory, command, strategy, and creation time
-- **Multi-repo workspaces** — register repos and create workspaces spanning multiple repos
-- **Shell integration** — `cd` into workspaces automatically
+- **`git clone --local` workspaces** — fast cloning with hardlinks, fully independent `.git`
+- **Multi-repo sessions** — group multiple repos into one workspace
+- **Interactive TUI** — select repos, enter session name and command, with history
+- **Shell integration** — completions and `cd` wrapper for zsh/bash
 
 ## Requirements
 
@@ -60,65 +62,50 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 ## Quick Start
 
 ```bash
-box new my-feature
-# Creates an isolated git workspace and cd's into it
-```
+# 1. Register a repo
+box repo add ~/projects/my-app
 
-Box must be run inside a git repository. It clones the current repo into `~/.box/workspaces/<name>/`.
+# 2. Create a session via TUI
+box
 
-```bash
-# Work in the isolated workspace...
-$ git checkout -b experiment
-$ make test  # break things freely
+# 3. Or create via CLI
+box new my-feature --repo my-app -- make test
 
-# Done? Clean up
+# 4. Clean up
 box remove my-feature
-```
-
-Running `box` with no arguments launches the interactive TUI. If sessions exist, you can select one to resume; otherwise it prompts to create one.
-
-## Session Naming
-
-Each session gets a simple name:
-
-```bash
-box new my-feature
-box new my-feature -- make test
 ```
 
 ## Usage
 
 ```bash
-box                                    Interactive TUI session manager
-box new [name] [options] [-- cmd...]   Create a new session
+box                                    Interactive TUI (create new sessions)
+box new <name> --repo <r> [-- cmd...]  Create a new session
 box edit <name>                        Add/remove repos in a session
-box exec <name> -- <cmd...>            Run a command in a session
+box exec <name> -- <cmd...>            Run a command in a session workspace
 box list [options]                     List sessions (alias: ls)
-box remove <name>                      Remove a session or workspace
-box cd <name>                          Print host project directory
+box remove <name>                      Remove a session and its workspace
+box cd <name>                          cd into the session workspace
 box repo add [path]                    Register a git repo
 box repo remove <name>                 Unregister a repo
 box repo list                          List registered repos (alias: ls)
-box config zsh|bash                    Output shell completions
+box config zsh|bash                    Output shell configuration
 box upgrade                            Upgrade to latest version
 ```
 
 ### Create a session
 
 ```bash
-# Interactive prompt (asks for name, command)
-box new
+# With a command
+box new my-feature --repo my-app -- make test
 
-# With a specific command
-box new my-feature -- make test
+# Multiple repos
+box new my-feature --repo frontend --repo backend
 
-# Multi-repo workspace (select specific repos)
-box new my-feature --repo app-a --repo app-b
-
-# Use git worktree instead of clone (faster, shares object store)
-box new my-feature --strategy worktree
-BOX_STRATEGY=worktree box new my-feature
+# Minimal
+box new my-feature --repo my-app
 ```
+
+`--repo` is required. To create sessions interactively, use `box` (no arguments) to launch the TUI.
 
 ### Edit session repos
 
@@ -133,14 +120,29 @@ box list                        # List all sessions
 box ls                          # Alias
 box list -q                     # Names only (for scripting)
 box list -p                     # Only sessions for the current project
-box remove my-feature           # Remove session, workspace, and data
+box remove my-feature           # Remove session and workspace
 ```
 
-### Navigate between workspaces
+### Navigate to a workspace
 
 ```bash
-box cd my-feature               # Print the host project directory
+box cd my-feature               # cd into the session workspace
 ```
+
+With shell integration enabled (`eval "$(box config zsh)"`), `box cd` changes your working directory. Without it, the workspace path is printed to stdout.
+
+## Multi-repo Workspaces
+
+Register repos, then reference them by name when creating sessions:
+
+```bash
+box repo add ~/projects/frontend
+box repo add ~/projects/backend
+
+box new my-feature --repo frontend --repo backend
+```
+
+Each repo is cloned into `~/.box/workspaces/<session>/<repo>/`. For single-repo sessions, the workspace path resolves directly to the repo subdirectory.
 
 ## Options
 
@@ -148,25 +150,24 @@ box cd my-feature               # Print the host project directory
 
 | Option | Description |
 |--------|-------------|
-| `--strategy <strategy>` | Workspace strategy: `clone` (default) or `worktree`. Overrides `$BOX_STRATEGY` |
-| `--repo <name>` | Select specific repos (repeatable). Only with registered repos |
-| `-- cmd...` | Command to run (default: `$BOX_DEFAULT_CMD` if set) |
+| `<name>` | Session name (required) |
+| `--repo <name>` | Repos to clone (required, repeatable) |
+| `-- cmd...` | Command to run in the workspace (default: `$BOX_DEFAULT_CMD` if set) |
 
 ### `box list`
 
 | Option | Description |
 |--------|-------------|
 | `--project`, `-p` | Show only sessions for the current project directory |
-| `--quiet`, `-q` | Only print session names (useful for scripting) |
+| `--quiet`, `-q` | Only print session names |
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
 | `BOX_DEFAULT_CMD` | Default command for new sessions, used when no `-- cmd` is provided |
-| `BOX_STRATEGY` | Workspace strategy: `clone` (default) or `worktree` |
 
-## Shell Completions
+## Shell Integration
 
 ```bash
 # Zsh (~/.zshrc)
@@ -176,54 +177,50 @@ eval "$(box config zsh)"
 eval "$(box config bash)"
 ```
 
+This provides tab completions and a `box` shell function that enables `box cd` to change your working directory.
+
 ## How It Works
 
 ```
-your-repo/          box new my-feature            ~/.box/workspaces/my-feature/
-  .git/        ──── git clone --local ────>         .git/  (independent)
-  src/                                              src/   (hardlinked)
-  ...                                               ...
+registered repos      box new my-feature        ~/.box/workspaces/my-feature/
+  frontend/      ──── git clone --local ────>      frontend/
+  backend/                                         backend/
 ```
 
-By default, `git clone --local` creates a fully independent git repo using hardlinks for file objects. The clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace cannot affect your original repository.
-
-With `--strategy worktree`, box uses `git worktree add --detach` instead. This shares the object store with the parent repo, making workspace creation faster and more space-efficient. The tradeoff is that worktrees share refs with the parent — use this when you want lightweight workspaces and don't need full git isolation.
+`git clone --local` creates an independent git repo using hardlinks for file objects. Each clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace do not affect the original.
 
 | Aspect | Detail |
 |--------|--------|
-| Workspace location | `~/.box/workspaces/<name>/` |
-| Session metadata | `~/.box/sessions/<name>/` |
-| Git isolation | Full with `clone` (default); shared object store with `worktree` |
-| Cleanup | `box remove` deletes workspace and session |
+| Workspace location | `~/.box/workspaces/<session>/` |
+| Session metadata | `~/.box/sessions/<session>/` |
+| Clone method | `git clone --local` (independent `.git`, hardlinked objects) |
+| Cleanup | `box remove` deletes workspace and session data |
 
 ## Design Decisions
 
 <details>
-<summary><strong>Why <code>git clone --local</code> as the default?</strong></summary>
+<summary><strong>Why <code>git clone --local</code>?</strong></summary>
 
-| Strategy | Trade-off |
-|----------|-----------|
-| **Bind-mount the host repo** | No isolation at all; modifications affect your actual files |
-| **git worktree** | Shares the `.git` directory with the host; checkout, reset, and rebase can affect host branches and refs |
-| **Bare-git mount** | Still shares state; branch creates/deletes affect the host |
-| **Branch-only isolation** | Nothing stops destructive git commands on shared refs |
-| **Full copy (`cp -r`)** | Truly isolated but slow for large repos |
+| Alternative | Trade-off |
+|-------------|-----------|
+| **Bind-mount** | No isolation; modifications affect original files |
+| **git worktree** | Shares `.git` with host; checkout/reset/rebase can affect host refs |
+| **Bare-git mount** | Shares state; branch operations affect host |
+| **Full copy (`cp -r`)** | Independent but slow for large repos |
 
-`git clone --local` is fully independent (own `.git`), fast (hardlinks), complete (full history), and simple (no wrapper scripts).
-
-That said, `git worktree` is available via `--strategy worktree` for cases where speed and disk savings matter more than full isolation.
+`git clone --local` is independent (own `.git`), fast (hardlinks), complete (full history), and simple (no wrapper scripts).
 
 </details>
 
 ## Claude Code Integration
 
-Box works well with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for running AI agents in isolated workspaces:
+Box works well with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for running AI agents in independent workspaces:
 
 ```bash
-box new ai-experiment -- claude
+box new ai-experiment --repo my-app -- claude
 ```
 
-Everything the agent does stays in the workspace. Delete the session when you're done.
+Everything the agent does stays in the workspace. Delete the session when done.
 
 ## License
 

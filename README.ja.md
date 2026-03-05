@@ -6,22 +6,24 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-開発用の隔離されたgitワークスペース。クローンして、ブランチして、壊しても — 元のリポジトリは無傷。
+`git clone --local`でワークスペースを管理するCLIツール。複数リポジトリ対応。
 
 ![demo](./demo.gif)
 
-## なぜ box？
+## boxとは？
 
-Boxは**隔離された**gitワークスペースと**セッション管理**を提供します — 元のリポジトリに触れることなく自由に実験できます。
+Boxは`git clone --local`を使って名前付きワークスペースを作成・管理するツールです。
 
-各セッションは独自のワークスペースを取得します。デフォルトでは `git clone --local` がハードリンクを使って完全に独立したリポジトリを作成します — 大きなリポジトリでも高速で、何をしても元のリポジトリには影響しません。また、`--strategy worktree` を使えば `git worktree` によるさらに高速で省スペースなワークスペースも利用できます。
+- `box repo add`でリポジトリを登録し、セッションを作成すると`~/.box/workspaces/<session>/`にクローンされる
+- 複数リポジトリを1つのセッションにまとめられる
+- 各クローンは独立した`.git`を持つので、元リポジトリに影響しない
 
 ## 特徴
 
-- **隔離されたgitワークスペース** — `git clone --local`（デフォルト）または `git worktree` でセッションごとにワークスペースを作成。ホストのファイルは変更されない
-- **セッション管理** — プロジェクトディレクトリ、コマンド、戦略、作成日時をメタデータで追跡
-- **マルチリポジトリワークスペース** — リポジトリを登録し、複数リポジトリにまたがるワークスペースを作成
-- **シェル連携** — ワークスペースへの自動cd
+- **`git clone --local`ワークスペース** — ハードリンクによる高速クローン、独立した`.git`
+- **マルチリポセッション** — 複数リポジトリを1つのワークスペースにまとめる
+- **インタラクティブTUI** — リポジトリ選択、セッション名・コマンド入力、履歴対応
+- **シェル連携** — zsh/bashの補完と`cd`ラッパー
 
 ## 必要なもの
 
@@ -60,65 +62,50 @@ nix run github:yusukeshib/box
 ## クイックスタート
 
 ```bash
-box new my-feature
-# 隔離されたgitワークスペースを作成し、その中にcdする
-```
+# 1. リポジトリを登録
+box repo add ~/projects/my-app
 
-Boxはgitリポジトリ内で実行する必要があります。現在のリポジトリを `~/.box/workspaces/<name>/` にクローンします。
+# 2. TUIでセッション作成
+box
 
-```bash
-# 隔離されたワークスペースで作業...
-$ git checkout -b experiment
-$ make test  # 自由に壊してOK
+# 3. またはCLIで作成
+box new my-feature --repo my-app -- make test
 
-# 完了？クリーンアップ
+# 4. クリーンアップ
 box remove my-feature
-```
-
-引数なしで `box` を実行するとインタラクティブTUIが起動します。セッションがある場合は選択して再開、ない場合は作成プロンプトが表示されます。
-
-## セッション名
-
-各セッションはシンプルな名前を持ちます：
-
-```bash
-box new my-feature
-box new my-feature -- make test
 ```
 
 ## 使い方
 
 ```bash
-box                                    インタラクティブTUIセッションマネージャ
-box new [name] [options] [-- cmd...]   新しいセッションを作成
+box                                    インタラクティブTUI（新規セッション作成）
+box new <name> --repo <r> [-- cmd...]  新しいセッションを作成
 box edit <name>                        セッションのリポジトリを追加・削除
-box exec <name> -- <cmd...>            セッションでコマンドを実行
-box list [options]                     セッション一覧を表示（エイリアス: ls）
-box remove <name>                      セッションまたはワークスペースを削除
-box cd <name>                          ホストのプロジェクトディレクトリを表示
+box exec <name> -- <cmd...>            セッションのワークスペースでコマンドを実行
+box list [options]                     セッション一覧（エイリアス: ls）
+box remove <name>                      セッションとワークスペースを削除
+box cd <name>                          セッションのワークスペースにcd
 box repo add [path]                    gitリポジトリを登録
 box repo remove <name>                 リポジトリの登録を解除
 box repo list                          登録リポジトリ一覧（エイリアス: ls）
-box config zsh|bash                    シェル補完を出力
+box config zsh|bash                    シェル設定を出力
 box upgrade                            最新版にアップグレード
 ```
 
 ### セッションの作成
 
 ```bash
-# 対話型プロンプト（名前、コマンドを入力）
-box new
-
 # コマンドを指定して作成
-box new my-feature -- make test
+box new my-feature --repo my-app -- make test
 
-# マルチリポジトリワークスペース（特定のリポジトリを選択）
-box new my-feature --repo app-a --repo app-b
+# 複数リポジトリ
+box new my-feature --repo frontend --repo backend
 
-# cloneの代わりにgit worktreeを使用（より高速、オブジェクトストアを共有）
-box new my-feature --strategy worktree
-BOX_STRATEGY=worktree box new my-feature
+# 最小限
+box new my-feature --repo my-app
 ```
+
+`--repo`は必須です。対話的にセッションを作成するには、引数なしで`box`を実行してTUIを起動してください。
 
 ### セッションのリポジトリを編集
 
@@ -133,14 +120,29 @@ box list                        # 全セッションを一覧表示
 box ls                          # エイリアス
 box list -q                     # 名前のみ（スクリプト用途）
 box list -p                     # 現在のプロジェクトのセッションのみ
-box remove my-feature           # セッション、ワークスペース、データを削除
+box remove my-feature           # セッションとワークスペースを削除
 ```
 
-### ワークスペース間のナビゲーション
+### ワークスペースへの移動
 
 ```bash
-box cd my-feature               # ホストプロジェクトディレクトリを表示
+box cd my-feature               # セッションのワークスペースにcd
 ```
+
+シェル連携を有効にしている場合（`eval "$(box config zsh)"`）、`box cd`で作業ディレクトリが切り替わります。未設定の場合はワークスペースのパスが標準出力に表示されます。
+
+## マルチリポワークスペース
+
+リポジトリを登録し、セッション作成時に名前で指定します：
+
+```bash
+box repo add ~/projects/frontend
+box repo add ~/projects/backend
+
+box new my-feature --repo frontend --repo backend
+```
+
+各リポジトリは`~/.box/workspaces/<session>/<repo>/`にクローンされます。単一リポジトリの場合、ワークスペースパスはリポジトリのサブディレクトリに直接解決されます。
 
 ## オプション
 
@@ -148,25 +150,24 @@ box cd my-feature               # ホストプロジェクトディレクトリ�
 
 | オプション | 説明 |
 |--------|-------------|
-| `--strategy <strategy>` | ワークスペース戦略: `clone`（デフォルト）または `worktree`。`$BOX_STRATEGY` を上書き |
-| `--repo <name>` | 特定のリポジトリを選択（複数指定可）。登録済みリポジトリのみ |
-| `-- cmd...` | 実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD` が設定されている場合はそれを使用） |
+| `<name>` | セッション名（必須） |
+| `--repo <name>` | クローンするリポジトリ（必須、複数指定可） |
+| `-- cmd...` | ワークスペースで実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD`が設定されていればそれを使用） |
 
 ### `box list`
 
 | オプション | 説明 |
 |--------|-------------|
-| `--project`, `-p` | 現在のプロジェクトディレクトリのセッションのみ表示 |
-| `--quiet`, `-q` | セッション名のみ出力（スクリプト用途に便利） |
+| `--project`, `-p` | 現在のプロジェクトのセッションのみ表示 |
+| `--quiet`, `-q` | セッション名のみ出力 |
 
 ## 環境変数
 
 | 変数 | 説明 |
 |----------|-------------|
-| `BOX_DEFAULT_CMD` | 新規セッションのデフォルトコマンド。`-- cmd` が指定されていない場合に使用 |
-| `BOX_STRATEGY` | ワークスペース戦略: `clone`（デフォルト）または `worktree` |
+| `BOX_DEFAULT_CMD` | 新規セッションのデフォルトコマンド。`-- cmd`が指定されていない場合に使用 |
 
-## シェル補完
+## シェル連携
 
 ```bash
 # Zsh (~/.zshrc)
@@ -176,54 +177,50 @@ eval "$(box config zsh)"
 eval "$(box config bash)"
 ```
 
+タブ補完と、`box cd`で作業ディレクトリを切り替えるための`box`シェル関数が提供されます。
+
 ## 仕組み
 
 ```
-your-repo/          box new my-feature            ~/.box/workspaces/my-feature/
-  .git/        ──── git clone --local ────>         .git/  (独立)
-  src/                                              src/   (ハードリンク)
-  ...                                               ...
+登録済みリポジトリ     box new my-feature        ~/.box/workspaces/my-feature/
+  frontend/       ──── git clone --local ────>      frontend/
+  backend/                                          backend/
 ```
 
-デフォルトでは、`git clone --local` がハードリンクを使って完全に独立したgitリポジトリを作成します。クローンは独自の `.git` ディレクトリを持つため、ワークスペース内でのコミット、ブランチ操作、リセット、破壊的操作が元のリポジトリに影響することはありません。
-
-`--strategy worktree` を指定すると、代わりに `git worktree add --detach` を使用します。親リポジトリとオブジェクトストアを共有するため、ワークスペースの作成がより高速で省スペースになります。トレードオフとして、worktreeは親リポジトリとrefを共有します — 完全なgit隔離よりも軽量なワークスペースが必要な場合に使用してください。
+`git clone --local`はハードリンクを使って独立したgitリポジトリを作成します。各クローンは独自の`.git`ディレクトリを持つため、ワークスペース内でのコミット、ブランチ操作、リセットなどが元のリポジトリに影響することはありません。
 
 | 項目 | 詳細 |
 |--------|--------|
-| ワークスペースの場所 | `~/.box/workspaces/<name>/` |
-| セッションメタデータ | `~/.box/sessions/<name>/` |
-| Git隔離 | `clone`（デフォルト）で完全隔離、`worktree` ではオブジェクトストアを共有 |
-| クリーンアップ | `box remove` でワークスペースとセッションデータを削除 |
+| ワークスペースの場所 | `~/.box/workspaces/<session>/` |
+| セッションメタデータ | `~/.box/sessions/<session>/` |
+| クローン方法 | `git clone --local`（独立した`.git`、ハードリンクされたオブジェクト） |
+| クリーンアップ | `box remove`でワークスペースとセッションデータを削除 |
 
 ## 設計上の判断
 
 <details>
-<summary><strong>なぜ <code>git clone --local</code> がデフォルト？</strong></summary>
+<summary><strong>なぜ <code>git clone --local</code>？</strong></summary>
 
-| 戦略 | トレードオフ |
-|------|-------------|
-| **ホストリポジトリをバインドマウント** | 隔離なし — 変更が実際のファイルに直接影響する |
-| **git worktree** | `.git` ディレクトリをホストと共有するため、checkout・reset・rebaseがホストのブランチやrefに影響する |
-| **bare-gitマウント** | 状態を共有するため、ブランチ作成・削除がホストに影響する |
-| **ブランチのみの隔離** | 共有refに対する破壊的なgitコマンドを防げない |
-| **完全コピー（`cp -r`）** | 完全に隔離されるが、大きなリポジトリでは遅い |
+| 代替手段 | トレードオフ |
+|----------|-------------|
+| **バインドマウント** | 隔離なし — 変更が元のファイルに直接影響 |
+| **git worktree** | `.git`をホストと共有。checkout/reset/rebaseがホストのrefに影響しうる |
+| **bare-gitマウント** | 状態を共有。ブランチ操作がホストに影響 |
+| **完全コピー（`cp -r`）** | 独立するが大きなリポジトリでは遅い |
 
-`git clone --local` は完全に独立（独自の `.git`）、高速（ハードリンク）、完全（全履歴）、シンプル（ラッパースクリプト不要）です。
-
-なお、速度やディスク節約が完全な隔離よりも重要な場合には、`--strategy worktree` で `git worktree` を利用できます。
+`git clone --local`は独立（独自の`.git`）、高速（ハードリンク）、完全（全履歴）、シンプル（ラッパースクリプト不要）です。
 
 </details>
 
 ## Claude Code連携
 
-Boxは[Claude Code](https://docs.anthropic.com/en/docs/claude-code)と組み合わせて、隔離されたワークスペースでAIエージェントを実行するのに適しています：
+Boxは[Claude Code](https://docs.anthropic.com/en/docs/claude-code)と組み合わせて、独立したワークスペースでAIエージェントを実行できます：
 
 ```bash
-box new ai-experiment -- claude
+box new ai-experiment --repo my-app -- claude
 ```
 
-エージェントが行うすべての操作はワークスペース内に留まります。完了したらセッションを削除すれば消えます。
+エージェントの操作はすべてワークスペース内に留まります。完了したらセッションを削除するだけです。
 
 ## ライセンス
 
