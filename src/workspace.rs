@@ -47,13 +47,11 @@ pub fn ensure_workspace_multi(
 }
 
 /// Remove a single repo subdirectory from a session workspace.
-pub fn remove_repo_from_workspace(home: &str, session_name: &str, repo_name: &str) {
-    let dir = Path::new(home)
-        .join(".box")
-        .join("workspaces")
-        .join(session_name)
-        .join(repo_name);
-    let _ = std::fs::remove_dir_all(&dir);
+pub fn remove_repo_from_workspace(session_name: &str, repo_name: &str) {
+    if let Ok(root) = config::box_root() {
+        let dir = root.join("workspaces").join(session_name).join(repo_name);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Re-point origin remote from local path to the real remote URL.

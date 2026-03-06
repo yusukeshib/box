@@ -460,7 +460,6 @@ fn cmd_edit(name: &str) -> Result<i32> {
 
     match tui::edit_session(current_repos)? {
         tui::TuiAction::Edit { repos: new_repos } => {
-            let home = config::home_dir()?;
             let all_repos = repo::list()?;
 
             // Determine added and removed repos
@@ -481,12 +480,12 @@ fn cmd_edit(name: &str) -> Result<i32> {
                     .iter()
                     .filter_map(|name| all_repos.iter().find(|r| r.name == *name).cloned())
                     .collect();
-                workspace::ensure_workspace_multi(&home, name, &repos_to_clone)?;
+                workspace::ensure_workspace_multi(name, &repos_to_clone)?;
             }
 
             // Remove workspace directories for removed repos
             for repo_name in &removed {
-                workspace::remove_repo_from_workspace(&home, name, repo_name);
+                workspace::remove_repo_from_workspace(name, repo_name);
             }
 
             // Update session metadata
