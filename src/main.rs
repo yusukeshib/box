@@ -174,8 +174,7 @@ fn main() {
 }
 
 fn run_local_command(name: &str, cmd: &[String]) -> Result<i32> {
-    let home = config::home_dir()?;
-    let workspace = resolve_workspace_path(&home, name)?;
+    let workspace = resolve_workspace_path(name)?;
     let status = std::process::Command::new(&cmd[0])
         .args(&cmd[1..])
         .current_dir(workspace)
@@ -204,8 +203,8 @@ fn rename_zellij_tab(name: &str) {
 
 /// Resolve the workspace path for a session. For single-repo sessions,
 /// returns the repo subdirectory; for multi-repo, returns the workspace root.
-fn resolve_workspace_path(home: &str, name: &str) -> Result<PathBuf> {
-    let workspace_root = Path::new(home).join(".box").join("workspaces").join(name);
+fn resolve_workspace_path(name: &str) -> Result<PathBuf> {
+    let workspace_root = config::box_root()?.join("workspaces").join(name);
     let sess = session::load(name)?;
     if sess.repos.len() == 1 {
         Ok(workspace_root.join(&sess.repos[0]))
@@ -265,10 +264,8 @@ fn resolve_project_dir(
     sessions: &[session::SessionSummary],
 ) -> Option<String> {
     // Check if we're inside a workspace directory
-    if let Ok(home) = config::home_dir() {
-        let workspaces = std::path::PathBuf::from(&home)
-            .join(".box")
-            .join("workspaces");
+    if let Ok(root) = config::box_root() {
+        let workspaces = root.join("workspaces");
         if let Ok(workspaces) = std::fs::canonicalize(&workspaces) {
             if cwd.starts_with(&workspaces) {
                 // Extract the workspace name (first component after workspaces/)
@@ -436,8 +433,7 @@ fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> 
     let sess = session::Session::from(cfg);
     session::save(&sess)?;
 
-    let home = config::home_dir()?;
-    let workspace_path = workspace::ensure_workspace_multi(&home, name, &selected_repos)?;
+    let workspace_path = workspace::ensure_workspace_multi(name, &selected_repos)?;
     if selected_repos.len() == 1 {
         let repo_path = Path::new(&workspace_path).join(&selected_repos[0].name);
         output_cd_path(&repo_path.to_string_lossy());
@@ -464,7 +460,6 @@ fn cmd_edit(name: &str) -> Result<i32> {
 
     match tui::edit_session(current_repos)? {
         tui::TuiAction::Edit { repos: new_repos } => {
-            let home = config::home_dir()?;
             let all_repos = repo::list()?;
 
             // Determine added and removed repos
@@ -485,12 +480,12 @@ fn cmd_edit(name: &str) -> Result<i32> {
                     .iter()
                     .filter_map(|name| all_repos.iter().find(|r| r.name == *name).cloned())
                     .collect();
-                workspace::ensure_workspace_multi(&home, name, &repos_to_clone)?;
+                workspace::ensure_workspace_multi(name, &repos_to_clone)?;
             }
 
             // Remove workspace directories for removed repos
             for repo_name in &removed {
-                workspace::remove_repo_from_workspace(&home, name, repo_name);
+                workspace::remove_repo_from_workspace(name, repo_name);
             }
 
             // Update session metadata
@@ -538,8 +533,7 @@ fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
         bail!("Session '{}' not found.", name);
     }
 
-    let home = config::home_dir()?;
-    let workspace_path = resolve_workspace_path(&home, name)?;
+    let workspace_path = resolve_workspace_path(name)?;
     let status = std::process::Command::new(&cmd[0])
         .args(&cmd[1..])
         .current_dir(workspace_path)
@@ -552,8 +546,7 @@ fn cmd_cd(name: &str) -> Result<i32> {
     if !session::session_exists(name)? {
         bail!("Session '{}' not found.", name);
     }
-    let home = config::home_dir()?;
-    let path = resolve_workspace_path(&home, name)?;
+    let path = resolve_workspace_path(name)?;
     output_cd_path(&path.to_string_lossy());
     rename_zellij_tab(name);
     Ok(0)
@@ -603,8 +596,9 @@ fn cmd_config_zsh() -> Result<i32> {
     print!(
         r#"__box_sessions() {{
     local -a sessions
-    if [[ -d "$HOME/.box/sessions" ]]; then
-        for sess in "$HOME/.box/sessions"/*(N/); do
+    local __box_root="${{BOX_ROOT:-$HOME/.box}}"
+    if [[ -d "$__box_root/sessions" ]]; then
+        for sess in "$__box_root/sessions"/*(N/); do
             if [[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]; then
                 local sess_name=${{sess:t}}
                 local desc=""
@@ -623,11 +617,12 @@ fn cmd_config_zsh() -> Result<i32> {
 
 __box_repos() {{
     local -a repos
-    if [[ -f "$HOME/.box/repos" ]]; then
+    local __box_root="${{BOX_ROOT:-$HOME/.box}}"
+    if [[ -f "$__box_root/repos" ]]; then
         while IFS= read -r line; do
             [[ -z "$line" ]] && continue
             repos+=("${{line##*/}}")
-        done < "$HOME/.box/repos"
+        done < "$__box_root/repos"
     fi
     if (( ${{#repos}} )); then
         _describe 'repo' repos
@@ -738,6 +733,7 @@ fn cmd_config_bash() -> Result<i32> {
 
     local subcommands="new edit remove exec list cd repo upgrade config"
     local session_cmds="edit remove exec cd"
+    local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
@@ -757,8 +753,8 @@ fn cmd_config_bash() -> Result<i32> {
         exec)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
-                if [[ -d "$HOME/.box/sessions" ]]; then
-                    for sess in "$HOME/.box/sessions"/*/; do
+                if [[ -d "$__box_root/sessions" ]]; then
+                    for sess in "$__box_root/sessions"/*/; do
                         ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
                     done
                 fi
@@ -775,8 +771,8 @@ fn cmd_config_bash() -> Result<i32> {
         edit|remove|cd)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
-                if [[ -d "$HOME/.box/sessions" ]]; then
-                    for sess in "$HOME/.box/sessions"/*/; do
+                if [[ -d "$__box_root/sessions" ]]; then
+                    for sess in "$__box_root/sessions"/*/; do
                         ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
                     done
                 fi
@@ -790,11 +786,11 @@ fn cmd_config_bash() -> Result<i32> {
                 case "${{words[2]}}" in
                     remove)
                         local repos=""
-                        if [[ -f "$HOME/.box/repos" ]]; then
+                        if [[ -f "$__box_root/repos" ]]; then
                             while IFS= read -r line; do
                                 [[ -z "$line" ]] && continue
                                 repos+=" ${{line##*/}}"
-                            done < "$HOME/.box/repos"
+                            done < "$__box_root/repos"
                         fi
                         COMPREPLY=($(compgen -W "$repos" -- "$cur"))
                         ;;
