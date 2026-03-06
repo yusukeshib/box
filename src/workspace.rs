@@ -1,13 +1,12 @@
 use anyhow::{bail, Result};
-use std::path::Path;
 use std::process::Command;
 
 use crate::config;
 
 /// Remove the workspace directory for a session.
 pub fn remove_workspace(name: &str) {
-    if let Ok(home) = config::home_dir() {
-        let dir = Path::new(&home).join(".box").join("workspaces").join(name);
+    if let Ok(root) = config::box_root() {
+        let dir = root.join("workspaces").join(name);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
@@ -15,14 +14,10 @@ pub fn remove_workspace(name: &str) {
 /// Create a multi-repo workspace. Each repo is cloned into a subdirectory
 /// of `~/.box/workspaces/<session>/`. Returns the session workspace root path.
 pub fn ensure_workspace_multi(
-    home: &str,
     session_name: &str,
     repos: &[crate::repo::RepoEntry],
 ) -> Result<String> {
-    let root = Path::new(home)
-        .join(".box")
-        .join("workspaces")
-        .join(session_name);
+    let root = config::box_root()?.join("workspaces").join(session_name);
     std::fs::create_dir_all(&root)?;
 
     #[cfg(unix)]

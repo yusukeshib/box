@@ -38,10 +38,7 @@ pub struct SessionSummary {
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
-    let dir = PathBuf::from(config::home_dir()?)
-        .join(".box")
-        .join("sessions");
-    Ok(dir)
+    Ok(config::box_root()?.join("sessions"))
 }
 
 const RESERVED_NAMES: &[&str] = &[

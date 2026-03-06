@@ -1,6 +1,6 @@
 # VHS demo tape for box
 # Run: vhs demo.tape
-# Prerequisites: Docker running, inside a git repo
+# Prerequisites: inside a git repo with box installed
 
 Output demo.gif
 
@@ -11,74 +11,63 @@ Set Height 700
 Set Padding 20
 Set TypingSpeed 60ms
 
-# ── 1. Launch TUI session manager ──────────────────────────────
-
+# Set up environment silently
+Hide
+Type "export PATH=$HOME/.cargo/bin:$PATH"
+Enter
+Sleep 500ms
+Type "export BOX_ROOT=/tmp/box-demo"
+Enter
+Sleep 500ms
+Type 'eval "$(box config bash)"'
+Enter
+Sleep 500ms
+Type "box repo add ."
+Enter
 Sleep 1000ms
-Type "box"
+Type "clear"
+Enter
+Sleep 500ms
+Show
+
+# ── 1. Create a new session ──────────────────────────────────
+
+Sleep 500ms
+Type "box new my-feature --repo box"
 Sleep 500ms
 Enter
 
-Sleep 1500ms
-
-# ── 2. Create a new session via TUI ─────────────────────────────
-
-Down
-Sleep 500ms
-Up
-Sleep 500ms
-
-# "New box..." is already selected, press Enter
-Enter
-Sleep 1500ms
-
-# Type session name
-Type "my-feature"
-Sleep 500ms
-Enter
-Sleep 1500ms
- 
-# Accept default image (alpine:latest)
-Enter
-Sleep 1500ms
-
-# Accept default command (empty)
-Type "zsh"
-Sleep 1000ms
-Backspace 3
-Sleep 500ms
-Enter
-Sleep 1500ms
-
-# Wait for workspace clone + container start
-Wait+Screen@5s /\#/
 Sleep 3000ms
- 
-Enter
-Sleep 500ms
-Type "you are in a box session!"
-Sleep 500ms
-Backspace 25
-Sleep 500ms
-Enter
-Sleep 500ms
-Enter
-Sleep 1500ms
 
-# ── 3. Work inside the container ───────────────────────────────
+# ── 2. Explore the isolated workspace ────────────────────────
 
 Type "ls"
 Sleep 200ms
 Enter
-Wait+Screen@5s /\#/
-Sleep 500ms
+Sleep 1500ms
 
+Type "git log --oneline -5"
+Sleep 200ms
 Enter
-Sleep 500ms
-Type "exit"
-Sleep 500ms
+Sleep 1500ms
+
+Type "git status"
+Sleep 200ms
 Enter
-Sleep 500ms
+Sleep 1500ms
+
+# ── 3. List sessions ─────────────────────────────────────────
+
+Type "box list"
+Sleep 200ms
 Enter
-Wait+Screen@5s /\>/
- 
-Sleep 5s
+Sleep 2000ms
+
+# ── 4. Clean up ──────────────────────────────────────────────
+
+Type "box remove my-feature"
+Sleep 200ms
+Enter
+Sleep 2000ms
+
+Sleep 3s

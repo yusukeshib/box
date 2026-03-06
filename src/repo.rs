@@ -12,8 +12,7 @@ pub struct RepoEntry {
 }
 
 pub fn repos_file() -> Result<PathBuf> {
-    let home = config::home_dir()?;
-    Ok(PathBuf::from(home).join(".box").join("repos"))
+    Ok(config::box_root()?.join("repos"))
 }
 
 pub fn list() -> Result<Vec<RepoEntry>> {

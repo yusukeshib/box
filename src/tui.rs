@@ -12,24 +12,15 @@ use crate::session;
 const MAX_COMMAND_HISTORY: usize = 100;
 
 fn last_selected_repos_path() -> Result<std::path::PathBuf> {
-    let home = config::home_dir()?;
-    Ok(std::path::PathBuf::from(home)
-        .join(".box")
-        .join("last_selected_repos"))
+    Ok(config::box_root()?.join("last_selected_repos"))
 }
 
 fn name_history_path() -> Result<std::path::PathBuf> {
-    let home = config::home_dir()?;
-    Ok(std::path::PathBuf::from(home)
-        .join(".box")
-        .join("name_history"))
+    Ok(config::box_root()?.join("name_history"))
 }
 
 fn command_history_path() -> Result<std::path::PathBuf> {
-    let home = config::home_dir()?;
-    Ok(std::path::PathBuf::from(home)
-        .join(".box")
-        .join("command_history"))
+    Ok(config::box_root()?.join("command_history"))
 }
 
 fn load_last_selected_repos() -> Vec<String> {
