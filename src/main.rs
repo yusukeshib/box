@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box edit my-feature                          # add/remove repos in a session\n  box exec my-feature -- ls -la                # run a command in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -32,8 +32,6 @@ enum Commands {
     Edit(EditArgs),
     /// Remove a session
     Remove(RemoveArgs),
-    /// Run a command in a session
-    Exec(ExecArgs),
     /// List sessions
     #[command(alias = "ls")]
     List(ListArgs),
@@ -100,16 +98,6 @@ struct RemoveArgs {
 }
 
 #[derive(clap::Args, Debug)]
-struct ExecArgs {
-    /// Session name
-    name: String,
-
-    /// Command to run in the workspace
-    #[arg(last = true, required = true)]
-    cmd: Vec<String>,
-}
-
-#[derive(clap::Args, Debug)]
 struct ListArgs {
     /// Show only sessions for the current project directory
     #[arg(long, short)]
@@ -148,7 +136,6 @@ fn main() {
         }
         Some(Commands::Edit(args)) => cmd_edit(&args.name),
         Some(Commands::Remove(args)) => cmd_remove(&args.name),
-        Some(Commands::Exec(args)) => cmd_exec(&args.name, &args.cmd),
         Some(Commands::List(args)) => cmd_list_sessions(&args),
         Some(Commands::Cd { name }) => cmd_cd(&name),
         Some(Commands::Repo { action }) => match action {
@@ -526,21 +513,6 @@ fn cmd_remove(name: &str) -> Result<i32> {
     Ok(0)
 }
 
-fn cmd_exec(name: &str, cmd: &[String]) -> Result<i32> {
-    session::validate_name(name)?;
-
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
-    }
-
-    let workspace_path = resolve_workspace_path(name)?;
-    let status = std::process::Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .current_dir(workspace_path)
-        .status()?;
-    Ok(status.code().unwrap_or(1))
-}
-
 fn cmd_cd(name: &str) -> Result<i32> {
     session::validate_name(name)?;
     if !session::session_exists(name)? {
@@ -644,7 +616,6 @@ _box() {{
                 'new:Create a new session'
                 'edit:Edit repos in an existing session'
                 'remove:Remove a session'
-                'exec:Run a command in a session'
                 'list:List sessions'
                 'cd:Print the host project directory for a session'
                 'repo:Manage registered repos'
@@ -659,11 +630,6 @@ _box() {{
                     _arguments \
                         '*--repo=[Select specific repo]:repo:__box_repos' \
                         '1:session name:' \
-                        '*:command:'
-                    ;;
-                exec)
-                    _arguments \
-                        '1:session name:__box_sessions' \
                         '*:command:'
                     ;;
                 list|ls)
@@ -731,8 +697,8 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new edit remove exec list cd repo upgrade config"
-    local session_cmds="edit remove exec cd"
+    local subcommands="new edit remove list cd repo upgrade config"
+    local session_cmds="edit remove cd"
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
     if [[ $cword -eq 1 ]]; then
@@ -749,17 +715,6 @@ fn cmd_config_bash() -> Result<i32> {
                     COMPREPLY=($(compgen -W "--repo" -- "$cur"))
                     ;;
             esac
-            ;;
-        exec)
-            if [[ $cword -eq 2 ]]; then
-                local sessions=""
-                if [[ -d "$__box_root/sessions" ]]; then
-                    for sess in "$__box_root/sessions"/*/; do
-                        ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
-                    done
-                fi
-                COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
-            fi
             ;;
         list|ls)
             case "$cur" in
@@ -1061,32 +1016,6 @@ mod tests {
     #[test]
     fn test_remove_rejects_unknown_flags() {
         let result = try_parse(&["remove", "my-session", "-d"]);
-        assert!(result.is_err());
-    }
-
-    // -- exec subcommand --
-
-    #[test]
-    fn test_exec_parses() {
-        let cli = parse(&["exec", "my-session", "--", "ls", "-la"]);
-        match cli.command {
-            Some(Commands::Exec(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert_eq!(args.cmd, vec!["ls", "-la"]);
-            }
-            other => panic!("expected Exec, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_exec_requires_name() {
-        let result = try_parse(&["exec"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_exec_requires_command() {
-        let result = try_parse(&["exec", "my-session"]);
         assert!(result.is_err());
     }
 
