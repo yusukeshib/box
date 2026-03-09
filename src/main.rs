@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box pull                                     # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -45,6 +45,8 @@ enum Commands {
         #[command(subcommand)]
         action: RepoAction,
     },
+    /// Fetch all branches and pull main for registered repos
+    Pull(PullArgs),
     /// Self-update to the latest version
     Upgrade,
     /// Output shell configuration (e.g. eval "$(box config zsh)")
@@ -98,6 +100,13 @@ struct RemoveArgs {
 }
 
 #[derive(clap::Args, Debug)]
+struct PullArgs {
+    /// Stash uncommitted changes before pulling
+    #[arg(long, short)]
+    force: bool,
+}
+
+#[derive(clap::Args, Debug)]
 struct ListArgs {
     /// Show only sessions for the current project directory
     #[arg(long, short)]
@@ -143,6 +152,7 @@ fn main() {
             RepoAction::Remove { name } => cmd_repo_remove(&name),
             RepoAction::List => cmd_repo_list(),
         },
+        Some(Commands::Pull(args)) => cmd_pull(&args),
         Some(Commands::Upgrade) => cmd_upgrade(),
         Some(Commands::Config { shell }) => match shell {
             ConfigShell::Zsh => cmd_config_zsh(),
@@ -618,6 +628,7 @@ _box() {{
                 'remove:Remove a session'
                 'list:List sessions'
                 'cd:Print the host project directory for a session'
+                'pull:Fetch all branches and pull main'
                 'repo:Manage registered repos'
                 'upgrade:Self-update to the latest version'
                 'config:Output shell configuration'
@@ -697,7 +708,7 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new edit remove list cd repo upgrade config"
+    local subcommands="new edit remove list cd pull repo upgrade config"
     local session_cmds="edit remove cd"
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
@@ -779,6 +790,67 @@ box() {{
 }}
 "#
     );
+    Ok(0)
+}
+
+fn cmd_pull(args: &PullArgs) -> Result<i32> {
+    let selected = match tui::select_repos("Select repos to pull (Space=toggle, Enter=confirm):")? {
+        Some(repos) => repos,
+        None => return Ok(0),
+    };
+
+    let all_repos = repo::list()?;
+
+    for name in &selected {
+        let entry = all_repos
+            .iter()
+            .find(|r| &r.name == name)
+            .ok_or_else(|| anyhow::anyhow!("Repo '{}' not found in registry.", name))?;
+
+        eprintln!("\x1b[1m{}\x1b[0m", entry.name);
+
+        // Stash uncommitted changes when --force is set
+        let mut stashed = false;
+        if args.force {
+            let output = std::process::Command::new("git")
+                .args(["-C", &entry.path, "status", "--porcelain"])
+                .output()?;
+            if !output.stdout.is_empty() {
+                let status = std::process::Command::new("git")
+                    .args(["-C", &entry.path, "stash", "--include-untracked"])
+                    .status()?;
+                if status.success() {
+                    stashed = true;
+                    eprintln!("  \x1b[33mstashed uncommitted changes\x1b[0m");
+                }
+            }
+        }
+
+        let status = std::process::Command::new("git")
+            .args(["-C", &entry.path, "fetch", "--all"])
+            .status()?;
+        if !status.success() {
+            eprintln!("  \x1b[31mfetch failed\x1b[0m");
+            continue;
+        }
+
+        let status = std::process::Command::new("git")
+            .args(["-C", &entry.path, "pull"])
+            .status()?;
+        if !status.success() {
+            eprintln!("  \x1b[31mpull failed\x1b[0m");
+        }
+
+        if stashed {
+            eprintln!(
+                "  \x1b[33mnote: run `git -C {} stash pop` to restore changes\x1b[0m",
+                entry.path
+            );
+        }
+
+        eprintln!();
+    }
+
     Ok(0)
 }
 
@@ -1034,6 +1106,41 @@ mod tests {
     fn test_cd_requires_name() {
         let result = try_parse(&["cd"]);
         assert!(result.is_err());
+    }
+
+    // -- pull subcommand --
+
+    #[test]
+    fn test_pull_subcommand_parses() {
+        let cli = parse(&["pull"]);
+        match cli.command {
+            Some(Commands::Pull(args)) => {
+                assert!(!args.force);
+            }
+            other => panic!("expected Pull, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pull_force_flag() {
+        let cli = parse(&["pull", "--force"]);
+        match cli.command {
+            Some(Commands::Pull(args)) => {
+                assert!(args.force);
+            }
+            other => panic!("expected Pull, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pull_force_short_flag() {
+        let cli = parse(&["pull", "-f"]);
+        match cli.command {
+            Some(Commands::Pull(args)) => {
+                assert!(args.force);
+            }
+            other => panic!("expected Pull, got {:?}", other),
+        }
     }
 
     // -- upgrade subcommand --
