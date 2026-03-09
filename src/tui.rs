@@ -93,6 +93,9 @@ pub enum TuiAction {
     Edit {
         repos: Vec<String>,
     },
+    Remove {
+        sessions: Vec<String>,
+    },
     Quit,
 }
 
@@ -738,6 +741,127 @@ pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
                         return Ok(TuiAction::Edit {
                             repos: selected_repos,
                         });
+                    }
+                }
+                KeyCode::Esc => {
+                    clear_viewport(&mut terminal, viewport_height)?;
+                    return Ok(TuiAction::Quit);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// TUI for selecting sessions to remove: shows checkbox list of all sessions.
+/// Returns `TuiAction::Remove { sessions }` or `TuiAction::Quit`.
+pub fn select_sessions() -> Result<TuiAction> {
+    let all_sessions = session::list()?;
+    if all_sessions.is_empty() {
+        anyhow::bail!("No sessions found.");
+    }
+
+    let count = all_sessions.len();
+    let viewport_height = (count as u16) + 1;
+
+    terminal::enable_raw_mode()?;
+    let _guard = TermGuard;
+
+    let options = TerminalOptions {
+        viewport: Viewport::Inline(viewport_height),
+    };
+    let mut terminal = Terminal::with_options(CrosstermBackend::new(io::stderr()), options)?;
+
+    let mut selected: Vec<bool> = vec![false; count];
+    let mut cursor_pos: usize = 0;
+    let mut footer_msg = String::new();
+
+    loop {
+        terminal.draw(|f| {
+            let area = f.area();
+
+            if !footer_msg.is_empty() {
+                let line = Line::from(Span::styled(
+                    footer_msg.as_str(),
+                    Style::default().fg(Color::Red),
+                ));
+                f.render_widget(line, area);
+                return;
+            }
+
+            let mut lines: Vec<Line> = Vec::new();
+            lines.push(Line::from(Span::styled(
+                "Select sessions to remove (Space=toggle, Enter=confirm):",
+                Style::default().bold(),
+            )));
+            for (i, sess) in all_sessions.iter().enumerate() {
+                let check = if selected[i] { "[x]" } else { "[ ]" };
+                let label = if sess.repos.is_empty() {
+                    sess.name.clone()
+                } else {
+                    format!("{} ({})", sess.name, sess.repos.join(", "))
+                };
+                let style = if i == cursor_pos {
+                    Style::default().reversed()
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(" {} {}", check, label),
+                    style,
+                )));
+            }
+            for (i, line) in lines.into_iter().enumerate() {
+                if (i as u16) < area.height {
+                    let row = Rect::new(area.x, area.y + i as u16, area.width, 1);
+                    f.render_widget(line, row);
+                }
+            }
+        })?;
+
+        if !footer_msg.is_empty() {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    footer_msg.clear();
+                }
+            }
+            continue;
+        }
+
+        if let Event::Key(key) = event::read()? {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                clear_viewport(&mut terminal, viewport_height)?;
+                return Ok(TuiAction::Quit);
+            }
+
+            match key.code {
+                KeyCode::Up => {
+                    cursor_pos = cursor_pos.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if cursor_pos + 1 < count {
+                        cursor_pos += 1;
+                    }
+                }
+                KeyCode::Char(' ') => {
+                    selected[cursor_pos] = !selected[cursor_pos];
+                }
+                KeyCode::Enter => {
+                    let chosen: Vec<String> = all_sessions
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| selected[*i])
+                        .map(|(_, s)| s.name.clone())
+                        .collect();
+                    if chosen.is_empty() {
+                        footer_msg = "At least one session must be selected.".to_string();
+                    } else {
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Remove { sessions: chosen });
                     }
                 }
                 KeyCode::Esc => {

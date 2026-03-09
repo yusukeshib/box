@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove my-feature                        # remove a session\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box pull                                     # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box pull                                     # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -95,8 +95,8 @@ struct EditArgs {
 
 #[derive(clap::Args, Debug)]
 struct RemoveArgs {
-    /// Session name
-    name: String,
+    /// Session name (opens interactive selector if omitted)
+    name: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -144,7 +144,10 @@ fn main() {
             cmd_create(&args.name, cmd, args.repo)
         }
         Some(Commands::Edit(args)) => cmd_edit(&args.name),
-        Some(Commands::Remove(args)) => cmd_remove(&args.name),
+        Some(Commands::Remove(args)) => match &args.name {
+            Some(name) => cmd_remove(name),
+            None => cmd_remove_tui(),
+        },
         Some(Commands::List(args)) => cmd_list_sessions(&args),
         Some(Commands::Cd { name }) => cmd_cd(&name),
         Some(Commands::Repo { action }) => match action {
@@ -523,6 +526,20 @@ fn cmd_remove(name: &str) -> Result<i32> {
     Ok(0)
 }
 
+fn cmd_remove_tui() -> Result<i32> {
+    match tui::select_sessions()? {
+        tui::TuiAction::Remove { sessions } => {
+            for name in &sessions {
+                workspace::remove_workspace(name);
+                session::remove_dir(name)?;
+                eprintln!("Session '{}' removed.", name);
+            }
+            Ok(0)
+        }
+        _ => Ok(0),
+    }
+}
+
 fn cmd_cd(name: &str) -> Result<i32> {
     session::validate_name(name)?;
     if !session::session_exists(name)? {
@@ -650,7 +667,12 @@ _box() {{
                         '--quiet[Only print session names]' \
                         '-q[Only print session names]'
                     ;;
-                edit|remove|cd)
+                remove)
+                    if (( CURRENT == 2 )); then
+                        __box_sessions
+                    fi
+                    ;;
+                edit|cd)
                     if (( CURRENT == 2 )); then
                         __box_sessions
                     fi
@@ -1073,16 +1095,21 @@ mod tests {
         let cli = parse(&["remove", "my-session"]);
         match cli.command {
             Some(Commands::Remove(args)) => {
-                assert_eq!(args.name, "my-session");
+                assert_eq!(args.name.as_deref(), Some("my-session"));
             }
             other => panic!("expected Remove, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_remove_requires_name() {
-        let result = try_parse(&["remove"]);
-        assert!(result.is_err());
+    fn test_remove_no_name_parses() {
+        let cli = parse(&["remove"]);
+        match cli.command {
+            Some(Commands::Remove(args)) => {
+                assert!(args.name.is_none());
+            }
+            other => panic!("expected Remove, got {:?}", other),
+        }
     }
 
     #[test]
