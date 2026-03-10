@@ -101,6 +101,9 @@ struct RemoveArgs {
 
 #[derive(clap::Args, Debug)]
 struct PullArgs {
+    /// Pull all registered repos without interactive selection
+    #[arg(long, short)]
+    all: bool,
     /// Stash uncommitted changes before pulling
     #[arg(long, short)]
     force: bool,
@@ -693,6 +696,13 @@ _box() {{
                         esac
                     fi
                     ;;
+                pull)
+                    _arguments \
+                        '--all[Pull all registered repos]' \
+                        '-a[Pull all registered repos]' \
+                        '--force[Stash uncommitted changes before pulling]' \
+                        '-f[Stash uncommitted changes before pulling]'
+                    ;;
                 config)
                     if (( CURRENT == 2 )); then
                         local -a shells
@@ -788,6 +798,13 @@ fn cmd_config_bash() -> Result<i32> {
                 esac
             fi
             ;;
+        pull)
+            case "$cur" in
+                -*)
+                    COMPREPLY=($(compgen -W "--all -a --force -f" -- "$cur"))
+                    ;;
+            esac
+            ;;
         config)
             if [[ $cword -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "zsh bash" -- "$cur"))
@@ -816,12 +833,20 @@ box() {{
 }
 
 fn cmd_pull(args: &PullArgs) -> Result<i32> {
-    let selected = match tui::select_repos("Select repos to pull (Space=toggle, Enter=confirm):")? {
-        Some(repos) => repos,
-        None => return Ok(0),
-    };
-
     let all_repos = repo::list()?;
+
+    let selected = if args.all {
+        if all_repos.is_empty() {
+            eprintln!("No repos registered. Use `box repo add` to register a repo.");
+            return Ok(1);
+        }
+        all_repos.iter().map(|r| r.name.clone()).collect()
+    } else {
+        match tui::select_repos("Select repos to pull (Space=toggle, Enter=confirm):")? {
+            Some(repos) => repos,
+            None => return Ok(0),
+        }
+    };
 
     for name in &selected {
         let entry = all_repos
@@ -1143,6 +1168,7 @@ mod tests {
         match cli.command {
             Some(Commands::Pull(args)) => {
                 assert!(!args.force);
+                assert!(!args.all);
             }
             other => panic!("expected Pull, got {:?}", other),
         }
@@ -1154,6 +1180,7 @@ mod tests {
         match cli.command {
             Some(Commands::Pull(args)) => {
                 assert!(args.force);
+                assert!(!args.all);
             }
             other => panic!("expected Pull, got {:?}", other),
         }
@@ -1164,6 +1191,43 @@ mod tests {
         let cli = parse(&["pull", "-f"]);
         match cli.command {
             Some(Commands::Pull(args)) => {
+                assert!(args.force);
+                assert!(!args.all);
+            }
+            other => panic!("expected Pull, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pull_all_flag() {
+        let cli = parse(&["pull", "--all"]);
+        match cli.command {
+            Some(Commands::Pull(args)) => {
+                assert!(args.all);
+                assert!(!args.force);
+            }
+            other => panic!("expected Pull, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pull_all_short_flag() {
+        let cli = parse(&["pull", "-a"]);
+        match cli.command {
+            Some(Commands::Pull(args)) => {
+                assert!(args.all);
+                assert!(!args.force);
+            }
+            other => panic!("expected Pull, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_pull_all_and_force_flags() {
+        let cli = parse(&["pull", "--all", "--force"]);
+        match cli.command {
+            Some(Commands::Pull(args)) => {
+                assert!(args.all);
                 assert!(args.force);
             }
             other => panic!("expected Pull, got {:?}", other),
