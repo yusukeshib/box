@@ -391,7 +391,8 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
 }
 
 fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> Result<i32> {
-    session::validate_name(name)?;
+    let name = session::validate_name(name)?;
+    let name = name.as_str();
 
     if session::session_exists(name)? {
         bail!("Session '{}' already exists.", name);
@@ -452,7 +453,8 @@ fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> 
 }
 
 fn cmd_edit(name: &str) -> Result<i32> {
-    session::validate_name(name)?;
+    let name = session::validate_name(name)?;
+    let name = name.as_str();
 
     if !session::session_exists(name)? {
         bail!("Session '{}' not found.", name);
@@ -511,7 +513,8 @@ fn cmd_edit(name: &str) -> Result<i32> {
 }
 
 fn cmd_remove(name: &str) -> Result<i32> {
-    session::validate_name(name)?;
+    let name = session::validate_name(name)?;
+    let name = name.as_str();
 
     if !session::session_exists(name)? {
         bail!("Session '{}' not found.", name);
@@ -544,7 +547,8 @@ fn cmd_remove_tui() -> Result<i32> {
 }
 
 fn cmd_cd(name: &str) -> Result<i32> {
-    session::validate_name(name)?;
+    let name = session::validate_name(name)?;
+    let name = name.as_str();
     if !session::session_exists(name)? {
         bail!("Session '{}' not found.", name);
     }
