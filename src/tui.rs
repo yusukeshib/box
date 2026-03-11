@@ -504,13 +504,18 @@ pub fn create_session() -> Result<TuiAction> {
                 },
                 Mode::Name => match key.code {
                     KeyCode::Enter => {
-                        let name = input.text.trim().to_string();
-                        if let Err(e) = session::validate_name(&name) {
-                            footer_msg = e.to_string();
-                            input = TextInput::new();
-                            name_history_index = None;
-                            name_saved_input.clear();
-                        } else if session::session_exists(&name).unwrap_or(false) {
+                        let raw_name = input.text.trim().to_string();
+                        let name = match session::validate_name(&raw_name) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                footer_msg = e.to_string();
+                                input = TextInput::new();
+                                name_history_index = None;
+                                name_saved_input.clear();
+                                continue;
+                            }
+                        };
+                        if session::session_exists(&name).unwrap_or(false) {
                             footer_msg = format!("Session '{}' already exists.", name);
                             input = TextInput::new();
                             name_history_index = None;

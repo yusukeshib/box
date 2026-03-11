@@ -45,32 +45,52 @@ const RESERVED_NAMES: &[&str] = &[
     "new", "remove", "edit", "pull", "upgrade", "path", "config", "list", "ls", "repo",
 ];
 
-pub fn validate_name(name: &str) -> Result<()> {
+/// Normalize a session name by replacing `/ # @ _` with `-` and collapsing
+/// consecutive hyphens. Returns the normalized name.
+pub fn normalize_name(name: &str) -> String {
+    let replaced: String = name
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '#' | '@' | '_') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    // Collapse consecutive hyphens
+    let mut result = String::with_capacity(replaced.len());
+    for c in replaced.chars() {
+        if c == '-' && result.ends_with('-') {
+            continue;
+        }
+        result.push(c);
+    }
+    // Trim leading/trailing hyphens
+    result.trim_matches('-').to_string()
+}
+
+pub fn validate_name(name: &str) -> Result<String> {
     if name.is_empty() {
         bail!("Session name is required.");
     }
-    if name.contains('/') {
-        bail!(
-            "Invalid session name '{}'. The '/' character is not allowed.",
-            name
-        );
+    let name = normalize_name(name);
+    if name.is_empty() {
+        bail!("Session name is required.");
     }
-    if RESERVED_NAMES.contains(&name) {
+    if RESERVED_NAMES.contains(&name.as_str()) {
         bail!(
             "'{}' is a reserved name and cannot be used as a session name.",
             name
         );
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         bail!(
-            "Invalid session name '{}'. Use only letters, digits, hyphens, and underscores.",
+            "Invalid session name '{}'. Use only letters, digits, hyphens, slashes, #, @, and underscores.",
             name
         );
     }
-    Ok(())
+    Ok(name)
 }
 
 pub fn session_exists(name: &str) -> Result<bool> {
@@ -323,17 +343,25 @@ mod tests {
 
     #[test]
     fn test_validate_name_valid() {
-        assert!(validate_name("my-session").is_ok());
-        assert!(validate_name("test_123").is_ok());
-        assert!(validate_name("a").is_ok());
-        assert!(validate_name("ABC").is_ok());
-        assert!(validate_name("hello-world_99").is_ok());
+        assert_eq!(validate_name("my-session").unwrap(), "my-session");
+        assert_eq!(validate_name("a").unwrap(), "a");
+        assert_eq!(validate_name("ABC").unwrap(), "ABC");
     }
 
     #[test]
-    fn test_validate_name_with_slash() {
-        let err = validate_name("my-feature/server").unwrap_err();
-        assert!(err.to_string().contains("'/' character is not allowed"));
+    fn test_validate_name_normalization() {
+        assert_eq!(validate_name("test_123").unwrap(), "test-123");
+        assert_eq!(validate_name("hello-world_99").unwrap(), "hello-world-99");
+        assert_eq!(
+            validate_name("my-feature/server").unwrap(),
+            "my-feature-server"
+        );
+        assert_eq!(validate_name("feat#123").unwrap(), "feat-123");
+        assert_eq!(validate_name("user@task").unwrap(), "user-task");
+        assert_eq!(validate_name("a/b#c@d_e").unwrap(), "a-b-c-d-e");
+        assert_eq!(validate_name("a//b").unwrap(), "a-b");
+        assert_eq!(validate_name("/leading").unwrap(), "leading");
+        assert_eq!(validate_name("trailing_").unwrap(), "trailing");
     }
 
     #[test]
@@ -370,12 +398,8 @@ mod tests {
     fn test_validate_name_invalid_chars() {
         let err = validate_name("bad name").unwrap_err();
         assert!(err.to_string().contains("Invalid session name"));
-        assert!(err.to_string().contains("bad name"));
 
         let err = validate_name("bad.name").unwrap_err();
-        assert!(err.to_string().contains("Invalid session name"));
-
-        let err = validate_name("bad@name").unwrap_err();
         assert!(err.to_string().contains("Invalid session name"));
     }
 
