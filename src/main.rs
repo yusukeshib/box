@@ -193,10 +193,17 @@ fn output_cd_path(path: &str) {
     }
 }
 
-fn rename_zellij_tab(name: &str) {
+fn rename_terminal_tab(name: &str) {
     if std::env::var_os("ZELLIJ").is_some() {
         let _ = std::process::Command::new("zellij")
             .args(["action", "rename-tab", name])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    } else if std::env::var_os("TMUX").is_some() {
+        let _ = std::process::Command::new("tmux")
+            .args(["rename-window", name])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -444,7 +451,7 @@ fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> 
     } else {
         output_cd_path(&workspace_path);
     }
-    rename_zellij_tab(name);
+    rename_terminal_tab(name);
 
     if !sess.command.is_empty() {
         return run_local_command(name, &sess.command);
@@ -554,7 +561,7 @@ fn cmd_cd(name: &str) -> Result<i32> {
     }
     let path = resolve_workspace_path(name)?;
     output_cd_path(&path.to_string_lossy());
-    rename_zellij_tab(name);
+    rename_terminal_tab(name);
     Ok(0)
 }
 
