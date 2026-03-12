@@ -31,6 +31,7 @@ enum Commands {
     /// Edit repos in an existing session
     Edit(EditArgs),
     /// Remove a session
+    #[command(alias = "rm")]
     Remove(RemoveArgs),
     /// List sessions
     #[command(alias = "ls")]
@@ -64,6 +65,7 @@ enum RepoAction {
         path: Option<String>,
     },
     /// Unregister a repo by name
+    #[command(alias = "rm")]
     Remove {
         /// Repo name
         name: String,
@@ -657,6 +659,7 @@ _box() {{
                 'new:Create a new session'
                 'edit:Edit repos in an existing session'
                 'remove:Remove a session'
+                'rm:Remove a session'
                 'list:List sessions'
                 'cd:Print the host project directory for a session'
                 'pull:Fetch all branches and pull main'
@@ -681,7 +684,7 @@ _box() {{
                         '--quiet[Only print session names]' \
                         '-q[Only print session names]'
                     ;;
-                remove)
+                remove|rm)
                     if (( CURRENT == 2 )); then
                         __box_sessions
                     fi
@@ -694,11 +697,11 @@ _box() {{
                 repo)
                     if (( CURRENT == 2 )); then
                         local -a repo_subcmds
-                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'list:List registered repos' 'ls:List registered repos')
+                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'rm:Unregister a repo' 'list:List registered repos' 'ls:List registered repos')
                         _describe 'repo subcommand' repo_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
-                            remove)
+                            remove|rm)
                                 __box_repos
                                 ;;
                             add)
@@ -751,8 +754,8 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new edit remove list cd pull repo upgrade config"
-    local session_cmds="edit remove cd"
+    local subcommands="new edit remove rm list cd pull repo upgrade config"
+    local session_cmds="edit remove rm cd"
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
     if [[ $cword -eq 1 ]]; then
@@ -777,7 +780,7 @@ fn cmd_config_bash() -> Result<i32> {
                     ;;
             esac
             ;;
-        edit|remove|cd)
+        edit|remove|rm|cd)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$__box_root/sessions" ]]; then
@@ -790,10 +793,10 @@ fn cmd_config_bash() -> Result<i32> {
             ;;
         repo)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove list ls" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${{words[2]}}" in
-                    remove)
+                    remove|rm)
                         local repos=""
                         if [[ -f "$__box_root/repos" ]]; then
                             while IFS= read -r line; do
@@ -1138,6 +1141,17 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_alias_rm() {
+        let cli = parse(&["rm", "my-session"]);
+        match cli.command {
+            Some(Commands::Remove(args)) => {
+                assert_eq!(args.name.as_deref(), Some("my-session"));
+            }
+            other => panic!("expected Remove, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_remove_no_name_parses() {
         let cli = parse(&["remove"]);
         match cli.command {
@@ -1361,6 +1375,19 @@ mod tests {
     #[test]
     fn test_repo_remove() {
         let cli = parse(&["repo", "remove", "my-app"]);
+        match cli.command {
+            Some(Commands::Repo {
+                action: RepoAction::Remove { name },
+            }) => {
+                assert_eq!(name, "my-app");
+            }
+            other => panic!("expected Repo Remove, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_repo_remove_alias_rm() {
+        let cli = parse(&["repo", "rm", "my-app"]);
         match cli.command {
             Some(Commands::Repo {
                 action: RepoAction::Remove { name },
