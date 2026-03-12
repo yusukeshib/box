@@ -35,6 +35,7 @@ pub fn ensure_workspace_multi(
             eprintln!("\x1b[2mcloning {}:\x1b[0m", repo.name);
             let status = Command::new("git")
                 .args(["clone", "--local", &repo.path, &dest_str])
+                .current_dir(&root)
                 .status()?;
             if !status.success() {
                 bail!("git clone --local failed for '{}'", repo.name);
