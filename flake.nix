@@ -13,7 +13,7 @@
 
         box = pkgs.rustPlatform.buildRustPackage {
           pname = "box";
-          version = "0.0.68";
+          version = "0.0.69";
 
           src = ./.;
 

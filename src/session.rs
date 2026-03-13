@@ -14,6 +14,7 @@ pub struct Session {
     pub command: Vec<String>,
     pub env: Vec<String>,
     pub repos: Vec<String>,
+    pub strategy: String,
 }
 
 impl From<config::BoxConfig> for Session {
@@ -24,6 +25,7 @@ impl From<config::BoxConfig> for Session {
             command: cfg.command,
             env: cfg.env,
             repos: cfg.repos,
+            strategy: "clone".to_string(),
         }
     }
 }
@@ -35,6 +37,7 @@ pub struct SessionSummary {
     pub command: String,
     pub created_at: String,
     pub repos: Vec<String>,
+    pub strategy: String,
 }
 
 pub fn sessions_dir() -> Result<PathBuf> {
@@ -128,6 +131,11 @@ pub fn save(session: &Session) -> Result<()> {
     } else {
         let _ = fs::remove_file(dir.join("repos"));
     }
+    if session.strategy != "clone" {
+        fs::write(dir.join("strategy"), &session.strategy)?;
+    } else {
+        let _ = fs::remove_file(dir.join("strategy"));
+    }
     Ok(())
 }
 
@@ -207,12 +215,17 @@ pub fn load(name: &str) -> Result<Session> {
         })
         .unwrap_or_default();
 
+    let strategy = fs::read_to_string(dir.join("strategy"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "clone".to_string());
+
     Ok(Session {
         name: name.to_string(),
         project_dir,
         command,
         env,
         repos,
+        strategy,
     })
 }
 
@@ -252,12 +265,17 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
         })
         .unwrap_or_default();
 
+    let strategy = fs::read_to_string(session_path.join("strategy"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "clone".to_string());
+
     SessionSummary {
         name,
         project_dir,
         command,
         created_at,
         repos,
+        strategy,
     }
 }
 
@@ -338,6 +356,7 @@ mod tests {
             command: vec![],
             env: vec![],
             repos: vec![],
+            strategy: "clone".to_string(),
         }
     }
 
@@ -437,6 +456,7 @@ mod tests {
                 ],
                 env: vec![],
                 repos: vec![],
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -583,6 +603,7 @@ mod tests {
                 command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
                 env: vec![],
                 repos: vec![],
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -601,6 +622,7 @@ mod tests {
                 command: vec![],
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
                 repos: vec![],
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
@@ -636,6 +658,7 @@ mod tests {
                 command: vec![],
                 env: vec![],
                 repos: vec!["app-a".to_string(), "app-b".to_string()],
+                strategy: "clone".to_string(),
             };
             save(&sess).unwrap();
 
