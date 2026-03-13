@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box pull                                     # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box pull                                     # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -84,6 +84,10 @@ struct CreateArgs {
     #[arg(long, required = true)]
     repo: Vec<String>,
 
+    /// Workspace strategy: clone (default) or worktree
+    #[arg(long, env = "BOX_STRATEGY", default_value = "clone")]
+    strategy: String,
+
     /// Command to run in the workspace (default: $BOX_DEFAULT_CMD if set)
     #[arg(last = true)]
     cmd: Vec<String>,
@@ -141,12 +145,19 @@ fn main() {
                 );
                 std::process::exit(1);
             }
+            let strategy = match workspace::Strategy::from_str(&args.strategy) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            };
             let cmd = if args.cmd.is_empty() {
                 None
             } else {
                 Some(args.cmd)
             };
-            cmd_create(&args.name, cmd, args.repo)
+            cmd_create(&args.name, cmd, args.repo, strategy)
         }
         Some(Commands::Edit(args)) => cmd_edit(&args.name),
         Some(Commands::Remove(args)) => match &args.name {
@@ -314,12 +325,13 @@ fn cmd_default() -> Result<i32> {
 
 /// `box create` with no name: prompt for session details.
 fn cmd_create_tui() -> Result<i32> {
+    let strategy = workspace::Strategy::resolve(None)?;
     match tui::create_session()? {
         tui::TuiAction::New {
             name,
             command,
             repos,
-        } => cmd_create(&name, command, repos),
+        } => cmd_create(&name, command, repos, strategy),
         _ => Ok(0),
     }
 }
@@ -382,24 +394,35 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max()
         .unwrap_or(0)
         .max(3);
+    let strat_w = sessions
+        .iter()
+        .map(|s| s.strategy.len())
+        .max()
+        .unwrap_or(0)
+        .max(5);
 
     println!(
-        "\x1b[2m  {:<name_w$}  {:<project_w$}  {:<command_w$}  CREATED\x1b[0m",
-        "NAME", "PROJECT", "CMD",
+        "\x1b[2m  {:<name_w$}  {:<project_w$}  {:<strat_w$}  {:<command_w$}  CREATED\x1b[0m",
+        "NAME", "PROJECT", "STRAT", "CMD",
     );
 
     for s in &sessions {
         let project = project_display(s);
         println!(
-            "  {:<name_w$}  {:<project_w$}  {:<command_w$}  {}",
-            s.name, project, s.command, s.created_at,
+            "  {:<name_w$}  {:<project_w$}  {:<strat_w$}  {:<command_w$}  {}",
+            s.name, project, s.strategy, s.command, s.created_at,
         );
     }
 
     Ok(0)
 }
 
-fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> Result<i32> {
+fn cmd_create(
+    name: &str,
+    cmd: Option<Vec<String>>,
+    repo_names: Vec<String>,
+    strategy: workspace::Strategy,
+) -> Result<i32> {
     let name = session::validate_name(name)?;
     let name = name.as_str();
 
@@ -438,15 +461,17 @@ fn cmd_create(name: &str, cmd: Option<Vec<String>>, repo_names: Vec<String>) -> 
 
     eprintln!("\x1b[2msession:\x1b[0m {}", name);
     eprintln!("\x1b[2mrepos:\x1b[0m {}", cfg.repos.join(", "));
+    eprintln!("\x1b[2mstrategy:\x1b[0m {}", strategy);
     if !cfg.command.is_empty() {
         eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
     }
     eprintln!();
 
-    let sess = session::Session::from(cfg);
+    let mut sess = session::Session::from(cfg);
+    sess.strategy = strategy.as_str().to_string();
     session::save(&sess)?;
 
-    let workspace_path = workspace::ensure_workspace_multi(name, &selected_repos)?;
+    let workspace_path = workspace::ensure_workspace(name, &selected_repos, strategy)?;
     if selected_repos.len() == 1 {
         let repo_path = Path::new(&workspace_path).join(&selected_repos[0].name);
         output_cd_path(&repo_path.to_string_lossy());
@@ -470,6 +495,7 @@ fn cmd_edit(name: &str) -> Result<i32> {
     }
 
     let sess = session::load(name)?;
+    let strategy = workspace::Strategy::from_str(&sess.strategy)?;
     let current_repos = &sess.repos;
 
     match tui::edit_session(current_repos)? {
@@ -488,18 +514,18 @@ fn cmd_edit(name: &str) -> Result<i32> {
                 .map(|r| r.as_str())
                 .collect();
 
-            // Clone newly added repos
+            // Add newly added repos using the session's strategy
             if !added.is_empty() {
-                let repos_to_clone: Vec<repo::RepoEntry> = added
+                let repos_to_add: Vec<repo::RepoEntry> = added
                     .iter()
                     .filter_map(|name| all_repos.iter().find(|r| r.name == *name).cloned())
                     .collect();
-                workspace::ensure_workspace_multi(name, &repos_to_clone)?;
+                workspace::ensure_workspace(name, &repos_to_add, strategy)?;
             }
 
             // Remove workspace directories for removed repos
             for repo_name in &removed {
-                workspace::remove_repo_from_workspace(name, repo_name);
+                workspace::remove_repo_by_strategy(name, repo_name, strategy);
             }
 
             // Update session metadata
@@ -530,8 +556,10 @@ fn cmd_remove(name: &str) -> Result<i32> {
     }
 
     let sess = session::load(name)?;
+    let strategy =
+        workspace::Strategy::from_str(&sess.strategy).unwrap_or(workspace::Strategy::Clone);
 
-    workspace::remove_workspace(name);
+    workspace::remove_workspace_by_strategy(name, &sess.repos, strategy);
     session::remove_dir(name)?;
 
     if !sess.project_dir.is_empty() {
@@ -545,7 +573,13 @@ fn cmd_remove_tui() -> Result<i32> {
     match tui::select_sessions()? {
         tui::TuiAction::Remove { sessions } => {
             for name in &sessions {
-                workspace::remove_workspace(name);
+                if let Ok(sess) = session::load(name) {
+                    let strategy = workspace::Strategy::from_str(&sess.strategy)
+                        .unwrap_or(workspace::Strategy::Clone);
+                    workspace::remove_workspace_by_strategy(name, &sess.repos, strategy);
+                } else {
+                    workspace::remove_workspace(name);
+                }
                 session::remove_dir(name)?;
                 eprintln!("Session '{}' removed.", name);
             }
@@ -674,6 +708,7 @@ _box() {{
                 new)
                     _arguments \
                         '*--repo=[Select specific repo]:repo:__box_repos' \
+                        '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -769,9 +804,12 @@ fn cmd_config_bash() -> Result<i32> {
         new)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--repo" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--repo --strategy" -- "$cur"))
                     ;;
             esac
+            if [[ "$prev" == "--strategy" ]]; then
+                COMPREPLY=($(compgen -W "clone worktree" -- "$cur"))
+            fi
             ;;
         list|ls)
             case "$cur" in
@@ -1103,6 +1141,35 @@ mod tests {
             Some(Commands::New(args)) => {
                 assert_eq!(args.name, "my-session");
                 assert_eq!(args.repo, vec!["app-a", "app-b"]);
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_default_strategy() {
+        let cli = parse(&["new", "my-session", "--repo", "app"]);
+        match cli.command {
+            Some(Commands::New(args)) => {
+                assert_eq!(args.strategy, "clone");
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_with_strategy_worktree() {
+        let cli = parse(&[
+            "new",
+            "my-session",
+            "--repo",
+            "app",
+            "--strategy",
+            "worktree",
+        ]);
+        match cli.command {
+            Some(Commands::New(args)) => {
+                assert_eq!(args.strategy, "worktree");
             }
             other => panic!("expected New, got {:?}", other),
         }
