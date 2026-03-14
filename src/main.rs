@@ -655,7 +655,11 @@ fn cmd_config_zsh() -> Result<i32> {
                     desc=$(< "$sess/project_dir")
                     desc=${{desc/#$HOME/\~}}
                 fi
-                sessions+=("$sess_name:[$desc]")
+                if [[ -n "$desc" ]]; then
+                    sessions+=("$sess_name:$desc")
+                else
+                    sessions+=("$sess_name")
+                fi
             fi
         done
     fi
