@@ -84,8 +84,8 @@ struct CreateArgs {
     #[arg(long, required = true)]
     repo: Vec<String>,
 
-    /// Workspace strategy: clone (default) or worktree
-    #[arg(long, env = "BOX_STRATEGY", default_value = "clone")]
+    /// Workspace strategy: worktree (default) or clone
+    #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
 
     /// Command to run in the workspace (default: $BOX_DEFAULT_CMD if set)
@@ -1151,25 +1151,18 @@ mod tests {
         let cli = parse(&["new", "my-session", "--repo", "app"]);
         match cli.command {
             Some(Commands::New(args)) => {
-                assert_eq!(args.strategy, "clone");
+                assert_eq!(args.strategy, "worktree");
             }
             other => panic!("expected New, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_new_with_strategy_worktree() {
-        let cli = parse(&[
-            "new",
-            "my-session",
-            "--repo",
-            "app",
-            "--strategy",
-            "worktree",
-        ]);
+    fn test_new_with_strategy_clone() {
+        let cli = parse(&["new", "my-session", "--repo", "app", "--strategy", "clone"]);
         match cli.command {
             Some(Commands::New(args)) => {
-                assert_eq!(args.strategy, "worktree");
+                assert_eq!(args.strategy, "clone");
             }
             other => panic!("expected New, got {:?}", other),
         }
