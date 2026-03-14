@@ -27,11 +27,11 @@ impl Strategy {
     }
 
     /// Resolve strategy from an optional CLI value, falling back to BOX_STRATEGY env var,
-    /// then defaulting to "clone".
+    /// then defaulting to "worktree".
     pub fn resolve(cli_value: Option<&str>) -> Result<Self> {
         let value = match cli_value {
             Some(v) => v.to_string(),
-            None => std::env::var("BOX_STRATEGY").unwrap_or_else(|_| "clone".to_string()),
+            None => std::env::var("BOX_STRATEGY").unwrap_or_else(|_| "worktree".to_string()),
         };
         Strategy::from_str(&value)
     }

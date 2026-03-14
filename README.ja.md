@@ -6,21 +6,21 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-`git clone --local`でワークスペースを管理するCLIツール。複数リポジトリ対応。
+サンドボックス化されたgitワークスペースを管理するCLIツール。複数リポジトリ対応。
 
 ![demo](./demo.gif)
 
 ## boxとは？
 
-Boxは`git clone --local`を使って名前付きワークスペースを作成・管理するツールです。
+Boxは`git worktree`（デフォルト）または`git clone --local`を使って名前付きワークスペースを作成・管理するツールです。
 
-- `box repo add`でリポジトリを登録し、セッションを作成すると`~/.box/workspaces/<session>/`にクローンされる
+- `box repo add`でリポジトリを登録し、セッションを作成すると`~/.box/workspaces/<session>/`にワークスペースが作られる
 - 複数リポジトリを1つのセッションにまとめられる
-- 各クローンは独立した`.git`を持つので、元リポジトリに影響しない
+- worktreeモードは軽量で高速、cloneモードは完全な`.git`分離を提供
 
 ## 特徴
 
-- **`git clone --local`ワークスペース** — ハードリンクによる高速クローン、独立した`.git`
+- **2つのワークスペース戦略** — `git worktree`（デフォルト、軽量）または`git clone --local`（完全分離）
 - **マルチリポセッション** — 複数リポジトリを1つのワークスペースにまとめる
 - **インタラクティブTUI** — リポジトリ選択、セッション名・コマンド入力、履歴対応
 - **シェル連携** — zsh/bashの補完と`cd`ラッパー
@@ -79,7 +79,7 @@ box remove my-feature
 
 ```bash
 box                                    インタラクティブTUI（新規セッション作成）
-box new <name> --repo <r> [-- cmd...]  新しいセッションを作成
+box new <name> --repo <r> [options]     新しいセッションを作成
 box edit <name>                        セッションのリポジトリを追加・削除
 box exec <name> -- <cmd...>            セッションのワークスペースでコマンドを実行
 box list [options]                     セッション一覧（エイリアス: ls）
@@ -95,8 +95,11 @@ box upgrade                            最新版にアップグレード
 ### セッションの作成
 
 ```bash
-# コマンドを指定して作成
+# コマンドを指定して作成（デフォルトはworktree）
 box new my-feature --repo my-app -- make test
+
+# clone戦略で完全分離
+box new my-feature --repo my-app --strategy clone
 
 # 複数リポジトリ
 box new my-feature --repo frontend --repo backend
@@ -151,7 +154,8 @@ box new my-feature --repo frontend --repo backend
 | オプション | 説明 |
 |--------|-------------|
 | `<name>` | セッション名（必須） |
-| `--repo <name>` | クローンするリポジトリ（必須、複数指定可） |
+| `--repo <name>` | 含めるリポジトリ（必須、複数指定可） |
+| `--strategy <strategy>` | `worktree`（デフォルト）または`clone` |
 | `-- cmd...` | ワークスペースで実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD`が設定されていればそれを使用） |
 
 ### `box list`
@@ -166,6 +170,7 @@ box new my-feature --repo frontend --repo backend
 | 変数 | 説明 |
 |----------|-------------|
 | `BOX_DEFAULT_CMD` | 新規セッションのデフォルトコマンド。`-- cmd`が指定されていない場合に使用 |
+| `BOX_STRATEGY` | デフォルトのワークスペース戦略（`worktree`または`clone`）。`--strategy`フラグで上書き可能 |
 
 ## シェル連携
 
@@ -181,46 +186,43 @@ eval "$(box config bash)"
 
 ## 仕組み
 
+Boxは2つのワークスペース戦略をサポートしています：
+
+### Worktree（デフォルト）
+
+```
+登録済みリポジトリ     box new my-feature        ~/.box/workspaces/my-feature/
+  frontend/       ──── git worktree add ─────>      frontend/
+  backend/                                          backend/
+```
+
+`git worktree`は元のリポジトリにリンクされた軽量な作業ツリーを作成します。オブジェクトストアを共有するため、作成は即座に完了しディスク使用量も最小限です。各worktreeは独自のブランチを持ち、`box remove`でworktreeを適切にクリーンアップします。
+
+### Clone
+
 ```
 登録済みリポジトリ     box new my-feature        ~/.box/workspaces/my-feature/
   frontend/       ──── git clone --local ────>      frontend/
   backend/                                          backend/
 ```
 
-`git clone --local`はハードリンクを使って独立したgitリポジトリを作成します。各クローンは独自の`.git`ディレクトリを持つため、ワークスペース内でのコミット、ブランチ操作、リセットなどが元のリポジトリに影響することはありません。
+`git clone --local`はハードリンクを使って完全に独立したgitリポジトリを作成します。各クローンは独自の`.git`ディレクトリを持つため、ワークスペース内でのコミット、ブランチ操作、リセットなどが元のリポジトリに影響することはありません。
+
+### 比較
+
+| | Worktree | Clone |
+|---|---|---|
+| 速度 | 即座 | 高速（ハードリンク） |
+| ディスク使用量 | 最小（オブジェクト共有） | 少ない（ハードリンク） |
+| 分離性 | 作業ツリーは分離、`.git`は共有 | 完全に独立した`.git` |
+| 適した用途 | フィーチャーブランチ、実験 | 完全分離、破壊的操作 |
 
 | 項目 | 詳細 |
 |--------|--------|
 | ワークスペースの場所 | `~/.box/workspaces/<session>/` |
 | セッションメタデータ | `~/.box/sessions/<session>/` |
-| クローン方法 | `git clone --local`（独立した`.git`、ハードリンクされたオブジェクト） |
+| デフォルト戦略 | `git worktree`（`--strategy clone`で変更可能） |
 | クリーンアップ | `box remove`でワークスペースとセッションデータを削除 |
-
-## 設計上の判断
-
-<details>
-<summary><strong>なぜ <code>git clone --local</code>？</strong></summary>
-
-| 代替手段 | トレードオフ |
-|----------|-------------|
-| **バインドマウント** | 隔離なし — 変更が元のファイルに直接影響 |
-| **git worktree** | `.git`をホストと共有。checkout/reset/rebaseがホストのrefに影響しうる |
-| **bare-gitマウント** | 状態を共有。ブランチ操作がホストに影響 |
-| **完全コピー（`cp -r`）** | 独立するが大きなリポジトリでは遅い |
-
-`git clone --local`は独立（独自の`.git`）、高速（ハードリンク）、完全（全履歴）、シンプル（ラッパースクリプト不要）です。
-
-</details>
-
-## Claude Code連携
-
-Boxは[Claude Code](https://docs.anthropic.com/en/docs/claude-code)と組み合わせて、独立したワークスペースでAIエージェントを実行できます：
-
-```bash
-box new ai-experiment --repo my-app -- claude
-```
-
-エージェントの操作はすべてワークスペース内に留まります。完了したらセッションを削除するだけです。
 
 ## ライセンス
 

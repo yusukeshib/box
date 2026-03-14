@@ -6,21 +6,21 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/yusukeshib/box/actions/workflows/ci.yml/badge.svg)](https://github.com/yusukeshib/box/actions/workflows/ci.yml)
 
-A CLI tool that manages workspaces via `git clone --local`. Multi-repo support included.
+A CLI tool that manages sandboxed git workspaces. Multi-repo support included.
 
 ![demo](./demo.gif)
 
 ## What is box?
 
-Box creates and manages named workspaces using `git clone --local`.
+Box creates and manages named workspaces using `git worktree` (default) or `git clone --local`.
 
-- Register repos with `box repo add`, then create sessions — each session clones repos into `~/.box/workspaces/<session>/`
+- Register repos with `box repo add`, then create sessions — each session sets up repos in `~/.box/workspaces/<session>/`
 - Multiple repos can be grouped into a single session
-- Each clone has its own `.git`, so the original repo is never affected
+- Worktree mode is lightweight and fast; clone mode gives full `.git` isolation
 
 ## Features
 
-- **`git clone --local` workspaces** — fast cloning with hardlinks, fully independent `.git`
+- **Two workspace strategies** — `git worktree` (default, lightweight) or `git clone --local` (full isolation)
 - **Multi-repo sessions** — group multiple repos into one workspace
 - **Interactive TUI** — select repos, enter session name and command, with history
 - **Shell integration** — completions and `cd` wrapper for zsh/bash
@@ -79,7 +79,7 @@ box remove my-feature
 
 ```bash
 box                                    Interactive TUI (create new sessions)
-box new <name> --repo <r> [-- cmd...]  Create a new session
+box new <name> --repo <r> [options]     Create a new session
 box edit <name>                        Add/remove repos in a session
 box exec <name> -- <cmd...>            Run a command in a session workspace
 box list [options]                     List sessions (alias: ls)
@@ -95,8 +95,11 @@ box upgrade                            Upgrade to latest version
 ### Create a session
 
 ```bash
-# With a command
+# With a command (uses worktree by default)
 box new my-feature --repo my-app -- make test
+
+# Use clone strategy for full isolation
+box new my-feature --repo my-app --strategy clone
 
 # Multiple repos
 box new my-feature --repo frontend --repo backend
@@ -151,7 +154,8 @@ Each repo is cloned into `~/.box/workspaces/<session>/<repo>/`. For single-repo 
 | Option | Description |
 |--------|-------------|
 | `<name>` | Session name (required) |
-| `--repo <name>` | Repos to clone (required, repeatable) |
+| `--repo <name>` | Repos to include (required, repeatable) |
+| `--strategy <strategy>` | `worktree` (default) or `clone` |
 | `-- cmd...` | Command to run in the workspace (default: `$BOX_DEFAULT_CMD` if set) |
 
 ### `box list`
@@ -166,6 +170,7 @@ Each repo is cloned into `~/.box/workspaces/<session>/<repo>/`. For single-repo 
 | Variable | Description |
 |----------|-------------|
 | `BOX_DEFAULT_CMD` | Default command for new sessions, used when no `-- cmd` is provided |
+| `BOX_STRATEGY` | Default workspace strategy (`worktree` or `clone`). Overridden by `--strategy` flag |
 
 ## Shell Integration
 
@@ -181,46 +186,43 @@ This provides tab completions and a `box` shell function that enables `box cd` t
 
 ## How It Works
 
+Box supports two workspace strategies:
+
+### Worktree (default)
+
+```
+registered repos      box new my-feature        ~/.box/workspaces/my-feature/
+  frontend/      ──── git worktree add ─────>      frontend/
+  backend/                                         backend/
+```
+
+`git worktree` creates a lightweight working tree linked to the original repo. It shares the object store, so creation is instant and uses minimal disk space. Each worktree gets its own branch, and `box remove` cleans up the worktree properly.
+
+### Clone
+
 ```
 registered repos      box new my-feature        ~/.box/workspaces/my-feature/
   frontend/      ──── git clone --local ────>      frontend/
   backend/                                         backend/
 ```
 
-`git clone --local` creates an independent git repo using hardlinks for file objects. Each clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace do not affect the original.
+`git clone --local` creates a fully independent git repo using hardlinks for file objects. Each clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace do not affect the original.
+
+### Comparison
+
+| | Worktree | Clone |
+|---|---|---|
+| Speed | Instant | Fast (hardlinks) |
+| Disk usage | Minimal (shared objects) | Low (hardlinked objects) |
+| Isolation | Separate working tree, shared `.git` | Fully independent `.git` |
+| Best for | Feature branches, quick experiments | Full isolation, destructive operations |
 
 | Aspect | Detail |
 |--------|--------|
 | Workspace location | `~/.box/workspaces/<session>/` |
 | Session metadata | `~/.box/sessions/<session>/` |
-| Clone method | `git clone --local` (independent `.git`, hardlinked objects) |
+| Default strategy | `git worktree` (override with `--strategy clone`) |
 | Cleanup | `box remove` deletes workspace and session data |
-
-## Design Decisions
-
-<details>
-<summary><strong>Why <code>git clone --local</code>?</strong></summary>
-
-| Alternative | Trade-off |
-|-------------|-----------|
-| **Bind-mount** | No isolation; modifications affect original files |
-| **git worktree** | Shares `.git` with host; checkout/reset/rebase can affect host refs |
-| **Bare-git mount** | Shares state; branch operations affect host |
-| **Full copy (`cp -r`)** | Independent but slow for large repos |
-
-`git clone --local` is independent (own `.git`), fast (hardlinks), complete (full history), and simple (no wrapper scripts).
-
-</details>
-
-## Claude Code Integration
-
-Box works well with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) for running AI agents in independent workspaces:
-
-```bash
-box new ai-experiment --repo my-app -- claude
-```
-
-Everything the agent does stays in the workspace. Delete the session when done.
 
 ## License
 
