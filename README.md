@@ -84,10 +84,10 @@ box edit <name>                        Add/remove repos in a session
 box list [options]                     List sessions (alias: ls)
 box remove [<name>]                    Remove a session (alias: rm)
 box cd <name>                          cd into the session workspace
-box pull [options]                     Fetch & pull registered repos
 box repo add [path]                    Register a git repo
 box repo remove <name>                 Unregister a repo (alias: rm)
 box repo list                          List registered repos (alias: ls)
+box repo update [options]              Fetch & pull registered repos
 box config zsh|bash                    Output shell configuration
 box upgrade                            Upgrade to latest version
 ```
@@ -165,12 +165,12 @@ Each repo is cloned into `~/.box/workspaces/<session>/<repo>/`. For single-repo 
 | `--project`, `-p` | Show only sessions for the current project directory |
 | `--quiet`, `-q` | Only print session names |
 
-### `box pull`
+### `box repo update`
 
 | Option | Description |
 |--------|-------------|
-| `--all`, `-a` | Pull all registered repos without interactive selection |
-| `--force`, `-f` | Stash uncommitted changes before pulling |
+| `--all`, `-a` | Update all registered repos without interactive selection |
+| `--force`, `-f` | Stash uncommitted changes before updating |
 
 ## Environment Variables
 

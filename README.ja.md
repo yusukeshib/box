@@ -84,10 +84,10 @@ box edit <name>                        セッションのリポジトリを追�
 box list [options]                     セッション一覧（エイリアス: ls）
 box remove [<name>]                    セッションとワークスペースを削除（エイリアス: rm）
 box cd <name>                          セッションのワークスペースにcd
-box pull [options]                     登録リポジトリをfetch & pull
 box repo add [path]                    gitリポジトリを登録
 box repo remove <name>                 リポジトリの登録を解除（エイリアス: rm）
 box repo list                          登録リポジトリ一覧（エイリアス: ls）
+box repo update [options]              登録リポジトリをfetch & pull
 box config zsh|bash                    シェル設定を出力
 box upgrade                            最新版にアップグレード
 ```
@@ -165,12 +165,12 @@ box new my-feature --repo frontend --repo backend
 | `--project`, `-p` | 現在のプロジェクトのセッションのみ表示 |
 | `--quiet`, `-q` | セッション名のみ出力 |
 
-### `box pull`
+### `box repo update`
 
 | オプション | 説明 |
 |--------|-------------|
-| `--all`, `-a` | 対話選択なしで全登録リポジトリをpull |
-| `--force`, `-f` | pull前に未コミットの変更をstash |
+| `--all`, `-a` | 対話選択なしで全登録リポジトリをupdate |
+| `--force`, `-f` | update前に未コミットの変更をstash |
 
 ## 環境変数
 

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box pull                                     # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -46,8 +46,6 @@ enum Commands {
         #[command(subcommand)]
         action: RepoAction,
     },
-    /// Fetch all branches and pull main for registered repos
-    Pull(PullArgs),
     /// Self-update to the latest version
     Upgrade,
     /// Output shell configuration (e.g. eval "$(box config zsh)")
@@ -73,6 +71,8 @@ enum RepoAction {
     /// List registered repos
     #[command(alias = "ls")]
     List,
+    /// Fetch all branches and pull main for registered repos
+    Update(PullArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -170,8 +170,8 @@ fn main() {
             RepoAction::Add { path } => cmd_repo_add(path),
             RepoAction::Remove { name } => cmd_repo_remove(&name),
             RepoAction::List => cmd_repo_list(),
+            RepoAction::Update(args) => cmd_pull(&args),
         },
-        Some(Commands::Pull(args)) => cmd_pull(&args),
         Some(Commands::Upgrade) => cmd_upgrade(),
         Some(Commands::Config { shell }) => match shell {
             ConfigShell::Zsh => cmd_config_zsh(),
@@ -700,7 +700,6 @@ _box() {{
                 'rm:Remove a session'
                 'list:List sessions'
                 'cd:Print the host project directory for a session'
-                'pull:Fetch all branches and pull main'
                 'repo:Manage registered repos'
                 'upgrade:Self-update to the latest version'
                 'config:Output shell configuration'
@@ -736,7 +735,7 @@ _box() {{
                 repo)
                     if (( CURRENT == 2 )); then
                         local -a repo_subcmds
-                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'rm:Unregister a repo' 'list:List registered repos' 'ls:List registered repos')
+                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'rm:Unregister a repo' 'list:List registered repos' 'ls:List registered repos' 'update:Fetch all branches and pull main')
                         _describe 'repo subcommand' repo_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
@@ -746,15 +745,15 @@ _box() {{
                             add)
                                 _files -/
                                 ;;
+                            update)
+                                _arguments \
+                                    '--all[Pull all registered repos]' \
+                                    '-a[Pull all registered repos]' \
+                                    '--force[Stash uncommitted changes before pulling]' \
+                                    '-f[Stash uncommitted changes before pulling]'
+                                ;;
                         esac
                     fi
-                    ;;
-                pull)
-                    _arguments \
-                        '--all[Pull all registered repos]' \
-                        '-a[Pull all registered repos]' \
-                        '--force[Stash uncommitted changes before pulling]' \
-                        '-f[Stash uncommitted changes before pulling]'
                     ;;
                 config)
                     if (( CURRENT == 2 )); then
@@ -793,7 +792,7 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new edit remove rm list cd pull repo upgrade config"
+    local subcommands="new edit remove rm list cd repo upgrade config"
     local session_cmds="edit remove rm cd"
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
@@ -835,7 +834,7 @@ fn cmd_config_bash() -> Result<i32> {
             ;;
         repo)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove rm list ls update" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${{words[2]}}" in
                     remove|rm)
@@ -851,15 +850,15 @@ fn cmd_config_bash() -> Result<i32> {
                     add)
                         COMPREPLY=($(compgen -d -- "$cur"))
                         ;;
+                    update)
+                        case "$cur" in
+                            -*)
+                                COMPREPLY=($(compgen -W "--all -a --force -f" -- "$cur"))
+                                ;;
+                        esac
+                        ;;
                 esac
             fi
-            ;;
-        pull)
-            case "$cur" in
-                -*)
-                    COMPREPLY=($(compgen -W "--all -a --force -f" -- "$cur"))
-                    ;;
-            esac
             ;;
         config)
             if [[ $cword -eq 2 ]]; then
@@ -930,10 +929,42 @@ fn cmd_pull(args: &PullArgs) -> Result<i32> {
         }
 
         let status = std::process::Command::new("git")
-            .args(["-C", &entry.path, "fetch", "--all"])
+            .args(["-C", &entry.path, "fetch", "--all", "--prune"])
             .status()?;
         if !status.success() {
             eprintln!("  \x1b[31mfetch failed\x1b[0m");
+            continue;
+        }
+
+        // Detect the default branch from origin/HEAD, fallback to "main"
+        let default_branch = std::process::Command::new("git")
+            .args([
+                "-C",
+                &entry.path,
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+            ])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    s.strip_prefix("refs/remotes/origin/")
+                        .map(|b| b.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "main".to_string());
+
+        let status = std::process::Command::new("git")
+            .args(["-C", &entry.path, "checkout", &default_branch])
+            .status()?;
+        if !status.success() {
+            eprintln!(
+                "  \x1b[31mcheckout {} failed (dirty tree?)\x1b[0m",
+                default_branch
+            );
             continue;
         }
 
@@ -1249,77 +1280,89 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -- pull subcommand --
+    // -- repo update subcommand --
 
     #[test]
-    fn test_pull_subcommand_parses() {
-        let cli = parse(&["pull"]);
+    fn test_repo_update_subcommand_parses() {
+        let cli = parse(&["repo", "update"]);
         match cli.command {
-            Some(Commands::Pull(args)) => {
+            Some(Commands::Repo {
+                action: RepoAction::Update(args),
+            }) => {
                 assert!(!args.force);
                 assert!(!args.all);
             }
-            other => panic!("expected Pull, got {:?}", other),
+            other => panic!("expected Repo Update, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_pull_force_flag() {
-        let cli = parse(&["pull", "--force"]);
+    fn test_repo_update_force_flag() {
+        let cli = parse(&["repo", "update", "--force"]);
         match cli.command {
-            Some(Commands::Pull(args)) => {
+            Some(Commands::Repo {
+                action: RepoAction::Update(args),
+            }) => {
                 assert!(args.force);
                 assert!(!args.all);
             }
-            other => panic!("expected Pull, got {:?}", other),
+            other => panic!("expected Repo Update, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_pull_force_short_flag() {
-        let cli = parse(&["pull", "-f"]);
+    fn test_repo_update_force_short_flag() {
+        let cli = parse(&["repo", "update", "-f"]);
         match cli.command {
-            Some(Commands::Pull(args)) => {
+            Some(Commands::Repo {
+                action: RepoAction::Update(args),
+            }) => {
                 assert!(args.force);
                 assert!(!args.all);
             }
-            other => panic!("expected Pull, got {:?}", other),
+            other => panic!("expected Repo Update, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_pull_all_flag() {
-        let cli = parse(&["pull", "--all"]);
+    fn test_repo_update_all_flag() {
+        let cli = parse(&["repo", "update", "--all"]);
         match cli.command {
-            Some(Commands::Pull(args)) => {
+            Some(Commands::Repo {
+                action: RepoAction::Update(args),
+            }) => {
                 assert!(args.all);
                 assert!(!args.force);
             }
-            other => panic!("expected Pull, got {:?}", other),
+            other => panic!("expected Repo Update, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_pull_all_short_flag() {
-        let cli = parse(&["pull", "-a"]);
+    fn test_repo_update_all_short_flag() {
+        let cli = parse(&["repo", "update", "-a"]);
         match cli.command {
-            Some(Commands::Pull(args)) => {
+            Some(Commands::Repo {
+                action: RepoAction::Update(args),
+            }) => {
                 assert!(args.all);
                 assert!(!args.force);
             }
-            other => panic!("expected Pull, got {:?}", other),
+            other => panic!("expected Repo Update, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_pull_all_and_force_flags() {
-        let cli = parse(&["pull", "--all", "--force"]);
+    fn test_repo_update_all_and_force_flags() {
+        let cli = parse(&["repo", "update", "--all", "--force"]);
         match cli.command {
-            Some(Commands::Pull(args)) => {
+            Some(Commands::Repo {
+                action: RepoAction::Update(args),
+            }) => {
                 assert!(args.all);
                 assert!(args.force);
             }
-            other => panic!("expected Pull, got {:?}", other),
+            other => panic!("expected Repo Update, got {:?}", other),
         }
     }
 

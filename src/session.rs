@@ -45,7 +45,7 @@ pub fn sessions_dir() -> Result<PathBuf> {
 }
 
 const RESERVED_NAMES: &[&str] = &[
-    "new", "remove", "edit", "pull", "upgrade", "path", "config", "list", "ls", "repo",
+    "new", "remove", "edit", "update", "upgrade", "path", "config", "list", "ls", "repo",
 ];
 
 /// Normalize a session name by replacing `/ # @ _` with `-` and collapsing
