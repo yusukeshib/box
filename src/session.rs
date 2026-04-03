@@ -48,16 +48,16 @@ const RESERVED_NAMES: &[&str] = &[
     "new", "remove", "edit", "update", "upgrade", "path", "config", "list", "ls", "repo",
 ];
 
-/// Normalize a session name by replacing `/ # @ _` with `-` and collapsing
-/// consecutive hyphens. Returns the normalized name.
+/// Normalize a session name by replacing any non-alphanumeric character with `-`
+/// and collapsing consecutive hyphens. Returns the normalized name.
 pub fn normalize_name(name: &str) -> String {
     let replaced: String = name
         .chars()
         .map(|c| {
-            if matches!(c, '/' | '#' | '@' | '_') {
-                '-'
-            } else {
+            if c.is_ascii_alphanumeric() || c == '-' {
                 c
+            } else {
+                '-'
             }
         })
         .collect();
@@ -84,12 +84,6 @@ pub fn validate_name(name: &str) -> Result<String> {
     if RESERVED_NAMES.contains(&name.as_str()) {
         bail!(
             "'{}' is a reserved name and cannot be used as a session name.",
-            name
-        );
-    }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-        bail!(
-            "Invalid session name '{}'. Use only letters, digits, hyphens, slashes, #, @, and underscores.",
             name
         );
     }
@@ -381,6 +375,19 @@ mod tests {
         assert_eq!(validate_name("a//b").unwrap(), "a-b");
         assert_eq!(validate_name("/leading").unwrap(), "leading");
         assert_eq!(validate_name("trailing_").unwrap(), "trailing");
+        assert_eq!(validate_name("foo.bar").unwrap(), "foo-bar");
+        assert_eq!(validate_name("v1.2.3").unwrap(), "v1-2-3");
+        assert_eq!(validate_name(".hidden").unwrap(), "hidden");
+    }
+
+    #[test]
+    fn test_validate_name_dots_only() {
+        let err = validate_name(".").unwrap_err();
+        assert_eq!(err.to_string(), "Session name is required.");
+        let err = validate_name("..").unwrap_err();
+        assert_eq!(err.to_string(), "Session name is required.");
+        let err = validate_name("...").unwrap_err();
+        assert_eq!(err.to_string(), "Session name is required.");
     }
 
     #[test]
@@ -414,12 +421,17 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_name_invalid_chars() {
-        let err = validate_name("bad name").unwrap_err();
-        assert!(err.to_string().contains("Invalid session name"));
-
-        let err = validate_name("bad.name").unwrap_err();
-        assert!(err.to_string().contains("Invalid session name"));
+    fn test_validate_name_special_chars_normalized() {
+        assert_eq!(validate_name("bad name").unwrap(), "bad-name");
+        assert_eq!(validate_name("bad.name").unwrap(), "bad-name");
+        assert_eq!(validate_name("feat+fix").unwrap(), "feat-fix");
+        assert_eq!(validate_name("a=b").unwrap(), "a-b");
+        assert_eq!(validate_name("a!b").unwrap(), "a-b");
+        assert_eq!(validate_name("a%b").unwrap(), "a-b");
+        assert_eq!(
+            validate_name("dependabot/npm_and_yarn/lodash-4.17.21").unwrap(),
+            "dependabot-npm-and-yarn-lodash-4-17-21"
+        );
     }
 
     #[test]
