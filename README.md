@@ -156,7 +156,6 @@ Each repo is cloned into `~/.box/workspaces/<session>/<repo>/`. For single-repo 
 | `<name>` | Session name (required) |
 | `--repo <name>` | Repos to include (required, repeatable) |
 | `--strategy <strategy>` | `worktree` (default) or `clone` |
-| `-- cmd...` | Command to run in the workspace (default: `$BOX_DEFAULT_CMD` if set) |
 
 ### `box list`
 
@@ -176,7 +175,6 @@ Each repo is cloned into `~/.box/workspaces/<session>/<repo>/`. For single-repo 
 
 | Variable | Description |
 |----------|-------------|
-| `BOX_DEFAULT_CMD` | Default command for new sessions, used when no `-- cmd` is provided |
 | `BOX_STRATEGY` | Default workspace strategy (`worktree` or `clone`). Overridden by `--strategy` flag |
 
 ## Shell Integration
