@@ -1,6 +1,6 @@
 [package]
 name = "box-cli"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 description = "Sandboxed git workspaces for development"
 license = "MIT"
@@ -14,7 +14,6 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 chrono = { version = "0.4", features = ["clock"], default-features = false }
-shell-words = "1"
 ratatui = "0.30"
 crossterm = "0.29"
 self_update = { version = "0.42", default-features = false, features = ["rustls"] }

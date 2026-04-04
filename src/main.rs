@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature -- bash                   # create with a command\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -87,10 +87,6 @@ struct CreateArgs {
     /// Workspace strategy: worktree (default) or clone
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
-
-    /// Command to run in the workspace (default: $BOX_DEFAULT_CMD if set)
-    #[arg(last = true)]
-    cmd: Vec<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -152,12 +148,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            let cmd = if args.cmd.is_empty() {
-                None
-            } else {
-                Some(args.cmd)
-            };
-            cmd_create(&args.name, cmd, args.repo, strategy)
+            cmd_create(&args.name, args.repo, strategy)
         }
         Some(Commands::Edit(args)) => cmd_edit(&args.name),
         Some(Commands::Remove(args)) => match &args.name {
@@ -187,15 +178,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-}
-
-fn run_local_command(name: &str, cmd: &[String]) -> Result<i32> {
-    let workspace = resolve_workspace_path(name)?;
-    let status = std::process::Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .current_dir(workspace)
-        .status()?;
-    Ok(status.code().unwrap_or(1))
 }
 
 fn output_cd_path(path: &str) {
@@ -327,11 +309,7 @@ fn cmd_default() -> Result<i32> {
 fn cmd_create_tui() -> Result<i32> {
     let strategy = workspace::Strategy::resolve(None)?;
     match tui::create_session()? {
-        tui::TuiAction::New {
-            name,
-            command,
-            repos,
-        } => cmd_create(&name, command, repos, strategy),
+        tui::TuiAction::New { name, repos } => cmd_create(&name, repos, strategy),
         _ => Ok(0),
     }
 }
@@ -388,12 +366,6 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max()
         .unwrap_or(0)
         .max(7);
-    let command_w = sessions
-        .iter()
-        .map(|s| s.command.len())
-        .max()
-        .unwrap_or(0)
-        .max(3);
     let strat_w = sessions
         .iter()
         .map(|s| s.strategy.len())
@@ -402,27 +374,22 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
         .max(5);
 
     println!(
-        "\x1b[2m  {:<name_w$}  {:<project_w$}  {:<strat_w$}  {:<command_w$}  CREATED\x1b[0m",
-        "NAME", "PROJECT", "STRAT", "CMD",
+        "\x1b[2m  {:<name_w$}  {:<project_w$}  {:<strat_w$}  CREATED\x1b[0m",
+        "NAME", "PROJECT", "STRAT",
     );
 
     for s in &sessions {
         let project = project_display(s);
         println!(
-            "  {:<name_w$}  {:<project_w$}  {:<strat_w$}  {:<command_w$}  {}",
-            s.name, project, s.strategy, s.command, s.created_at,
+            "  {:<name_w$}  {:<project_w$}  {:<strat_w$}  {}",
+            s.name, project, s.strategy, s.created_at,
         );
     }
 
     Ok(0)
 }
 
-fn cmd_create(
-    name: &str,
-    cmd: Option<Vec<String>>,
-    repo_names: Vec<String>,
-    strategy: workspace::Strategy,
-) -> Result<i32> {
+fn cmd_create(name: &str, repo_names: Vec<String>, strategy: workspace::Strategy) -> Result<i32> {
     let name = session::validate_name(name)?;
     let name = name.as_str();
 
@@ -454,7 +421,6 @@ fn cmd_create(
     let cfg = config::resolve(config::BoxConfigInput {
         name: name.to_string(),
         project_dir: String::new(),
-        command: cmd,
         env: vec![],
         repos: repo_names_list,
     })?;
@@ -462,9 +428,6 @@ fn cmd_create(
     eprintln!("\x1b[2msession:\x1b[0m {}", name);
     eprintln!("\x1b[2mrepos:\x1b[0m {}", cfg.repos.join(", "));
     eprintln!("\x1b[2mstrategy:\x1b[0m {}", strategy);
-    if !cfg.command.is_empty() {
-        eprintln!("\x1b[2mcommand:\x1b[0m {}", shell_words::join(&cfg.command));
-    }
     eprintln!();
 
     let mut sess = session::Session::from(cfg);
@@ -480,9 +443,6 @@ fn cmd_create(
     }
     rename_terminal_tab(name);
 
-    if !sess.command.is_empty() {
-        return run_local_command(name, &sess.command);
-    }
     Ok(0)
 }
 
@@ -1130,28 +1090,6 @@ mod tests {
             Some(Commands::New(args)) => {
                 assert_eq!(args.name, "my-session");
                 assert_eq!(args.repo, vec!["app"]);
-                assert!(args.cmd.is_empty());
-            }
-            other => panic!("expected New, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_new_with_command() {
-        let cli = parse(&[
-            "new",
-            "my-session",
-            "--repo",
-            "app",
-            "--",
-            "bash",
-            "-c",
-            "echo hi",
-        ]);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert_eq!(args.cmd, vec!["bash", "-c", "echo hi"]);
             }
             other => panic!("expected New, got {:?}", other),
         }

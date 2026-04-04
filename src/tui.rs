@@ -9,7 +9,7 @@ use crate::config;
 use crate::repo;
 use crate::session;
 
-const MAX_COMMAND_HISTORY: usize = 100;
+const MAX_HISTORY: usize = 100;
 
 fn last_selected_repos_path() -> Result<std::path::PathBuf> {
     Ok(config::box_root()?.join("last_selected_repos"))
@@ -17,10 +17,6 @@ fn last_selected_repos_path() -> Result<std::path::PathBuf> {
 
 fn name_history_path() -> Result<std::path::PathBuf> {
     Ok(config::box_root()?.join("name_history"))
-}
-
-fn command_history_path() -> Result<std::path::PathBuf> {
-    Ok(config::box_root()?.join("command_history"))
 }
 
 fn load_last_selected_repos() -> Vec<String> {
@@ -57,45 +53,16 @@ fn load_name_history() -> Vec<String> {
 
 fn save_name_history(history: &[String]) {
     if let Ok(path) = name_history_path() {
-        let capped: Vec<&String> = history.iter().take(MAX_COMMAND_HISTORY).collect();
-        let content: Vec<&str> = capped.iter().map(|s| s.as_str()).collect();
-        let _ = std::fs::write(path, content.join("\n") + "\n");
-    }
-}
-
-fn load_command_history() -> Vec<String> {
-    command_history_path()
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| {
-            s.lines()
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn save_command_history(history: &[String]) {
-    if let Ok(path) = command_history_path() {
-        let capped: Vec<&String> = history.iter().take(MAX_COMMAND_HISTORY).collect();
+        let capped: Vec<&String> = history.iter().take(MAX_HISTORY).collect();
         let content: Vec<&str> = capped.iter().map(|s| s.as_str()).collect();
         let _ = std::fs::write(path, content.join("\n") + "\n");
     }
 }
 
 pub enum TuiAction {
-    New {
-        name: String,
-        command: Option<Vec<String>>,
-        repos: Vec<String>,
-    },
-    Edit {
-        repos: Vec<String>,
-    },
-    Remove {
-        sessions: Vec<String>,
-    },
+    New { name: String, repos: Vec<String> },
+    Edit { repos: Vec<String> },
+    Remove { sessions: Vec<String> },
     Quit,
 }
 
@@ -227,7 +194,6 @@ pub fn select_repos(prompt: &str) -> Result<Option<Vec<String>>> {
 enum Mode {
     RepoSelect,
     Name,
-    Command,
 }
 
 struct TextInput {
@@ -364,7 +330,6 @@ pub fn create_session() -> Result<TuiAction> {
     let mut input = TextInput::new();
     let mut mode = Mode::RepoSelect;
     let mut footer_msg = String::new();
-    let mut new_name = String::new();
 
     // Repo selection state — restore from last session if available
     let last_selected = load_last_selected_repos();
@@ -383,11 +348,6 @@ pub fn create_session() -> Result<TuiAction> {
     let mut name_history = load_name_history();
     let mut name_history_index: Option<usize> = None;
     let mut name_saved_input = String::new();
-
-    // Command history state
-    let mut cmd_history = load_command_history();
-    let mut history_index: Option<usize> = None;
-    let mut saved_input = String::new();
 
     loop {
         terminal.draw(|f| {
@@ -430,10 +390,6 @@ pub fn create_session() -> Result<TuiAction> {
                 }
                 Mode::Name => {
                     let line = Line::from(input.to_spans("Session name: "));
-                    f.render_widget(line, area);
-                }
-                Mode::Command => {
-                    let line = Line::from(input.to_spans("Command (optional): "));
                     f.render_widget(line, area);
                 }
             }
@@ -525,10 +481,11 @@ pub fn create_session() -> Result<TuiAction> {
                             name_history.retain(|h| h != &name);
                             name_history.insert(0, name.clone());
                             save_name_history(&name_history);
-                            new_name = name;
-                            let default_cmd = std::env::var("BOX_DEFAULT_CMD").unwrap_or_default();
-                            input = TextInput::with_text(default_cmd);
-                            mode = Mode::Command;
+                            clear_viewport(&mut terminal, 1)?;
+                            return Ok(TuiAction::New {
+                                name,
+                                repos: selected_repos,
+                            });
                         }
                     }
                     KeyCode::Up => {
@@ -555,72 +512,6 @@ pub fn create_session() -> Result<TuiAction> {
                         Some(idx) => {
                             name_history_index = Some(idx - 1);
                             input = TextInput::with_text(name_history[idx - 1].clone());
-                        }
-                        None => {}
-                    },
-                    KeyCode::Esc => {
-                        clear_viewport(&mut terminal, 1)?;
-                        return Ok(TuiAction::Quit);
-                    }
-                    _ => {
-                        input.handle_key(key.code);
-                    }
-                },
-                Mode::Command => match key.code {
-                    KeyCode::Enter => {
-                        let cmd_text = input.text.trim().to_string();
-                        let command = if cmd_text.is_empty() {
-                            Some(vec![])
-                        } else {
-                            match shell_words::split(&cmd_text) {
-                                Ok(args) => Some(args),
-                                Err(e) => {
-                                    footer_msg = format!("Invalid command: {e}");
-                                    input = TextInput::new();
-                                    history_index = None;
-                                    saved_input.clear();
-                                    continue;
-                                }
-                            }
-                        };
-                        // Save non-empty commands to history
-                        if !cmd_text.is_empty() {
-                            // Remove duplicate if exists, then prepend
-                            cmd_history.retain(|h| h != &cmd_text);
-                            cmd_history.insert(0, cmd_text);
-                            save_command_history(&cmd_history);
-                        }
-                        clear_viewport(&mut terminal, 1)?;
-                        return Ok(TuiAction::New {
-                            name: new_name,
-                            command,
-                            repos: selected_repos,
-                        });
-                    }
-                    KeyCode::Up => {
-                        if !cmd_history.is_empty() {
-                            match history_index {
-                                None => {
-                                    saved_input = input.text.clone();
-                                    history_index = Some(0);
-                                    input = TextInput::with_text(cmd_history[0].clone());
-                                }
-                                Some(idx) if idx + 1 < cmd_history.len() => {
-                                    history_index = Some(idx + 1);
-                                    input = TextInput::with_text(cmd_history[idx + 1].clone());
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                    KeyCode::Down => match history_index {
-                        Some(0) => {
-                            history_index = None;
-                            input = TextInput::with_text(saved_input.clone());
-                        }
-                        Some(idx) => {
-                            history_index = Some(idx - 1);
-                            input = TextInput::with_text(cmd_history[idx - 1].clone());
                         }
                         None => {}
                     },

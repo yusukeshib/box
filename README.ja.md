@@ -156,7 +156,6 @@ box new my-feature --repo frontend --repo backend
 | `<name>` | セッション名（必須） |
 | `--repo <name>` | 含めるリポジトリ（必須、複数指定可） |
 | `--strategy <strategy>` | `worktree`（デフォルト）または`clone` |
-| `-- cmd...` | ワークスペースで実行するコマンド（デフォルト: `$BOX_DEFAULT_CMD`が設定されていればそれを使用） |
 
 ### `box list`
 
@@ -176,7 +175,6 @@ box new my-feature --repo frontend --repo backend
 
 | 変数 | 説明 |
 |----------|-------------|
-| `BOX_DEFAULT_CMD` | 新規セッションのデフォルトコマンド。`-- cmd`が指定されていない場合に使用 |
 | `BOX_STRATEGY` | デフォルトのワークスペース戦略（`worktree`または`clone`）。`--strategy`フラグで上書き可能 |
 
 ## シェル連携

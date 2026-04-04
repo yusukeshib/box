@@ -11,7 +11,6 @@ use crate::config;
 pub struct Session {
     pub name: String,
     pub project_dir: String,
-    pub command: Vec<String>,
     pub env: Vec<String>,
     pub repos: Vec<String>,
     pub strategy: String,
@@ -22,7 +21,6 @@ impl From<config::BoxConfig> for Session {
         Session {
             name: cfg.name,
             project_dir: cfg.project_dir,
-            command: cfg.command,
             env: cfg.env,
             repos: cfg.repos,
             strategy: "clone".to_string(),
@@ -34,7 +32,6 @@ impl From<config::BoxConfig> for Session {
 pub struct SessionSummary {
     pub name: String,
     pub project_dir: String,
-    pub command: String,
     pub created_at: String,
     pub repos: Vec<String>,
     pub strategy: String,
@@ -108,12 +105,6 @@ pub fn save(session: &Session) -> Result<()> {
         dir.join("created_at"),
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
     )?;
-    if !session.command.is_empty() {
-        let content: Vec<&str> = session.command.iter().map(|s| s.as_str()).collect();
-        fs::write(dir.join("command"), content.join("\0"))?;
-    } else {
-        let _ = fs::remove_file(dir.join("command"));
-    }
     if !session.env.is_empty() {
         let content: Vec<&str> = session.env.iter().map(|s| s.as_str()).collect();
         fs::write(dir.join("env"), content.join("\0"))?;
@@ -182,15 +173,6 @@ pub fn load(name: &str) -> Result<Session> {
         bail!("Session '{}' is missing project directory metadata.", name);
     };
 
-    let command = fs::read_to_string(dir.join("command"))
-        .map(|s| {
-            s.split('\0')
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-
     let env = fs::read_to_string(dir.join("env"))
         .map(|s| {
             s.split('\0')
@@ -216,7 +198,6 @@ pub fn load(name: &str) -> Result<Session> {
     Ok(Session {
         name: name.to_string(),
         project_dir,
-        command,
         env,
         repos,
         strategy,
@@ -240,16 +221,6 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
             trimmed.to_string()
         })
         .unwrap_or_default();
-    let command = fs::read_to_string(session_path.join("command"))
-        .map(|s| {
-            s.split('\0')
-                .filter(|l| !l.is_empty())
-                .filter(|l| *l != "--allow-dangerously-skip-permissions")
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .unwrap_or_default();
-
     let repos: Vec<String> = fs::read_to_string(session_path.join("repos"))
         .map(|s| {
             s.lines()
@@ -266,7 +237,6 @@ fn read_session_summary(session_path: &std::path::Path, name: String) -> Session
     SessionSummary {
         name,
         project_dir,
-        command,
         created_at,
         repos,
         strategy,
@@ -347,7 +317,6 @@ mod tests {
         Session {
             name: name.to_string(),
             project_dir: project_dir.to_string(),
-            command: vec![],
             env: vec![],
             repos: vec![],
             strategy: "clone".to_string(),
@@ -451,29 +420,6 @@ mod tests {
             let loaded = load("test-ws").unwrap();
             assert_eq!(loaded.name, "test-ws");
             assert_eq!(loaded.project_dir, "/tmp/myproject");
-            assert!(loaded.command.is_empty());
-        });
-    }
-
-    #[test]
-    fn test_save_and_load_with_command() {
-        with_temp_home(|_| {
-            let sess = Session {
-                name: "full-ws".to_string(),
-                project_dir: "/tmp/project".to_string(),
-                command: vec![
-                    "bash".to_string(),
-                    "-c".to_string(),
-                    "echo hello".to_string(),
-                ],
-                env: vec![],
-                repos: vec![],
-                strategy: "clone".to_string(),
-            };
-            save(&sess).unwrap();
-
-            let loaded = load("full-ws").unwrap();
-            assert_eq!(loaded.command, vec!["bash", "-c", "echo hello"]);
         });
     }
 
@@ -486,7 +432,6 @@ mod tests {
             let dir = sessions_dir().unwrap().join("meta-test");
             assert!(dir.join("project_dir").exists());
             assert!(dir.join("created_at").exists());
-            assert!(!dir.join("command").exists());
 
             let created = fs::read_to_string(dir.join("created_at")).unwrap();
             assert!(created.ends_with("UTC"));
@@ -607,31 +552,12 @@ mod tests {
     }
 
     #[test]
-    fn test_command_save_format() {
-        with_temp_home(|_| {
-            let sess = Session {
-                name: "cmd-format".to_string(),
-                project_dir: "/tmp/p".to_string(),
-                command: vec!["bash".to_string(), "-c".to_string(), "echo hi".to_string()],
-                env: vec![],
-                repos: vec![],
-                strategy: "clone".to_string(),
-            };
-            save(&sess).unwrap();
-
-            let dir = sessions_dir().unwrap().join("cmd-format");
-            let raw = fs::read_to_string(dir.join("command")).unwrap();
-            assert_eq!(raw, "bash\0-c\0echo hi");
-        });
-    }
-
-    #[test]
     fn test_save_and_load_with_env() {
         with_temp_home(|_| {
             let sess = Session {
                 name: "env-test".to_string(),
                 project_dir: "/tmp/project".to_string(),
-                command: vec![],
+
                 env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
                 repos: vec![],
                 strategy: "clone".to_string(),
@@ -667,7 +593,7 @@ mod tests {
             let sess = Session {
                 name: "multi".to_string(),
                 project_dir: String::new(),
-                command: vec![],
+
                 env: vec![],
                 repos: vec!["app-a".to_string(), "app-b".to_string()],
                 strategy: "clone".to_string(),
