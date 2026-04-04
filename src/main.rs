@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box cd my-feature                            # print project directory\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -36,8 +36,9 @@ enum Commands {
     /// List sessions
     #[command(alias = "ls")]
     List(ListArgs),
-    /// Print the host project directory for a session
-    Cd {
+    /// Switch to a session
+    #[command(alias = "cd", alias = "sw")]
+    Switch {
         /// Session name
         name: String,
     },
@@ -156,7 +157,7 @@ fn main() {
             None => cmd_remove_tui(),
         },
         Some(Commands::List(args)) => cmd_list_sessions(&args),
-        Some(Commands::Cd { name }) => cmd_cd(&name),
+        Some(Commands::Switch { name }) => cmd_cd(&name),
         Some(Commands::Repo { action }) => match action {
             RepoAction::Add { path } => cmd_repo_add(path),
             RepoAction::Remove { name } => cmd_repo_remove(&name),
@@ -659,7 +660,9 @@ _box() {{
                 'remove:Remove a session'
                 'rm:Remove a session'
                 'list:List sessions'
-                'cd:Print the host project directory for a session'
+                'switch:Switch to a session'
+                'sw:Switch to a session'
+                'cd:Switch to a session'
                 'repo:Manage registered repos'
                 'upgrade:Self-update to the latest version'
                 'config:Output shell configuration'
@@ -687,7 +690,7 @@ _box() {{
                         __box_sessions
                     fi
                     ;;
-                edit|cd)
+                edit|switch|sw|cd)
                     if (( CURRENT == 2 )); then
                         __box_sessions
                     fi
@@ -752,8 +755,8 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new edit remove rm list cd repo upgrade config"
-    local session_cmds="edit remove rm cd"
+    local subcommands="new edit remove rm list switch sw cd repo upgrade config"
+    local session_cmds="edit remove rm switch sw cd"
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
     if [[ $cword -eq 1 ]]; then
@@ -781,7 +784,7 @@ fn cmd_config_bash() -> Result<i32> {
                     ;;
             esac
             ;;
-        edit|remove|rm|cd)
+        edit|remove|rm|switch|sw|cd)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$__box_root/sessions" ]]; then
@@ -1204,17 +1207,35 @@ mod tests {
     // -- cd subcommand --
 
     #[test]
-    fn test_cd_subcommand_parses() {
-        let cli = parse(&["cd", "my-session"]);
+    fn test_switch_subcommand_parses() {
+        let cli = parse(&["switch", "my-session"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Cd { ref name }) if name == "my-session"
+            Some(Commands::Switch { ref name }) if name == "my-session"
         ));
     }
 
     #[test]
-    fn test_cd_requires_name() {
-        let result = try_parse(&["cd"]);
+    fn test_switch_alias_cd() {
+        let cli = parse(&["cd", "my-session"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Switch { ref name }) if name == "my-session"
+        ));
+    }
+
+    #[test]
+    fn test_switch_alias_sw() {
+        let cli = parse(&["sw", "my-session"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Switch { ref name }) if name == "my-session"
+        ));
+    }
+
+    #[test]
+    fn test_switch_requires_name() {
+        let result = try_parse(&["switch"]);
         assert!(result.is_err());
     }
 
