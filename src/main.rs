@@ -17,15 +17,11 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box --update                                 # open session manager, update selected repos\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --update     # update app-a, then create session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-
-    /// Fetch & pull selected repos before creating session
-    #[arg(long)]
-    update: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -76,8 +72,6 @@ enum RepoAction {
     /// List registered repos
     #[command(alias = "ls")]
     List,
-    /// Fetch all branches and pull main for registered repos
-    Update(PullArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -92,10 +86,6 @@ struct CreateArgs {
     /// Workspace strategy: worktree (default) or clone
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
-
-    /// Fetch & pull specified repos before creating
-    #[arg(long)]
-    update: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -108,16 +98,6 @@ struct EditArgs {
 struct RemoveArgs {
     /// Session name (opens interactive selector if omitted)
     name: Option<String>,
-}
-
-#[derive(clap::Args, Debug)]
-struct PullArgs {
-    /// Pull all registered repos without interactive selection
-    #[arg(long, short)]
-    all: bool,
-    /// Stash uncommitted changes before pulling
-    #[arg(long, short)]
-    force: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -141,8 +121,6 @@ enum ConfigShell {
 fn main() {
     let cli = Cli::parse();
 
-    let update = cli.update;
-
     let result = match cli.command {
         Some(Commands::New(args)) => {
             if std::env::var_os("BOX_SESSION").is_some() {
@@ -152,10 +130,8 @@ fn main() {
                 );
                 std::process::exit(1);
             }
-            if update || args.update {
-                if let Err(e) = update_repos(&args.repo) {
-                    eprintln!("Warning: repo update failed: {}", e);
-                }
+            if let Err(e) = update_repos(&args.repo) {
+                eprintln!("Warning: repo update failed: {}", e);
             }
             let strategy = match workspace::Strategy::from_str(&args.strategy) {
                 Ok(s) => s,
@@ -166,60 +142,24 @@ fn main() {
             };
             cmd_create(&args.name, args.repo, strategy)
         }
-        Some(Commands::Edit(args)) => {
-            if update {
-                eprintln!("Warning: --update is only supported with `box` or `box new`");
-            }
-            cmd_edit(&args.name)
-        }
-        Some(Commands::Remove(args)) => {
-            if update {
-                eprintln!("Warning: --update is only supported with `box` or `box new`");
-            }
-            match &args.name {
-                Some(name) => cmd_remove(name),
-                None => cmd_remove_tui(),
-            }
-        }
-        Some(Commands::List(args)) => {
-            if update {
-                eprintln!("Warning: --update is only supported with `box` or `box new`");
-            }
-            cmd_list_sessions(&args)
-        }
-        Some(Commands::Switch { name }) => {
-            if update {
-                eprintln!("Warning: --update is only supported with `box` or `box new`");
-            }
-            cmd_cd(&name)
-        }
-        Some(Commands::Repo { action }) => {
-            if update {
-                eprintln!("Warning: --update is only supported with `box` or `box new`");
-            }
-            match action {
-                RepoAction::Add { path } => cmd_repo_add(path),
-                RepoAction::Remove { name } => cmd_repo_remove(&name),
-                RepoAction::List => cmd_repo_list(),
-                RepoAction::Update(args) => cmd_pull(&args),
-            }
-        }
-        Some(Commands::Upgrade) => {
-            if update {
-                eprintln!("Warning: --update is only supported with `box` or `box new`");
-            }
-            cmd_upgrade()
-        }
-        Some(Commands::Config { shell }) => {
-            if update {
-                eprintln!("Warning: --update is only supported with `box` or `box new`");
-            }
-            match shell {
-                ConfigShell::Zsh => cmd_config_zsh(),
-                ConfigShell::Bash => cmd_config_bash(),
-            }
-        }
-        None => cmd_default(update),
+        Some(Commands::Edit(args)) => cmd_edit(&args.name),
+        Some(Commands::Remove(args)) => match &args.name {
+            Some(name) => cmd_remove(name),
+            None => cmd_remove_tui(),
+        },
+        Some(Commands::List(args)) => cmd_list_sessions(&args),
+        Some(Commands::Switch { name }) => cmd_cd(&name),
+        Some(Commands::Repo { action }) => match action {
+            RepoAction::Add { path } => cmd_repo_add(path),
+            RepoAction::Remove { name } => cmd_repo_remove(&name),
+            RepoAction::List => cmd_repo_list(),
+        },
+        Some(Commands::Upgrade) => cmd_upgrade(),
+        Some(Commands::Config { shell }) => match shell {
+            ConfigShell::Zsh => cmd_config_zsh(),
+            ConfigShell::Bash => cmd_config_bash(),
+        },
+        None => cmd_default(),
     };
 
     match result {
@@ -346,25 +286,23 @@ fn resolve_project_dir(
 }
 
 /// `box` with no args: interactive TUI to create a session.
-fn cmd_default(update: bool) -> Result<i32> {
+fn cmd_default() -> Result<i32> {
     if std::env::var_os("BOX_SESSION").is_some() {
         bail!(
             "Cannot nest box sessions (already inside session {:?}).",
             std::env::var("BOX_SESSION").unwrap_or_default()
         );
     }
-    cmd_create_tui(update)
+    cmd_create_tui()
 }
 
 /// `box create` with no name: prompt for session details.
-fn cmd_create_tui(update: bool) -> Result<i32> {
+fn cmd_create_tui() -> Result<i32> {
     let strategy = workspace::Strategy::resolve(None)?;
     match tui::create_session()? {
         tui::TuiAction::New { name, repos } => {
-            if update {
-                if let Err(e) = update_repos(&repos) {
-                    eprintln!("Warning: repo update failed: {}", e);
-                }
+            if let Err(e) = update_repos(&repos) {
+                eprintln!("Warning: repo update failed: {}", e);
             }
             cmd_create(&name, repos, strategy)
         }
@@ -637,24 +575,22 @@ fn cmd_repo_list() -> Result<i32> {
         return Ok(0);
     }
 
-    let home = config::home_dir().unwrap_or_default();
-
     let name_w = repos.iter().map(|r| r.name.len()).max().unwrap_or(0).max(4);
-    let path_display: Vec<String> = repos
+    let url_display: Vec<String> = repos
         .iter()
-        .map(|r| shorten_project_path(&r.path, &home))
+        .map(|r| repo::origin_url(&r.path).unwrap_or_else(|| "(local)".to_string()))
         .collect();
-    let path_w = path_display
+    let url_w = url_display
         .iter()
-        .map(|p| p.len())
+        .map(|u| u.len())
         .max()
         .unwrap_or(0)
-        .max(4);
+        .max(6);
 
-    println!("\x1b[2m  {:<name_w$}  {:<path_w$}\x1b[0m", "NAME", "PATH",);
+    println!("\x1b[2m  {:<name_w$}  {:<url_w$}\x1b[0m", "NAME", "ORIGIN");
 
-    for (r, p) in repos.iter().zip(&path_display) {
-        println!("  {:<name_w$}  {:<path_w$}", r.name, p);
+    for (r, u) in repos.iter().zip(&url_display) {
+        println!("  {:<name_w$}  {:<url_w$}", r.name, u);
     }
     Ok(0)
 }
@@ -689,11 +625,12 @@ fn cmd_config_zsh() -> Result<i32> {
 __box_repos() {{
     local -a repos
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
-    if [[ -f "$__box_root/repos" ]]; then
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            repos+=("${{line##*/}}")
-        done < "$__box_root/repos"
+    if [[ -d "$__box_root/repos" ]]; then
+        for bare in "$__box_root/repos"/*.git(N/); do
+            local name=${{bare:t}}
+            name=${{name%.git}}
+            [[ -n "$name" ]] && repos+=("$name")
+        done
     fi
     if (( ${{#repos}} )); then
         _describe 'repo' repos
@@ -705,7 +642,6 @@ _box() {{
     typeset -A opt_args
 
     _arguments -C \
-        '--update[Fetch & pull all registered repos before proceeding]' \
         '1: :->subcmd' \
         '*:: :->args'
 
@@ -733,7 +669,6 @@ _box() {{
                     _arguments \
                         '*--repo=[Select specific repo]:repo:__box_repos' \
                         '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
-                        '--update[Fetch & pull all registered repos before creating]' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -757,7 +692,7 @@ _box() {{
                 repo)
                     if (( CURRENT == 2 )); then
                         local -a repo_subcmds
-                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'rm:Unregister a repo' 'list:List registered repos' 'ls:List registered repos' 'update:Fetch all branches and pull main')
+                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'rm:Unregister a repo' 'list:List registered repos' 'ls:List registered repos')
                         _describe 'repo subcommand' repo_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
@@ -766,13 +701,6 @@ _box() {{
                                 ;;
                             add)
                                 _files -/
-                                ;;
-                            update)
-                                _arguments \
-                                    '--all[Pull all registered repos]' \
-                                    '-a[Pull all registered repos]' \
-                                    '--force[Stash uncommitted changes before pulling]' \
-                                    '-f[Stash uncommitted changes before pulling]'
                                 ;;
                         esac
                     fi
@@ -819,33 +747,18 @@ fn cmd_config_bash() -> Result<i32> {
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
     if [[ $cword -eq 1 ]]; then
-        case "$cur" in
-            -*)
-                COMPREPLY=($(compgen -W "--update" -- "$cur"))
-                ;;
-            *)
-                COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
-                ;;
-        esac
+        COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
         return
     fi
 
-    # Skip global flags to find the actual subcommand
-    local subcmd=""
-    local subcmd_idx=1
-    for ((i=1; i<cword; i++)); do
-        case "${{words[i]}}" in
-            --*) continue ;;
-            *) subcmd="${{words[i]}}"; subcmd_idx=$i; break ;;
-        esac
-    done
+    local subcmd="${{words[1]}}"
     [[ -z "$subcmd" ]] && return
 
     case "$subcmd" in
         new)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--repo --strategy --update" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--repo --strategy" -- "$cur"))
                     ;;
             esac
             if [[ "$prev" == "--strategy" ]]; then
@@ -872,28 +785,23 @@ fn cmd_config_bash() -> Result<i32> {
             ;;
         repo)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove rm list ls update" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${{words[2]}}" in
                     remove|rm)
                         local repos=""
-                        if [[ -f "$__box_root/repos" ]]; then
-                            while IFS= read -r line; do
-                                [[ -z "$line" ]] && continue
-                                repos+=" ${{line##*/}}"
-                            done < "$__box_root/repos"
+                        if [[ -d "$__box_root/repos" ]]; then
+                            for bare in "$__box_root/repos"/*.git; do
+                                [[ -d "$bare" ]] || continue
+                                local name=$(basename "$bare" .git)
+                                [[ -n "$name" ]] && repos+=" $name"
+                            done
                         fi
                         COMPREPLY=($(compgen -W "$repos" -- "$cur"))
                         ;;
                     add)
                         COMPREPLY=($(compgen -d -- "$cur"))
                         ;;
-                    update)
-                        case "$cur" in
-                            -*)
-                                COMPREPLY=($(compgen -W "--all -a --force -f" -- "$cur"))
-                                ;;
-                        esac
                         ;;
                 esac
             fi
@@ -925,8 +833,7 @@ box() {{
     Ok(0)
 }
 
-/// Fetch, checkout default branch, and pull a single repo.
-/// Returns true if the update succeeded.
+/// Fetch all refs for a bare repo.
 fn update_repo(entry: &repo::RepoEntry) -> Result<bool> {
     let status = std::process::Command::new("git")
         .args(["-C", &entry.path, "fetch", "--all", "--prune"])
@@ -935,45 +842,6 @@ fn update_repo(entry: &repo::RepoEntry) -> Result<bool> {
         eprintln!("  \x1b[31mfetch failed\x1b[0m");
         return Ok(false);
     }
-
-    let default_branch = std::process::Command::new("git")
-        .args([
-            "-C",
-            &entry.path,
-            "symbolic-ref",
-            "refs/remotes/origin/HEAD",
-        ])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                s.strip_prefix("refs/remotes/origin/")
-                    .map(|b| b.to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "main".to_string());
-
-    let status = std::process::Command::new("git")
-        .args(["-C", &entry.path, "checkout", &default_branch])
-        .status()?;
-    if !status.success() {
-        eprintln!(
-            "  \x1b[31mcheckout {} failed (dirty tree?)\x1b[0m",
-            default_branch
-        );
-        return Ok(false);
-    }
-
-    let status = std::process::Command::new("git")
-        .args(["-C", &entry.path, "pull"])
-        .status()?;
-    if !status.success() {
-        eprintln!("  \x1b[31mpull failed\x1b[0m");
-    }
-
     Ok(true)
 }
 
@@ -996,62 +864,6 @@ fn update_repos(names: &[String]) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn cmd_pull(args: &PullArgs) -> Result<i32> {
-    let all_repos = repo::list()?;
-
-    let selected = if args.all {
-        if all_repos.is_empty() {
-            eprintln!("No repos registered. Use `box repo add` to register a repo.");
-            return Ok(1);
-        }
-        all_repos.iter().map(|r| r.name.clone()).collect()
-    } else {
-        match tui::select_repos("Select repos to pull (Space=toggle, Enter=confirm):")? {
-            Some(repos) => repos,
-            None => return Ok(0),
-        }
-    };
-
-    for name in &selected {
-        let entry = all_repos
-            .iter()
-            .find(|r| &r.name == name)
-            .ok_or_else(|| anyhow::anyhow!("Repo '{}' not found in registry.", name))?;
-
-        eprintln!("\x1b[1m{}\x1b[0m", entry.name);
-
-        // Stash uncommitted changes when --force is set
-        let mut stashed = false;
-        if args.force {
-            let output = std::process::Command::new("git")
-                .args(["-C", &entry.path, "status", "--porcelain"])
-                .output()?;
-            if !output.stdout.is_empty() {
-                let status = std::process::Command::new("git")
-                    .args(["-C", &entry.path, "stash", "--include-untracked"])
-                    .status()?;
-                if status.success() {
-                    stashed = true;
-                    eprintln!("  \x1b[33mstashed uncommitted changes\x1b[0m");
-                }
-            }
-        }
-
-        update_repo(entry)?;
-
-        if stashed {
-            eprintln!(
-                "  \x1b[33mnote: run `git -C {} stash pop` to restore changes\x1b[0m",
-                entry.path
-            );
-        }
-
-        eprintln!();
-    }
-
-    Ok(0)
 }
 
 fn cmd_upgrade() -> Result<i32> {
@@ -1342,92 +1154,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -- repo update subcommand --
-
-    #[test]
-    fn test_repo_update_subcommand_parses() {
-        let cli = parse(&["repo", "update"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(!args.force);
-                assert!(!args.all);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_repo_update_force_flag() {
-        let cli = parse(&["repo", "update", "--force"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(args.force);
-                assert!(!args.all);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_repo_update_force_short_flag() {
-        let cli = parse(&["repo", "update", "-f"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(args.force);
-                assert!(!args.all);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_repo_update_all_flag() {
-        let cli = parse(&["repo", "update", "--all"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(args.all);
-                assert!(!args.force);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_repo_update_all_short_flag() {
-        let cli = parse(&["repo", "update", "-a"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(args.all);
-                assert!(!args.force);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_repo_update_all_and_force_flags() {
-        let cli = parse(&["repo", "update", "--all", "--force"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(args.all);
-                assert!(args.force);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
-    }
-
     // -- upgrade subcommand --
 
     #[test]
@@ -1578,44 +1304,18 @@ mod tests {
         ));
     }
 
-    // -- --update flag --
+    // -- no --update flag (removed) --
 
     #[test]
-    fn test_update_flag_with_no_subcommand() {
-        let cli = parse(&["--update"]);
-        assert!(cli.update);
-        assert!(cli.command.is_none());
+    fn test_update_flag_rejected() {
+        let result = try_parse(&["--update"]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_update_flag_with_new_subcommand() {
-        let cli = parse(&["--update", "new", "my-session", "--repo", "app"]);
-        assert!(cli.update);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert!(!args.update);
-            }
-            other => panic!("expected New, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_new_update_flag() {
-        let cli = parse(&["new", "my-session", "--repo", "app", "--update"]);
-        assert!(!cli.update);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert!(args.update);
-            }
-            other => panic!("expected New, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_no_update_flag_defaults_false() {
-        let cli = parse(&[]);
-        assert!(!cli.update);
+    fn test_new_update_flag_rejected() {
+        let result = try_parse(&["new", "my-session", "--repo", "app", "--update"]);
+        assert!(result.is_err());
     }
 
     // -- bare name is rejected (subcommand required) --
