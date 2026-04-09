@@ -14,7 +14,7 @@
 
 Boxは`git worktree`（デフォルト）または`git clone --local`を使って名前付きワークスペースを作成・管理するツールです。
 
-- `box repo add`でリポジトリを登録し、セッションを作成すると`~/.box/workspaces/<session>/`にワークスペースが作られる
+- `box repo add`でリポジトリを登録（`~/.box/repos/`にbare clone）し、セッションを作成すると`~/.box/workspaces/<session>/`にワークスペースが作られる
 - 複数リポジトリを1つのセッションにまとめられる
 - worktreeモードは軽量で高速、cloneモードは完全な`.git`分離を提供
 
@@ -84,10 +84,9 @@ box edit <name>                        セッションのリポジトリを追�
 box list [options]                     セッション一覧（エイリアス: ls）
 box remove [<name>]                    セッションとワークスペースを削除（エイリアス: rm）
 box cd <name>                          セッションのワークスペースにcd
-box repo add [path]                    gitリポジトリを登録
+box repo add [path]                    gitリポジトリを登録（bare clone）
 box repo remove <name>                 リポジトリの登録を解除（エイリアス: rm）
 box repo list                          登録リポジトリ一覧（エイリアス: ls）
-box repo update [options]              登録リポジトリをfetch & pull
 box config zsh|bash                    シェル設定を出力
 box upgrade                            最新版にアップグレード
 ```
@@ -136,7 +135,7 @@ box cd my-feature               # セッションのワークスペースにcd
 
 ## マルチリポワークスペース
 
-リポジトリを登録し、セッション作成時に名前で指定します：
+リポジトリを登録（`~/.box/repos/`にbare clone）し、セッション作成時に名前で指定します：
 
 ```bash
 box repo add ~/projects/frontend
@@ -145,7 +144,7 @@ box repo add ~/projects/backend
 box new my-feature --repo frontend --repo backend
 ```
 
-各リポジトリは`~/.box/workspaces/<session>/<repo>/`にクローンされます。単一リポジトリの場合、ワークスペースパスはリポジトリのサブディレクトリに直接解決されます。
+セッション作成時にリポジトリは自動的にfetchされます。各リポジトリは`~/.box/workspaces/<session>/<repo>/`にセットアップされます。単一リポジトリの場合、ワークスペースパスはリポジトリのサブディレクトリに直接解決されます。
 
 ## オプション
 
@@ -163,13 +162,6 @@ box new my-feature --repo frontend --repo backend
 |--------|-------------|
 | `--project`, `-p` | 現在のプロジェクトのセッションのみ表示 |
 | `--quiet`, `-q` | セッション名のみ出力 |
-
-### `box repo update`
-
-| オプション | 説明 |
-|--------|-------------|
-| `--all`, `-a` | 対話選択なしで全登録リポジトリをupdate |
-| `--force`, `-f` | update前に未コミットの変更をstash |
 
 ## 環境変数
 
@@ -196,19 +188,19 @@ Boxは2つのワークスペース戦略をサポートしています：
 ### Worktree（デフォルト）
 
 ```
-登録済みリポジトリ     box new my-feature        ~/.box/workspaces/my-feature/
-  frontend/       ──── git worktree add ─────>      frontend/
-  backend/                                          backend/
+~/.box/repos/              box new my-feature        ~/.box/workspaces/my-feature/
+  frontend.git    ──── git worktree add ─────>      frontend/
+  backend.git                                       backend/
 ```
 
-`git worktree`は元のリポジトリにリンクされた軽量な作業ツリーを作成します。オブジェクトストアを共有するため、作成は即座に完了しディスク使用量も最小限です。各worktreeは独自のブランチを持ち、`box remove`でworktreeを適切にクリーンアップします。
+`git worktree`はbare repoにリンクされた軽量な作業ツリーを作成します。オブジェクトストアを共有するため、作成は即座に完了しディスク使用量も最小限です。各worktreeは独自のブランチを持ち、`box remove`でworktreeを適切にクリーンアップします。
 
 ### Clone
 
 ```
-登録済みリポジトリ     box new my-feature        ~/.box/workspaces/my-feature/
-  frontend/       ──── git clone --local ────>      frontend/
-  backend/                                          backend/
+~/.box/repos/              box new my-feature        ~/.box/workspaces/my-feature/
+  frontend.git    ──── git clone --local ────>      frontend/
+  backend.git                                       backend/
 ```
 
 `git clone --local`はハードリンクを使って完全に独立したgitリポジトリを作成します。各クローンは独自の`.git`ディレクトリを持つため、ワークスペース内でのコミット、ブランチ操作、リセットなどが元のリポジトリに影響することはありません。
@@ -224,6 +216,7 @@ Boxは2つのワークスペース戦略をサポートしています：
 
 | 項目 | 詳細 |
 |--------|--------|
+| Bareリポジトリ | `~/.box/repos/<name>.git/` |
 | ワークスペースの場所 | `~/.box/workspaces/<session>/` |
 | セッションメタデータ | `~/.box/sessions/<session>/` |
 | デフォルト戦略 | `git worktree`（`--strategy clone`で変更可能） |

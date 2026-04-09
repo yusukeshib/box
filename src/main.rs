@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                              # fetch registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -72,8 +72,6 @@ enum RepoAction {
     /// List registered repos
     #[command(alias = "ls")]
     List,
-    /// Fetch all refs for registered repos
-    Update(PullArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -100,13 +98,6 @@ struct EditArgs {
 struct RemoveArgs {
     /// Session name (opens interactive selector if omitted)
     name: Option<String>,
-}
-
-#[derive(clap::Args, Debug)]
-struct PullArgs {
-    /// Fetch all registered repos without interactive selection
-    #[arg(long, short)]
-    all: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -162,7 +153,6 @@ fn main() {
             RepoAction::Add { path } => cmd_repo_add(path),
             RepoAction::Remove { name } => cmd_repo_remove(&name),
             RepoAction::List => cmd_repo_list(),
-            RepoAction::Update(args) => cmd_pull(&args),
         },
         Some(Commands::Upgrade) => cmd_upgrade(),
         Some(Commands::Config { shell }) => match shell {
@@ -702,7 +692,7 @@ _box() {{
                 repo)
                     if (( CURRENT == 2 )); then
                         local -a repo_subcmds
-                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'rm:Unregister a repo' 'list:List registered repos' 'ls:List registered repos' 'update:Fetch all refs')
+                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'rm:Unregister a repo' 'list:List registered repos' 'ls:List registered repos')
                         _describe 'repo subcommand' repo_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
@@ -711,11 +701,6 @@ _box() {{
                                 ;;
                             add)
                                 _files -/
-                                ;;
-                            update)
-                                _arguments \
-                                    '--all[Fetch all registered repos]' \
-                                    '-a[Fetch all registered repos]'
                                 ;;
                         esac
                     fi
@@ -800,7 +785,7 @@ fn cmd_config_bash() -> Result<i32> {
             ;;
         repo)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove rm list ls update" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${{words[2]}}" in
                     remove|rm)
@@ -817,12 +802,6 @@ fn cmd_config_bash() -> Result<i32> {
                     add)
                         COMPREPLY=($(compgen -d -- "$cur"))
                         ;;
-                    update)
-                        case "$cur" in
-                            -*)
-                                COMPREPLY=($(compgen -W "--all -a" -- "$cur"))
-                                ;;
-                        esac
                         ;;
                 esac
             fi
@@ -885,36 +864,6 @@ fn update_repos(names: &[String]) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn cmd_pull(args: &PullArgs) -> Result<i32> {
-    let all_repos = repo::list()?;
-
-    let selected = if args.all {
-        if all_repos.is_empty() {
-            eprintln!("No repos registered. Use `box repo add` to register a repo.");
-            return Ok(1);
-        }
-        all_repos.iter().map(|r| r.name.clone()).collect()
-    } else {
-        match tui::select_repos("Select repos to fetch (Space=toggle, Enter=confirm):")? {
-            Some(repos) => repos,
-            None => return Ok(0),
-        }
-    };
-
-    for name in &selected {
-        let entry = all_repos
-            .iter()
-            .find(|r| &r.name == name)
-            .ok_or_else(|| anyhow::anyhow!("Repo '{}' not found in registry.", name))?;
-
-        eprintln!("\x1b[1m{}\x1b[0m", entry.name);
-        update_repo(entry)?;
-        eprintln!();
-    }
-
-    Ok(0)
 }
 
 fn cmd_upgrade() -> Result<i32> {
@@ -1203,47 +1152,6 @@ mod tests {
     fn test_switch_requires_name() {
         let result = try_parse(&["switch"]);
         assert!(result.is_err());
-    }
-
-    // -- repo update subcommand --
-
-    #[test]
-    fn test_repo_update_subcommand_parses() {
-        let cli = parse(&["repo", "update"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(!args.all);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_repo_update_all_flag() {
-        let cli = parse(&["repo", "update", "--all"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(args.all);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_repo_update_all_short_flag() {
-        let cli = parse(&["repo", "update", "-a"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Update(args),
-            }) => {
-                assert!(args.all);
-            }
-            other => panic!("expected Repo Update, got {:?}", other),
-        }
     }
 
     // -- upgrade subcommand --

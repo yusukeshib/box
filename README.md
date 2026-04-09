@@ -14,7 +14,7 @@ A CLI tool that manages sandboxed git workspaces. Multi-repo support included.
 
 Box creates and manages named workspaces using `git worktree` (default) or `git clone --local`.
 
-- Register repos with `box repo add`, then create sessions — each session sets up repos in `~/.box/workspaces/<session>/`
+- Register repos with `box repo add` (bare-cloned to `~/.box/repos/`), then create sessions — each session sets up repos in `~/.box/workspaces/<session>/`
 - Multiple repos can be grouped into a single session
 - Worktree mode is lightweight and fast; clone mode gives full `.git` isolation
 
@@ -84,10 +84,9 @@ box edit <name>                        Add/remove repos in a session
 box list [options]                     List sessions (alias: ls)
 box remove [<name>]                    Remove a session (alias: rm)
 box cd <name>                          cd into the session workspace
-box repo add [path]                    Register a git repo
+box repo add [path]                    Register a git repo (bare clone)
 box repo remove <name>                 Unregister a repo (alias: rm)
 box repo list                          List registered repos (alias: ls)
-box repo update [options]              Fetch & pull registered repos
 box config zsh|bash                    Output shell configuration
 box upgrade                            Upgrade to latest version
 ```
@@ -136,7 +135,7 @@ With shell integration enabled (`eval "$(box config zsh)"`), `box cd` changes yo
 
 ## Multi-repo Workspaces
 
-Register repos, then reference them by name when creating sessions:
+Register repos (bare-cloned to `~/.box/repos/`), then reference them by name when creating sessions:
 
 ```bash
 box repo add ~/projects/frontend
@@ -145,7 +144,7 @@ box repo add ~/projects/backend
 box new my-feature --repo frontend --repo backend
 ```
 
-Each repo is cloned into `~/.box/workspaces/<session>/<repo>/`. For single-repo sessions, the workspace path resolves directly to the repo subdirectory.
+Repos are always fetched before session creation. Each repo is set up in `~/.box/workspaces/<session>/<repo>/`. For single-repo sessions, the workspace path resolves directly to the repo subdirectory.
 
 ## Options
 
@@ -163,13 +162,6 @@ Each repo is cloned into `~/.box/workspaces/<session>/<repo>/`. For single-repo 
 |--------|-------------|
 | `--project`, `-p` | Show only sessions for the current project directory |
 | `--quiet`, `-q` | Only print session names |
-
-### `box repo update`
-
-| Option | Description |
-|--------|-------------|
-| `--all`, `-a` | Update all registered repos without interactive selection |
-| `--force`, `-f` | Stash uncommitted changes before updating |
 
 ## Environment Variables
 
@@ -196,19 +188,19 @@ Box supports two workspace strategies:
 ### Worktree (default)
 
 ```
-registered repos      box new my-feature        ~/.box/workspaces/my-feature/
-  frontend/      ──── git worktree add ─────>      frontend/
-  backend/                                         backend/
+~/.box/repos/             box new my-feature        ~/.box/workspaces/my-feature/
+  frontend.git   ──── git worktree add ─────>      frontend/
+  backend.git                                      backend/
 ```
 
-`git worktree` creates a lightweight working tree linked to the original repo. It shares the object store, so creation is instant and uses minimal disk space. Each worktree gets its own branch, and `box remove` cleans up the worktree properly.
+`git worktree` creates a lightweight working tree linked to the bare repo. It shares the object store, so creation is instant and uses minimal disk space. Each worktree gets its own branch, and `box remove` cleans up the worktree properly.
 
 ### Clone
 
 ```
-registered repos      box new my-feature        ~/.box/workspaces/my-feature/
-  frontend/      ──── git clone --local ────>      frontend/
-  backend/                                         backend/
+~/.box/repos/             box new my-feature        ~/.box/workspaces/my-feature/
+  frontend.git   ──── git clone --local ────>      frontend/
+  backend.git                                      backend/
 ```
 
 `git clone --local` creates a fully independent git repo using hardlinks for file objects. Each clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace do not affect the original.
@@ -224,6 +216,7 @@ registered repos      box new my-feature        ~/.box/workspaces/my-feature/
 
 | Aspect | Detail |
 |--------|--------|
+| Bare repos | `~/.box/repos/<name>.git/` |
 | Workspace location | `~/.box/workspaces/<session>/` |
 | Session metadata | `~/.box/sessions/<session>/` |
 | Default strategy | `git worktree` (override with `--strategy clone`) |
