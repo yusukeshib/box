@@ -17,13 +17,13 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box --update                                 # update repos, then open session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --update     # update repos, then create session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box --update                                 # open session manager, update selected repos\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --update     # update app-a, then create session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Fetch & pull all registered repos before proceeding
+    /// Fetch & pull selected repos before creating session
     #[arg(long)]
     update: bool,
 }
@@ -93,7 +93,7 @@ struct CreateArgs {
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
 
-    /// Fetch & pull all registered repos before creating
+    /// Fetch & pull specified repos before creating
     #[arg(long)]
     update: bool,
 }
@@ -153,7 +153,7 @@ fn main() {
                 std::process::exit(1);
             }
             if update || args.update {
-                if let Err(e) = update_all_repos() {
+                if let Err(e) = update_repos(&args.repo) {
                     eprintln!("Warning: repo update failed: {}", e);
                 }
             }
@@ -219,14 +219,7 @@ fn main() {
                 ConfigShell::Bash => cmd_config_bash(),
             }
         }
-        None => {
-            if update {
-                if let Err(e) = update_all_repos() {
-                    eprintln!("Warning: repo update failed: {}", e);
-                }
-            }
-            cmd_default()
-        }
+        None => cmd_default(update),
     };
 
     match result {
@@ -353,21 +346,28 @@ fn resolve_project_dir(
 }
 
 /// `box` with no args: interactive TUI to create a session.
-fn cmd_default() -> Result<i32> {
+fn cmd_default(update: bool) -> Result<i32> {
     if std::env::var_os("BOX_SESSION").is_some() {
         bail!(
             "Cannot nest box sessions (already inside session {:?}).",
             std::env::var("BOX_SESSION").unwrap_or_default()
         );
     }
-    cmd_create_tui()
+    cmd_create_tui(update)
 }
 
 /// `box create` with no name: prompt for session details.
-fn cmd_create_tui() -> Result<i32> {
+fn cmd_create_tui(update: bool) -> Result<i32> {
     let strategy = workspace::Strategy::resolve(None)?;
     match tui::create_session()? {
-        tui::TuiAction::New { name, repos } => cmd_create(&name, repos, strategy),
+        tui::TuiAction::New { name, repos } => {
+            if update {
+                if let Err(e) = update_repos(&repos) {
+                    eprintln!("Warning: repo update failed: {}", e);
+                }
+            }
+            cmd_create(&name, repos, strategy)
+        }
         _ => Ok(0),
     }
 }
@@ -977,15 +977,19 @@ fn update_repo(entry: &repo::RepoEntry) -> Result<bool> {
     Ok(true)
 }
 
-/// Fetch & pull all registered repos (used by --update flag).
-fn update_all_repos() -> Result<()> {
+/// Fetch & pull only the named repos (used by --update flag).
+fn update_repos(names: &[String]) -> Result<()> {
     let all_repos = repo::list()?;
-    if all_repos.is_empty() {
+    let selected: Vec<&repo::RepoEntry> = all_repos
+        .iter()
+        .filter(|r| names.contains(&r.name))
+        .collect();
+    if selected.is_empty() {
         return Ok(());
     }
 
     eprintln!("\x1b[2mUpdating repos…\x1b[0m");
-    for entry in &all_repos {
+    for entry in &selected {
         eprintln!("\x1b[1m{}\x1b[0m", entry.name);
         update_repo(entry)?;
         eprintln!();
