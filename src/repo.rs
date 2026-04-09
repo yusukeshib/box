@@ -30,13 +30,19 @@ fn migrate_old_repos_file() -> Result<()> {
         return Ok(());
     }
 
-    // Rename the old file so we can create the directory
-    let backup = config::box_root()?.join("repos.bak");
+    // Rename the old file so we can create the directory.
+    // Use a timestamped backup name to avoid collisions.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let backup = config::box_root()?.join(format!("repos.{}.bak", ts));
     fs::rename(&path, &backup)?;
     let dir = config::box_root()?.join("repos");
     fs::create_dir_all(&dir)?;
 
     eprintln!("\x1b[2mMigrating repos to bare clones…\x1b[0m");
+    let mut had_failures = false;
     for line in &lines {
         let repo_path = line.trim();
         let name = Path::new(repo_path)
@@ -61,11 +67,19 @@ fn migrate_old_repos_file() -> Result<()> {
             }
             _ => {
                 eprintln!("    \x1b[31mfailed to bare-clone, skipping\x1b[0m");
+                had_failures = true;
             }
         }
     }
 
-    fs::remove_file(&backup)?;
+    if had_failures {
+        eprintln!(
+            "\x1b[33mSome repos failed to migrate. Old registry kept at: {}\x1b[0m",
+            backup.display()
+        );
+    } else {
+        let _ = fs::remove_file(&backup);
+    }
     eprintln!();
     Ok(())
 }
@@ -181,12 +195,19 @@ pub fn origin_url(path: &str) -> Option<String> {
 }
 
 pub fn remove(name: &str) -> Result<()> {
+    if name.contains('/') || name.contains('\\') || name == ".." || name == "." {
+        bail!("Invalid repo name '{}'.", name);
+    }
     let dir = repos_dir()?;
     let bare = dir.join(format!("{}.git", name));
-    if !bare.exists() {
-        bail!("No repo named '{}' is registered.", name);
+    // Ensure the resolved path stays within repos_dir
+    let canonical_bare = fs::canonicalize(&bare)
+        .map_err(|_| anyhow::anyhow!("No repo named '{}' is registered.", name))?;
+    let canonical_dir = fs::canonicalize(&dir)?;
+    if !canonical_bare.starts_with(&canonical_dir) {
+        bail!("Invalid repo name '{}'.", name);
     }
-    fs::remove_dir_all(&bare)?;
+    fs::remove_dir_all(&canonical_bare)?;
     eprintln!("Removed repo '{}'.", name);
     Ok(())
 }
@@ -216,17 +237,23 @@ mod tests {
     fn make_git_repo(base: &Path, name: &str) -> PathBuf {
         let dir = base.join(name);
         fs::create_dir_all(&dir).unwrap();
-        std::process::Command::new("git")
-            .args(["init", dir.to_str().unwrap()])
+        let dir_str = dir.to_str().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", dir_str])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
             .unwrap();
+        assert!(status.success(), "git init failed");
         // Create an initial commit so the repo has a HEAD
-        std::process::Command::new("git")
+        let status = std::process::Command::new("git")
             .args([
                 "-C",
-                dir.to_str().unwrap(),
+                dir_str,
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@test.com",
                 "commit",
                 "--allow-empty",
                 "-m",
@@ -236,6 +263,7 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .status()
             .unwrap();
+        assert!(status.success(), "git commit failed");
         dir
     }
 
