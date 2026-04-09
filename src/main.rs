@@ -17,11 +17,15 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature                           # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box --update                                 # update repos, then open session manager\n  box new my-feature                           # create a new session\n  box new my-feature --update                  # update repos, then create session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    /// Fetch & pull all registered repos before proceeding
+    #[arg(long)]
+    update: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -88,6 +92,10 @@ struct CreateArgs {
     /// Workspace strategy: worktree (default) or clone
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
+
+    /// Fetch & pull all registered repos before creating
+    #[arg(long)]
+    update: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -133,6 +141,8 @@ enum ConfigShell {
 fn main() {
     let cli = Cli::parse();
 
+    let update = cli.update;
+
     let result = match cli.command {
         Some(Commands::New(args)) => {
             if std::env::var_os("BOX_SESSION").is_some() {
@@ -141,6 +151,11 @@ fn main() {
                     std::env::var("BOX_SESSION").unwrap_or_default()
                 );
                 std::process::exit(1);
+            }
+            if update || args.update {
+                if let Err(e) = update_all_repos() {
+                    eprintln!("Warning: repo update failed: {}", e);
+                }
             }
             let strategy = match workspace::Strategy::from_str(&args.strategy) {
                 Ok(s) => s,
@@ -169,7 +184,14 @@ fn main() {
             ConfigShell::Zsh => cmd_config_zsh(),
             ConfigShell::Bash => cmd_config_bash(),
         },
-        None => cmd_default(),
+        None => {
+            if update {
+                if let Err(e) = update_all_repos() {
+                    eprintln!("Warning: repo update failed: {}", e);
+                }
+            }
+            cmd_default()
+        }
     };
 
     match result {
@@ -648,6 +670,7 @@ _box() {{
     typeset -A opt_args
 
     _arguments -C \
+        '--update[Fetch & pull all registered repos before proceeding]' \
         '1: :->subcmd' \
         '*:: :->args'
 
@@ -675,6 +698,7 @@ _box() {{
                     _arguments \
                         '*--repo=[Select specific repo]:repo:__box_repos' \
                         '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
+                        '--update[Fetch & pull all registered repos before creating]' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -760,7 +784,14 @@ fn cmd_config_bash() -> Result<i32> {
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
+        case "$cur" in
+            -*)
+                COMPREPLY=($(compgen -W "--update" -- "$cur"))
+                ;;
+            *)
+                COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
+                ;;
+        esac
         return
     fi
 
@@ -770,7 +801,7 @@ fn cmd_config_bash() -> Result<i32> {
         new)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--repo --strategy" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--repo --strategy --update" -- "$cur"))
                     ;;
             esac
             if [[ "$prev" == "--strategy" ]]; then
@@ -848,6 +879,69 @@ box() {{
 "#
     );
     Ok(0)
+}
+
+/// Fetch & pull all registered repos (used by --update flag).
+fn update_all_repos() -> Result<()> {
+    let all_repos = repo::list()?;
+    if all_repos.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!("\x1b[2mUpdating repos…\x1b[0m");
+    for entry in &all_repos {
+        eprintln!("\x1b[1m{}\x1b[0m", entry.name);
+
+        let status = std::process::Command::new("git")
+            .args(["-C", &entry.path, "fetch", "--all", "--prune"])
+            .status()?;
+        if !status.success() {
+            eprintln!("  \x1b[31mfetch failed\x1b[0m");
+            continue;
+        }
+
+        let default_branch = std::process::Command::new("git")
+            .args([
+                "-C",
+                &entry.path,
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+            ])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    s.strip_prefix("refs/remotes/origin/")
+                        .map(|b| b.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "main".to_string());
+
+        let status = std::process::Command::new("git")
+            .args(["-C", &entry.path, "checkout", &default_branch])
+            .status()?;
+        if !status.success() {
+            eprintln!(
+                "  \x1b[31mcheckout {} failed (dirty tree?)\x1b[0m",
+                default_branch
+            );
+            continue;
+        }
+
+        let status = std::process::Command::new("git")
+            .args(["-C", &entry.path, "pull"])
+            .status()?;
+        if !status.success() {
+            eprintln!("  \x1b[31mpull failed\x1b[0m");
+        }
+
+        eprintln!();
+    }
+
+    Ok(())
 }
 
 fn cmd_pull(args: &PullArgs) -> Result<i32> {
