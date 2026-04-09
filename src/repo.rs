@@ -1,9 +1,9 @@
 use anyhow::{bail, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::config;
-use crate::git;
 
 #[derive(Debug, Clone)]
 pub struct RepoEntry {
@@ -11,28 +11,94 @@ pub struct RepoEntry {
     pub path: String,
 }
 
-pub fn repos_file() -> Result<PathBuf> {
+pub fn repos_dir() -> Result<PathBuf> {
     Ok(config::box_root()?.join("repos"))
 }
 
+/// Migrate the old flat-file `~/.box/repos` registry to bare clones under
+/// `~/.box/repos/`. Each line in the old file is a path to a git repo;
+/// we bare-clone it into `~/.box/repos/<name>.git`.
+fn migrate_old_repos_file() -> Result<()> {
+    let path = config::box_root()?.join("repos");
+    if !path.is_file() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&path)?;
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    if lines.is_empty() {
+        fs::remove_file(&path)?;
+        return Ok(());
+    }
+
+    // Rename the old file so we can create the directory
+    let backup = config::box_root()?.join("repos.bak");
+    fs::rename(&path, &backup)?;
+    let dir = config::box_root()?.join("repos");
+    fs::create_dir_all(&dir)?;
+
+    eprintln!("\x1b[2mMigrating repos to bare clones…\x1b[0m");
+    for line in &lines {
+        let repo_path = line.trim();
+        let name = Path::new(repo_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let dest = dir.join(format!("{}.git", name));
+        if dest.exists() {
+            continue;
+        }
+        eprintln!("  \x1b[1m{}\x1b[0m", name);
+        let dest_str = dest.to_string_lossy().to_string();
+        let status = Command::new("git")
+            .args(["clone", "--bare", repo_path, &dest_str])
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                repoint_origin(repo_path, &dest_str);
+            }
+            _ => {
+                eprintln!("    \x1b[31mfailed to bare-clone, skipping\x1b[0m");
+            }
+        }
+    }
+
+    fs::remove_file(&backup)?;
+    eprintln!();
+    Ok(())
+}
+
 pub fn list() -> Result<Vec<RepoEntry>> {
-    let file = repos_file()?;
-    if !file.exists() {
+    let dir = repos_dir()?;
+
+    // Auto-migrate old flat-file format
+    if dir.is_file() {
+        migrate_old_repos_file()?;
+    }
+
+    if !dir.is_dir() {
         return Ok(Vec::new());
     }
-    let content = fs::read_to_string(&file)?;
-    let entries = content
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            let path = l.trim().to_string();
-            let name = Path::new(&path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            RepoEntry { name, path }
-        })
-        .collect();
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        if let Some(name) = dir_name.strip_suffix(".git") {
+            if !name.is_empty() && path.join("HEAD").exists() {
+                entries.push(RepoEntry {
+                    name: name.to_string(),
+                    path: path.to_string_lossy().to_string(),
+                });
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
 }
 
@@ -41,7 +107,7 @@ pub fn add(path: &str) -> Result<()> {
         fs::canonicalize(path).map_err(|_| anyhow::anyhow!("Path '{}' does not exist.", path))?;
     let canonical_str = canonical.to_string_lossy().to_string();
 
-    if !git::is_repo(&canonical) {
+    if !crate::git::is_repo(&canonical) {
         bail!("'{}' is not a git repository.", canonical_str);
     }
 
@@ -52,63 +118,75 @@ pub fn add(path: &str) -> Result<()> {
 
     let existing = list()?;
     for entry in &existing {
-        if entry.path == canonical_str {
-            bail!("Repo '{}' is already registered.", canonical_str);
-        }
         if entry.name == name {
-            bail!(
-                "A repo named '{}' is already registered (from '{}').",
-                name,
-                entry.path
-            );
+            bail!("A repo named '{}' is already registered.", name);
         }
     }
 
-    let file = repos_file()?;
-    if let Some(parent) = file.parent() {
-        fs::create_dir_all(parent)?;
+    let dir = repos_dir()?;
+    fs::create_dir_all(&dir)?;
+
+    let dest = dir.join(format!("{}.git", name));
+    let dest_str = dest.to_string_lossy().to_string();
+
+    eprintln!("\x1b[2mbare-cloning {}…\x1b[0m", name);
+    let status = Command::new("git")
+        .args(["clone", "--bare", &canonical_str, &dest_str])
+        .status()?;
+    if !status.success() {
+        bail!("git clone --bare failed for '{}'.", name);
     }
 
-    let mut content = if file.exists() {
-        fs::read_to_string(&file)?
-    } else {
-        String::new()
-    };
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
-    }
-    content.push_str(&canonical_str);
-    content.push('\n');
-    fs::write(&file, content)?;
+    // Repoint origin to the actual remote URL (not the local path)
+    repoint_origin(&canonical_str, &dest_str);
 
-    eprintln!(
-        "Registered repo '\x1b[1m{}\x1b[0m' ({})",
-        name, canonical_str
-    );
+    eprintln!("Registered repo '\x1b[1m{}\x1b[0m' (bare clone)", name);
     Ok(())
 }
 
+/// Repoint the bare clone's origin from the local source path to the source's
+/// actual remote URL (e.g. GitHub). If the source has no remote, leave as-is.
+fn repoint_origin(source_dir: &str, bare_dir: &str) {
+    if let Ok(output) = Command::new("git")
+        .args(["-C", source_dir, "remote", "get-url", "origin"])
+        .output()
+    {
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !url.is_empty() {
+                let _ = Command::new("git")
+                    .args(["-C", bare_dir, "remote", "set-url", "origin", &url])
+                    .status();
+            }
+        }
+    }
+}
+
+/// Get the origin remote URL from a bare clone, for display purposes.
+pub fn origin_url(path: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["-C", path, "remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !url.is_empty() {
+            Some(url)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 pub fn remove(name: &str) -> Result<()> {
-    let existing = list()?;
-    let found = existing.iter().any(|e| e.name == name);
-    if !found {
+    let dir = repos_dir()?;
+    let bare = dir.join(format!("{}.git", name));
+    if !bare.exists() {
         bail!("No repo named '{}' is registered.", name);
     }
-
-    let file = repos_file()?;
-    let content: String = existing
-        .iter()
-        .filter(|e| e.name != name)
-        .map(|e| e.path.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let content = if content.is_empty() {
-        String::new()
-    } else {
-        format!("{}\n", content)
-    };
-    fs::write(&file, content)?;
-
+    fs::remove_dir_all(&bare)?;
     eprintln!("Removed repo '{}'.", name);
     Ok(())
 }
@@ -144,6 +222,20 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .status()
             .unwrap();
+        // Create an initial commit so the repo has a HEAD
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                dir.to_str().unwrap(),
+                "commit",
+                "--allow-empty",
+                "-m",
+                "init",
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
         dir
     }
 
@@ -164,31 +256,16 @@ mod tests {
             let repos = list().unwrap();
             assert_eq!(repos.len(), 1);
             assert_eq!(repos[0].name, "my-app");
-        });
-    }
-
-    #[test]
-    fn test_add_duplicate_path() {
-        with_temp_home(|home| {
-            let repo = make_git_repo(home, "my-app");
-            add(repo.to_str().unwrap()).unwrap();
-            let err = add(repo.to_str().unwrap()).unwrap_err();
-            assert!(err.to_string().contains("already registered"));
+            assert!(repos[0].path.ends_with("my-app.git"));
         });
     }
 
     #[test]
     fn test_add_duplicate_name() {
         with_temp_home(|home| {
-            let dir1 = home.join("a");
-            fs::create_dir_all(&dir1).unwrap();
-            let repo1 = make_git_repo(&dir1, "app");
-            add(repo1.to_str().unwrap()).unwrap();
-
-            let dir2 = home.join("b");
-            fs::create_dir_all(&dir2).unwrap();
-            let repo2 = make_git_repo(&dir2, "app");
-            let err = add(repo2.to_str().unwrap()).unwrap_err();
+            let repo = make_git_repo(home, "my-app");
+            add(repo.to_str().unwrap()).unwrap();
+            let err = add(repo.to_str().unwrap()).unwrap_err();
             assert!(err.to_string().contains("already registered"));
         });
     }
@@ -235,6 +312,19 @@ mod tests {
             let repos = list().unwrap();
             assert_eq!(repos.len(), 1);
             assert_eq!(repos[0].name, "app-b");
+        });
+    }
+
+    #[test]
+    fn test_bare_clone_has_head() {
+        with_temp_home(|home| {
+            let repo = make_git_repo(home, "check-head");
+            add(repo.to_str().unwrap()).unwrap();
+
+            let repos = list().unwrap();
+            assert_eq!(repos.len(), 1);
+            let bare_path = Path::new(&repos[0].path);
+            assert!(bare_path.join("HEAD").exists());
         });
     }
 }
