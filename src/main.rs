@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box --update                                 # update repos, then open session manager\n  box new my-feature                           # create a new session\n  box new my-feature --update                  # update repos, then create session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box --update                                 # update repos, then open session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --update     # update repos, then create session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box repo update                               # fetch & pull registered repos\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -166,24 +166,59 @@ fn main() {
             };
             cmd_create(&args.name, args.repo, strategy)
         }
-        Some(Commands::Edit(args)) => cmd_edit(&args.name),
-        Some(Commands::Remove(args)) => match &args.name {
-            Some(name) => cmd_remove(name),
-            None => cmd_remove_tui(),
-        },
-        Some(Commands::List(args)) => cmd_list_sessions(&args),
-        Some(Commands::Switch { name }) => cmd_cd(&name),
-        Some(Commands::Repo { action }) => match action {
-            RepoAction::Add { path } => cmd_repo_add(path),
-            RepoAction::Remove { name } => cmd_repo_remove(&name),
-            RepoAction::List => cmd_repo_list(),
-            RepoAction::Update(args) => cmd_pull(&args),
-        },
-        Some(Commands::Upgrade) => cmd_upgrade(),
-        Some(Commands::Config { shell }) => match shell {
-            ConfigShell::Zsh => cmd_config_zsh(),
-            ConfigShell::Bash => cmd_config_bash(),
-        },
+        Some(Commands::Edit(args)) => {
+            if update {
+                eprintln!("Warning: --update is only supported with `box` or `box new`");
+            }
+            cmd_edit(&args.name)
+        }
+        Some(Commands::Remove(args)) => {
+            if update {
+                eprintln!("Warning: --update is only supported with `box` or `box new`");
+            }
+            match &args.name {
+                Some(name) => cmd_remove(name),
+                None => cmd_remove_tui(),
+            }
+        }
+        Some(Commands::List(args)) => {
+            if update {
+                eprintln!("Warning: --update is only supported with `box` or `box new`");
+            }
+            cmd_list_sessions(&args)
+        }
+        Some(Commands::Switch { name }) => {
+            if update {
+                eprintln!("Warning: --update is only supported with `box` or `box new`");
+            }
+            cmd_cd(&name)
+        }
+        Some(Commands::Repo { action }) => {
+            if update {
+                eprintln!("Warning: --update is only supported with `box` or `box new`");
+            }
+            match action {
+                RepoAction::Add { path } => cmd_repo_add(path),
+                RepoAction::Remove { name } => cmd_repo_remove(&name),
+                RepoAction::List => cmd_repo_list(),
+                RepoAction::Update(args) => cmd_pull(&args),
+            }
+        }
+        Some(Commands::Upgrade) => {
+            if update {
+                eprintln!("Warning: --update is only supported with `box` or `box new`");
+            }
+            cmd_upgrade()
+        }
+        Some(Commands::Config { shell }) => {
+            if update {
+                eprintln!("Warning: --update is only supported with `box` or `box new`");
+            }
+            match shell {
+                ConfigShell::Zsh => cmd_config_zsh(),
+                ConfigShell::Bash => cmd_config_bash(),
+            }
+        }
         None => {
             if update {
                 if let Err(e) = update_all_repos() {
@@ -795,7 +830,16 @@ fn cmd_config_bash() -> Result<i32> {
         return
     fi
 
-    local subcmd="${{words[1]}}"
+    # Skip global flags to find the actual subcommand
+    local subcmd=""
+    local subcmd_idx=1
+    for ((i=1; i<cword; i++)); do
+        case "${{words[i]}}" in
+            --*) continue ;;
+            *) subcmd="${{words[i]}}"; subcmd_idx=$i; break ;;
+        esac
+    done
+    [[ -z "$subcmd" ]] && return
 
     case "$subcmd" in
         new)
@@ -881,6 +925,58 @@ box() {{
     Ok(0)
 }
 
+/// Fetch, checkout default branch, and pull a single repo.
+/// Returns true if the update succeeded.
+fn update_repo(entry: &repo::RepoEntry) -> Result<bool> {
+    let status = std::process::Command::new("git")
+        .args(["-C", &entry.path, "fetch", "--all", "--prune"])
+        .status()?;
+    if !status.success() {
+        eprintln!("  \x1b[31mfetch failed\x1b[0m");
+        return Ok(false);
+    }
+
+    let default_branch = std::process::Command::new("git")
+        .args([
+            "-C",
+            &entry.path,
+            "symbolic-ref",
+            "refs/remotes/origin/HEAD",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                s.strip_prefix("refs/remotes/origin/")
+                    .map(|b| b.to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "main".to_string());
+
+    let status = std::process::Command::new("git")
+        .args(["-C", &entry.path, "checkout", &default_branch])
+        .status()?;
+    if !status.success() {
+        eprintln!(
+            "  \x1b[31mcheckout {} failed (dirty tree?)\x1b[0m",
+            default_branch
+        );
+        return Ok(false);
+    }
+
+    let status = std::process::Command::new("git")
+        .args(["-C", &entry.path, "pull"])
+        .status()?;
+    if !status.success() {
+        eprintln!("  \x1b[31mpull failed\x1b[0m");
+    }
+
+    Ok(true)
+}
+
 /// Fetch & pull all registered repos (used by --update flag).
 fn update_all_repos() -> Result<()> {
     let all_repos = repo::list()?;
@@ -891,53 +987,7 @@ fn update_all_repos() -> Result<()> {
     eprintln!("\x1b[2mUpdating repos…\x1b[0m");
     for entry in &all_repos {
         eprintln!("\x1b[1m{}\x1b[0m", entry.name);
-
-        let status = std::process::Command::new("git")
-            .args(["-C", &entry.path, "fetch", "--all", "--prune"])
-            .status()?;
-        if !status.success() {
-            eprintln!("  \x1b[31mfetch failed\x1b[0m");
-            continue;
-        }
-
-        let default_branch = std::process::Command::new("git")
-            .args([
-                "-C",
-                &entry.path,
-                "symbolic-ref",
-                "refs/remotes/origin/HEAD",
-            ])
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    s.strip_prefix("refs/remotes/origin/")
-                        .map(|b| b.to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| "main".to_string());
-
-        let status = std::process::Command::new("git")
-            .args(["-C", &entry.path, "checkout", &default_branch])
-            .status()?;
-        if !status.success() {
-            eprintln!(
-                "  \x1b[31mcheckout {} failed (dirty tree?)\x1b[0m",
-                default_branch
-            );
-            continue;
-        }
-
-        let status = std::process::Command::new("git")
-            .args(["-C", &entry.path, "pull"])
-            .status()?;
-        if !status.success() {
-            eprintln!("  \x1b[31mpull failed\x1b[0m");
-        }
-
+        update_repo(entry)?;
         eprintln!();
     }
 
@@ -985,52 +1035,7 @@ fn cmd_pull(args: &PullArgs) -> Result<i32> {
             }
         }
 
-        let status = std::process::Command::new("git")
-            .args(["-C", &entry.path, "fetch", "--all", "--prune"])
-            .status()?;
-        if !status.success() {
-            eprintln!("  \x1b[31mfetch failed\x1b[0m");
-            continue;
-        }
-
-        // Detect the default branch from origin/HEAD, fallback to "main"
-        let default_branch = std::process::Command::new("git")
-            .args([
-                "-C",
-                &entry.path,
-                "symbolic-ref",
-                "refs/remotes/origin/HEAD",
-            ])
-            .output()
-            .ok()
-            .and_then(|o| {
-                if o.status.success() {
-                    let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                    s.strip_prefix("refs/remotes/origin/")
-                        .map(|b| b.to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| "main".to_string());
-
-        let status = std::process::Command::new("git")
-            .args(["-C", &entry.path, "checkout", &default_branch])
-            .status()?;
-        if !status.success() {
-            eprintln!(
-                "  \x1b[31mcheckout {} failed (dirty tree?)\x1b[0m",
-                default_branch
-            );
-            continue;
-        }
-
-        let status = std::process::Command::new("git")
-            .args(["-C", &entry.path, "pull"])
-            .status()?;
-        if !status.success() {
-            eprintln!("  \x1b[31mpull failed\x1b[0m");
-        }
+        update_repo(entry)?;
 
         if stashed {
             eprintln!(
@@ -1567,6 +1572,46 @@ mod tests {
                 action: RepoAction::List
             })
         ));
+    }
+
+    // -- --update flag --
+
+    #[test]
+    fn test_update_flag_with_no_subcommand() {
+        let cli = parse(&["--update"]);
+        assert!(cli.update);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_update_flag_with_new_subcommand() {
+        let cli = parse(&["--update", "new", "my-session", "--repo", "app"]);
+        assert!(cli.update);
+        match cli.command {
+            Some(Commands::New(args)) => {
+                assert_eq!(args.name, "my-session");
+                assert!(!args.update);
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_update_flag() {
+        let cli = parse(&["new", "my-session", "--repo", "app", "--update"]);
+        assert!(!cli.update);
+        match cli.command {
+            Some(Commands::New(args)) => {
+                assert!(args.update);
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_no_update_flag_defaults_false() {
+        let cli = parse(&[]);
+        assert!(!cli.update);
     }
 
     // -- bare name is rejected (subcommand required) --
