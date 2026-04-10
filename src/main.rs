@@ -836,7 +836,7 @@ box() {{
 /// Fetch all refs for a bare repo.
 fn update_repo(entry: &repo::RepoEntry) -> Result<bool> {
     let status = std::process::Command::new("git")
-        .args(["-C", &entry.path, "fetch", "--all", "--prune"])
+        .args(["-C", &entry.path, "fetch", "--all"])
         .status()?;
     if !status.success() {
         eprintln!("  \x1b[31mfetch failed\x1b[0m");

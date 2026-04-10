@@ -63,7 +63,10 @@ fn migrate_old_repos_file() -> Result<()> {
             .status();
         match status {
             Ok(s) if s.success() => {
-                configure_fetch_refspec(&dest_str);
+                if let Err(e) = configure_fetch_refspec(&dest_str) {
+                    eprintln!("    \x1b[31mfailed to configure refspec: {}\x1b[0m", e);
+                    had_failures = true;
+                }
                 repoint_origin(repo_path, &dest_str);
             }
             _ => {
@@ -158,7 +161,7 @@ pub fn add(path: &str) -> Result<()> {
     // git clone --bare doesn't set a fetch refspec, so git fetch won't
     // update local branches. Configure it so fetch maps remote branches
     // directly onto the bare repo's local refs.
-    configure_fetch_refspec(&dest_str);
+    configure_fetch_refspec(&dest_str)?;
 
     // Repoint origin to the actual remote URL (not the local path)
     repoint_origin(&canonical_str, &dest_str);
@@ -169,23 +172,25 @@ pub fn add(path: &str) -> Result<()> {
 
 /// Check and fix fetch refspec on an existing bare repo if missing.
 fn ensure_fetch_refspec(bare_dir: &str) {
-    let output = Command::new("git")
+    let status = Command::new("git")
         .args(["-C", bare_dir, "config", "remote.origin.fetch"])
-        .output();
-    let needs_fix = match output {
-        Ok(o) => !o.status.success(),
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let needs_fix = match status {
+        Ok(s) => !s.success(),
         Err(_) => true,
     };
     if needs_fix {
-        configure_fetch_refspec(bare_dir);
+        let _ = configure_fetch_refspec(bare_dir);
     }
 }
 
 /// `git clone --bare` does not set `remote.origin.fetch`, so `git fetch` will
 /// download objects but never update local branch refs. This configures the
 /// refspec so that remote branches map directly onto the bare repo's heads.
-fn configure_fetch_refspec(bare_dir: &str) {
-    let _ = Command::new("git")
+fn configure_fetch_refspec(bare_dir: &str) -> Result<()> {
+    let status = Command::new("git")
         .args([
             "-C",
             bare_dir,
@@ -193,7 +198,11 @@ fn configure_fetch_refspec(bare_dir: &str) {
             "remote.origin.fetch",
             "+refs/heads/*:refs/heads/*",
         ])
-        .status();
+        .status()?;
+    if !status.success() {
+        bail!("Failed to configure fetch refspec for '{}'.", bare_dir);
+    }
+    Ok(())
 }
 
 /// Repoint the bare clone's origin from the local source path to the source's
@@ -417,7 +426,7 @@ mod tests {
             // Create a source repo with a remote (simulated via a bare intermediary)
             let remote_dir = home.join("remote.git");
             let remote_str = remote_dir.to_str().unwrap();
-            Command::new("git")
+            let s = Command::new("git")
                 .args([
                     "-c",
                     "init.defaultBranch=main",
@@ -429,10 +438,11 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
+            assert!(s.success(), "git init --bare failed");
 
             let source = home.join("source");
             let source_str = source.to_str().unwrap();
-            Command::new("git")
+            let s = Command::new("git")
                 .args([
                     "-c",
                     "init.defaultBranch=main",
@@ -444,7 +454,8 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
-            Command::new("git")
+            assert!(s.success(), "git clone failed");
+            let s = Command::new("git")
                 .args([
                     "-C",
                     source_str,
@@ -461,12 +472,14 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
-            Command::new("git")
+            assert!(s.success(), "git commit 1 failed");
+            let s = Command::new("git")
                 .args(["-C", source_str, "push", "origin", "main"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
+            assert!(s.success(), "git push 1 failed");
 
             // Register the source repo (creates bare clone of source,
             // then repoints origin to remote.git)
@@ -474,8 +487,8 @@ mod tests {
             let repos = list().unwrap();
             let bare_path = &repos[0].path;
 
-            // Manually repoint bare clone's origin to the remote
-            // (repoint_origin would have set it to source's origin, which is remote.git)
+            // `add()` already configured the bare clone's origin to match
+            // the source repo's origin (remote.git); record the pre-fetch log.
             let log_before = Command::new("git")
                 .args(["-C", bare_path, "log", "--oneline", "main"])
                 .output()
@@ -483,7 +496,7 @@ mod tests {
             let count_before = String::from_utf8_lossy(&log_before.stdout).lines().count();
 
             // Push a new commit via source
-            Command::new("git")
+            let s = Command::new("git")
                 .args([
                     "-C",
                     source_str,
@@ -500,20 +513,23 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
-            Command::new("git")
+            assert!(s.success(), "git commit 2 failed");
+            let s = Command::new("git")
                 .args(["-C", source_str, "push", "origin", "main"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
+            assert!(s.success(), "git push 2 failed");
 
             // Fetch on bare repo
-            Command::new("git")
-                .args(["-C", bare_path, "fetch", "--all", "--prune"])
+            let s = Command::new("git")
+                .args(["-C", bare_path, "fetch", "--all"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
+            assert!(s.success(), "git fetch failed");
 
             let log_after = Command::new("git")
                 .args(["-C", bare_path, "log", "--oneline", "main"])
