@@ -834,15 +834,54 @@ box() {{
 }
 
 /// Fetch all refs for a bare repo.
+///
+/// When worktrees have branches checked out, git refuses to update those refs
+/// via fetch.  We detect checked-out branches and exclude them with negative
+/// refspecs so the remaining branches still get updated.
 fn update_repo(entry: &repo::RepoEntry) -> Result<bool> {
-    let status = std::process::Command::new("git")
-        .args(["-C", &entry.path, "fetch", "--all"])
-        .status()?;
+    // Discover branches checked out in worktrees.
+    let checked_out = worktree_checked_out_branches(&entry.path);
+
+    let status = if checked_out.is_empty() {
+        std::process::Command::new("git")
+            .args(["-C", &entry.path, "fetch", "--all"])
+            .status()?
+    } else {
+        let mut args: Vec<String> = vec![
+            "-C".into(),
+            entry.path.clone(),
+            "fetch".into(),
+            "origin".into(),
+            "+refs/heads/*:refs/heads/*".into(),
+        ];
+        for branch in &checked_out {
+            args.push(format!("^refs/heads/{}", branch));
+        }
+        std::process::Command::new("git")
+            .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+            .status()?
+    };
+
     if !status.success() {
         eprintln!("  \x1b[31mfetch failed\x1b[0m");
         return Ok(false);
     }
     Ok(true)
+}
+
+/// Return branch names currently checked out in any worktree of the given repo.
+fn worktree_checked_out_branches(bare_path: &str) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .args(["-C", bare_path, "worktree", "list", "--porcelain"])
+        .output();
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .filter_map(|l| l.strip_prefix("branch refs/heads/"))
+        .map(String::from)
+        .collect()
 }
 
 /// Fetch & pull only the named repos (used by --update flag).
