@@ -418,7 +418,13 @@ mod tests {
             let remote_dir = home.join("remote.git");
             let remote_str = remote_dir.to_str().unwrap();
             Command::new("git")
-                .args(["init", "--bare", remote_str])
+                .args([
+                    "-c",
+                    "init.defaultBranch=main",
+                    "init",
+                    "--bare",
+                    remote_str,
+                ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
@@ -427,7 +433,13 @@ mod tests {
             let source = home.join("source");
             let source_str = source.to_str().unwrap();
             Command::new("git")
-                .args(["clone", remote_str, source_str])
+                .args([
+                    "-c",
+                    "init.defaultBranch=main",
+                    "clone",
+                    remote_str,
+                    source_str,
+                ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
