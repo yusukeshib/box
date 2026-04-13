@@ -86,8 +86,8 @@ enum PresetAction {
     Add {
         /// Preset name
         name: String,
-        /// Repos to include (can be repeated)
-        #[arg(long, required = true)]
+        /// Repos to include (can be repeated; opens interactive selector if omitted)
+        #[arg(long)]
         repo: Vec<String>,
     },
     /// Remove a preset
@@ -634,7 +634,25 @@ fn cmd_repo_list() -> Result<i32> {
 }
 
 fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
-    preset::add(name, repos)?;
+    if repos.is_empty() {
+        // Interactive repo selection — pre-select existing preset repos if updating.
+        // validate_name is called by load(), so path traversal is rejected.
+        let current = match preset::load(name) {
+            Ok(repos) => repos,
+            Err(e) if e.to_string().contains("No preset named") => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        match tui::select_preset_repos(&current)? {
+            tui::TuiAction::Edit { repos } => {
+                preset::add(name, &repos)?;
+            }
+            _ => {
+                return Ok(0);
+            }
+        }
+    } else {
+        preset::add(name, repos)?;
+    }
     Ok(0)
 }
 

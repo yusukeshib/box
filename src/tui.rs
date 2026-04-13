@@ -509,10 +509,14 @@ pub fn create_session() -> Result<TuiAction> {
     }
 }
 
-/// TUI for editing session repos: shows checkbox list of all registered repos
-/// with the session's current repos pre-selected. Returns updated repo list.
-pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
-    let all_repos = repo::list()?;
+/// Shared checkbox list for selecting repos. Takes the repo list, a header
+/// string, and initial selection state. Returns `TuiAction::Edit { repos }`
+/// or `TuiAction::Quit`.
+fn select_repos(
+    all_repos: Vec<repo::RepoEntry>,
+    header: &str,
+    initial_selected: Vec<bool>,
+) -> Result<TuiAction> {
     if all_repos.is_empty() {
         anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
     }
@@ -529,11 +533,9 @@ pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
     let mut terminal = Terminal::with_options(CrosstermBackend::new(io::stderr()), options)?;
 
     let mut footer_msg = String::new();
-    let mut selected: Vec<bool> = all_repos
-        .iter()
-        .map(|r| current_repos.contains(&r.name))
-        .collect();
+    let mut selected = initial_selected;
     let mut cursor_pos: usize = 0;
+    let header = header.to_string();
 
     loop {
         terminal.draw(|f| {
@@ -550,7 +552,7 @@ pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
 
             let mut lines: Vec<Line> = Vec::new();
             lines.push(Line::from(Span::styled(
-                "Edit repos (Space=toggle, Enter=confirm):",
+                header.clone(),
                 Style::default().bold(),
             )));
             for (i, repo) in all_repos.iter().enumerate() {
@@ -628,6 +630,41 @@ pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
             }
         }
     }
+}
+
+/// TUI for editing session repos: shows checkbox list of all registered repos
+/// with the session's current repos pre-selected. Returns updated repo list.
+pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
+    let all_repos = repo::list()?;
+    let selected = all_repos
+        .iter()
+        .map(|r| current_repos.contains(&r.name))
+        .collect();
+    select_repos(
+        all_repos,
+        "Edit repos (Space=toggle, Enter=confirm):",
+        selected,
+    )
+}
+
+/// TUI for selecting repos for a preset: shows checkbox list of all registered repos.
+/// If `current_repos` is non-empty, those repos are pre-selected (for editing an existing preset).
+/// Returns `TuiAction::Edit { repos }` or `TuiAction::Quit`.
+pub fn select_preset_repos(current_repos: &[String]) -> Result<TuiAction> {
+    let all_repos = repo::list()?;
+    let selected = if current_repos.is_empty() {
+        vec![false; all_repos.len()]
+    } else {
+        all_repos
+            .iter()
+            .map(|r| current_repos.contains(&r.name))
+            .collect()
+    };
+    select_repos(
+        all_repos,
+        "Select repos for preset (Space=toggle, Enter=confirm):",
+        selected,
+    )
 }
 
 /// TUI for selecting sessions to remove: shows checkbox list of all sessions.
