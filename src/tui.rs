@@ -193,7 +193,7 @@ pub fn create_session() -> Result<TuiAction> {
         anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
     }
 
-    let presets = preset::list().unwrap_or_default();
+    let presets = preset::list()?;
     let repo_count = all_repos.len();
 
     // Start in PresetSelect if presets exist, otherwise RepoSelect

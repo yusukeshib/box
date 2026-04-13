@@ -60,10 +60,14 @@ pub fn add(name: &str, repos: &[String]) -> Result<()> {
         bail!("A preset must contain at least one repo.");
     }
 
+    // Deduplicate repos while preserving order
+    let mut seen = std::collections::HashSet::new();
+    let repos: Vec<&String> = repos.iter().filter(|r| seen.insert(r.as_str())).collect();
+
     // Validate all repos exist
     let all_repos = repo::list()?;
     let all_names: Vec<&str> = all_repos.iter().map(|r| r.name.as_str()).collect();
-    for r in repos {
+    for r in &repos {
         if !all_names.contains(&r.as_str()) {
             bail!("Repo '{}' not found in registry.", r);
         }
@@ -72,21 +76,22 @@ pub fn add(name: &str, repos: &[String]) -> Result<()> {
     let dir = presets_dir()?;
     fs::create_dir_all(&dir)?;
 
+    let repo_strs: Vec<&str> = repos.iter().map(|r| r.as_str()).collect();
     let path = dir.join(name);
     let exists = path.is_file();
-    fs::write(&path, repos.join("\n") + "\n")?;
+    fs::write(&path, repo_strs.join("\n").to_owned() + "\n")?;
 
     if exists {
         eprintln!(
             "Preset '\x1b[1m{}\x1b[0m' updated ({}).",
             name,
-            repos.join(", ")
+            repo_strs.join(", ")
         );
     } else {
         eprintln!(
             "Preset '\x1b[1m{}\x1b[0m' saved ({}).",
             name,
-            repos.join(", ")
+            repo_strs.join(", ")
         );
     }
     Ok(())
@@ -131,7 +136,7 @@ pub fn resolve(name: &str) -> Result<Vec<String>> {
 }
 
 fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty() || name.contains('/') || name.contains('\\') || name == ".." || name == "." {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
         bail!("Invalid preset name '{}'.", name);
     }
     Ok(())
@@ -320,7 +325,9 @@ mod tests {
             assert!(add("foo/bar", &["a".to_string()]).is_err());
             assert!(add(".", &["a".to_string()]).is_err());
             assert!(add("..", &["a".to_string()]).is_err());
+            assert!(add(".hidden", &["a".to_string()]).is_err());
             assert!(load("../evil").is_err());
+            assert!(load(".hidden").is_err());
             assert!(remove("../evil").is_err());
         });
     }
