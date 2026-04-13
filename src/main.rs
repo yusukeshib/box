@@ -636,13 +636,17 @@ fn cmd_repo_list() -> Result<i32> {
 fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
     if repos.is_empty() {
         // Interactive repo selection — pre-select existing preset repos if updating
-        let current = preset::load(name).unwrap_or_default();
+        let current = if preset::presets_dir()?.join(name).is_file() {
+            preset::load(name)?
+        } else {
+            Vec::new()
+        };
         match tui::select_preset_repos(&current)? {
             tui::TuiAction::Edit { repos } => {
                 preset::add(name, &repos)?;
             }
             _ => {
-                return Ok(130);
+                return Ok(0);
             }
         }
     } else {

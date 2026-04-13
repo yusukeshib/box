@@ -509,9 +509,9 @@ pub fn create_session() -> Result<TuiAction> {
     }
 }
 
-/// TUI for editing session repos: shows checkbox list of all registered repos
-/// with the session's current repos pre-selected. Returns updated repo list.
-pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
+/// Shared checkbox list for selecting repos. Takes a header string and initial
+/// selection state. Returns `TuiAction::Edit { repos }` or `TuiAction::Quit`.
+fn select_repos(header: &str, initial_selected: Vec<bool>) -> Result<TuiAction> {
     let all_repos = repo::list()?;
     if all_repos.is_empty() {
         anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
@@ -529,13 +529,11 @@ pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
     let mut terminal = Terminal::with_options(CrosstermBackend::new(io::stderr()), options)?;
 
     let mut footer_msg = String::new();
-    let mut selected: Vec<bool> = all_repos
-        .iter()
-        .map(|r| current_repos.contains(&r.name))
-        .collect();
+    let mut selected = initial_selected;
     let mut cursor_pos: usize = 0;
 
     loop {
+        let header = header.to_string();
         terminal.draw(|f| {
             let area = f.area();
 
@@ -550,7 +548,7 @@ pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
 
             let mut lines: Vec<Line> = Vec::new();
             lines.push(Line::from(Span::styled(
-                "Edit repos (Space=toggle, Enter=confirm):",
+                header.clone(),
                 Style::default().bold(),
             )));
             for (i, repo) in all_repos.iter().enumerate() {
@@ -630,130 +628,34 @@ pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
     }
 }
 
+/// TUI for editing session repos: shows checkbox list of all registered repos
+/// with the session's current repos pre-selected. Returns updated repo list.
+pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
+    let all_repos = repo::list()?;
+    let selected = all_repos
+        .iter()
+        .map(|r| current_repos.contains(&r.name))
+        .collect();
+    select_repos("Edit repos (Space=toggle, Enter=confirm):", selected)
+}
+
 /// TUI for selecting repos for a preset: shows checkbox list of all registered repos.
 /// If `current_repos` is non-empty, those repos are pre-selected (for editing an existing preset).
 /// Returns `TuiAction::Edit { repos }` or `TuiAction::Quit`.
 pub fn select_preset_repos(current_repos: &[String]) -> Result<TuiAction> {
     let all_repos = repo::list()?;
-    if all_repos.is_empty() {
-        anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
-    }
-
-    let repo_count = all_repos.len();
-    let viewport_height = (repo_count as u16) + 1;
-
-    terminal::enable_raw_mode()?;
-    let _guard = TermGuard;
-
-    let options = TerminalOptions {
-        viewport: Viewport::Inline(viewport_height),
-    };
-    let mut terminal = Terminal::with_options(CrosstermBackend::new(io::stderr()), options)?;
-
-    let mut footer_msg = String::new();
-    let mut selected: Vec<bool> = if current_repos.is_empty() {
-        vec![false; repo_count]
+    let selected = if current_repos.is_empty() {
+        vec![false; all_repos.len()]
     } else {
         all_repos
             .iter()
             .map(|r| current_repos.contains(&r.name))
             .collect()
     };
-    let mut cursor_pos: usize = 0;
-
-    loop {
-        terminal.draw(|f| {
-            let area = f.area();
-
-            if !footer_msg.is_empty() {
-                let line = Line::from(Span::styled(
-                    footer_msg.as_str(),
-                    Style::default().fg(Color::Red),
-                ));
-                f.render_widget(line, area);
-                return;
-            }
-
-            let mut lines: Vec<Line> = Vec::new();
-            lines.push(Line::from(Span::styled(
-                "Select repos for preset (Space=toggle, Enter=confirm):",
-                Style::default().bold(),
-            )));
-            for (i, repo) in all_repos.iter().enumerate() {
-                let check = if selected[i] { "[x]" } else { "[ ]" };
-                let style = if i == cursor_pos {
-                    Style::default().reversed()
-                } else {
-                    Style::default()
-                };
-                lines.push(Line::from(Span::styled(
-                    format!(" {} {}", check, repo.name),
-                    style,
-                )));
-            }
-            for (i, line) in lines.into_iter().enumerate() {
-                if (i as u16) < area.height {
-                    let row = Rect::new(area.x, area.y + i as u16, area.width, 1);
-                    f.render_widget(line, row);
-                }
-            }
-        })?;
-
-        if !footer_msg.is_empty() {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    footer_msg.clear();
-                }
-            }
-            continue;
-        }
-
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-
-            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                clear_viewport(&mut terminal, viewport_height)?;
-                return Ok(TuiAction::Quit);
-            }
-
-            match key.code {
-                KeyCode::Up => {
-                    cursor_pos = cursor_pos.saturating_sub(1);
-                }
-                KeyCode::Down => {
-                    if cursor_pos + 1 < repo_count {
-                        cursor_pos += 1;
-                    }
-                }
-                KeyCode::Char(' ') => {
-                    selected[cursor_pos] = !selected[cursor_pos];
-                }
-                KeyCode::Enter => {
-                    let selected_repos: Vec<String> = all_repos
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| selected[*i])
-                        .map(|(_, r)| r.name.clone())
-                        .collect();
-                    if selected_repos.is_empty() {
-                        footer_msg = "At least one repo must be selected.".to_string();
-                    } else {
-                        clear_viewport(&mut terminal, viewport_height)?;
-                        return Ok(TuiAction::Edit {
-                            repos: selected_repos,
-                        });
-                    }
-                }
-                KeyCode::Esc => {
-                    clear_viewport(&mut terminal, viewport_height)?;
-                    return Ok(TuiAction::Quit);
-                }
-                _ => {}
-            }
-        }
-    }
+    select_repos(
+        "Select repos for preset (Space=toggle, Enter=confirm):",
+        selected,
+    )
 }
 
 /// TUI for selecting sessions to remove: shows checkbox list of all sessions.
