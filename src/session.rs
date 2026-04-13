@@ -42,7 +42,7 @@ pub fn sessions_dir() -> Result<PathBuf> {
 }
 
 const RESERVED_NAMES: &[&str] = &[
-    "new", "remove", "edit", "update", "upgrade", "path", "config", "list", "ls", "repo",
+    "new", "remove", "edit", "update", "upgrade", "path", "config", "list", "ls", "repo", "preset",
 ];
 
 /// Normalize a session name by replacing any non-alphanumeric character with `-`

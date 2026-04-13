@@ -1,5 +1,6 @@
 mod config;
 mod git;
+mod preset;
 mod repo;
 mod session;
 #[cfg(test)]
@@ -17,7 +18,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -47,6 +48,11 @@ enum Commands {
         #[command(subcommand)]
         action: RepoAction,
     },
+    /// Manage session presets
+    Preset {
+        #[command(subcommand)]
+        action: PresetAction,
+    },
     /// Self-update to the latest version
     Upgrade,
     /// Output shell configuration (e.g. eval "$(box config zsh)")
@@ -74,14 +80,39 @@ enum RepoAction {
     List,
 }
 
+#[derive(Subcommand, Debug)]
+enum PresetAction {
+    /// Create or update a preset
+    Add {
+        /// Preset name
+        name: String,
+        /// Repos to include (can be repeated)
+        #[arg(long, required = true)]
+        repo: Vec<String>,
+    },
+    /// Remove a preset
+    #[command(alias = "rm")]
+    Remove {
+        /// Preset name
+        name: String,
+    },
+    /// List presets
+    #[command(alias = "ls")]
+    List,
+}
+
 #[derive(clap::Args, Debug)]
 struct CreateArgs {
     /// Session name
     name: String,
 
     /// Select specific repos by name (can be repeated)
-    #[arg(long, required = true)]
+    #[arg(long, group = "repo_source")]
     repo: Vec<String>,
+
+    /// Use a preset (mutually exclusive with --repo)
+    #[arg(long, group = "repo_source")]
+    preset: Option<String>,
 
     /// Workspace strategy: worktree (default) or clone
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
@@ -122,26 +153,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Commands::New(args)) => {
-            if std::env::var_os("BOX_SESSION").is_some() {
-                eprintln!(
-                    "Error: cannot nest box sessions (already inside session {:?})",
-                    std::env::var("BOX_SESSION").unwrap_or_default()
-                );
-                std::process::exit(1);
-            }
-            if let Err(e) = update_repos(&args.repo) {
-                eprintln!("Warning: repo update failed: {}", e);
-            }
-            let strategy = match workspace::Strategy::from_str(&args.strategy) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(1);
-                }
-            };
-            cmd_create(&args.name, args.repo, strategy)
-        }
+        Some(Commands::New(args)) => cmd_new(args),
         Some(Commands::Edit(args)) => cmd_edit(&args.name),
         Some(Commands::Remove(args)) => match &args.name {
             Some(name) => cmd_remove(name),
@@ -153,6 +165,11 @@ fn main() {
             RepoAction::Add { path } => cmd_repo_add(path),
             RepoAction::Remove { name } => cmd_repo_remove(&name),
             RepoAction::List => cmd_repo_list(),
+        },
+        Some(Commands::Preset { action }) => match action {
+            PresetAction::Add { name, repo } => cmd_preset_add(&name, &repo),
+            PresetAction::Remove { name } => cmd_preset_remove(&name),
+            PresetAction::List => cmd_preset_list(),
         },
         Some(Commands::Upgrade) => cmd_upgrade(),
         Some(Commands::Config { shell }) => match shell {
@@ -385,6 +402,27 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     Ok(0)
 }
 
+fn cmd_new(args: CreateArgs) -> Result<i32> {
+    if std::env::var_os("BOX_SESSION").is_some() {
+        bail!(
+            "Cannot nest box sessions (already inside session {:?}).",
+            std::env::var("BOX_SESSION").unwrap_or_default()
+        );
+    }
+    let repo_names = if let Some(preset_name) = &args.preset {
+        preset::resolve(preset_name)?
+    } else if !args.repo.is_empty() {
+        args.repo
+    } else {
+        bail!("Either --repo or --preset is required.");
+    };
+    if let Err(e) = update_repos(&repo_names) {
+        eprintln!("Warning: repo update failed: {}", e);
+    }
+    let strategy = workspace::Strategy::from_str(&args.strategy)?;
+    cmd_create(&args.name, repo_names, strategy)
+}
+
 fn cmd_create(name: &str, repo_names: Vec<String>, strategy: workspace::Strategy) -> Result<i32> {
     let name = session::validate_name(name)?;
     let name = name.as_str();
@@ -595,6 +633,36 @@ fn cmd_repo_list() -> Result<i32> {
     Ok(0)
 }
 
+fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
+    preset::add(name, repos)?;
+    Ok(0)
+}
+
+fn cmd_preset_remove(name: &str) -> Result<i32> {
+    preset::remove(name)?;
+    Ok(0)
+}
+
+fn cmd_preset_list() -> Result<i32> {
+    let presets = preset::list()?;
+    if presets.is_empty() {
+        println!("No presets defined.");
+        return Ok(0);
+    }
+    let name_w = presets
+        .iter()
+        .map(|(n, _)| n.len())
+        .max()
+        .unwrap_or(0)
+        .max(4);
+
+    println!("\x1b[2m  {:<name_w$}  REPOS\x1b[0m", "NAME");
+    for (name, repos) in &presets {
+        println!("  {:<name_w$}  {}", name, repos.join(", "));
+    }
+    Ok(0)
+}
+
 fn cmd_config_zsh() -> Result<i32> {
     print!(
         r#"__box_sessions() {{
@@ -637,6 +705,20 @@ __box_repos() {{
     fi
 }}
 
+__box_presets() {{
+    local -a presets
+    local __box_root="${{BOX_ROOT:-$HOME/.box}}"
+    if [[ -d "$__box_root/presets" ]]; then
+        for preset in "$__box_root/presets"/*(N.); do
+            local name=${{preset:t}}
+            [[ -n "$name" ]] && presets+=("$name")
+        done
+    fi
+    if (( ${{#presets}} )); then
+        _describe 'preset' presets
+    fi
+}}
+
 _box() {{
     local curcontext="$curcontext" state line
     typeset -A opt_args
@@ -658,6 +740,7 @@ _box() {{
                 'sw:Switch to a session'
                 'cd:Switch to a session'
                 'repo:Manage registered repos'
+                'preset:Manage session presets'
                 'upgrade:Self-update to the latest version'
                 'config:Output shell configuration'
             )
@@ -668,6 +751,7 @@ _box() {{
                 new)
                     _arguments \
                         '*--repo=[Select specific repo]:repo:__box_repos' \
+                        '--preset=[Use a preset]:preset:__box_presets' \
                         '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
                         '1:session name:' \
                         '*:command:'
@@ -703,6 +787,22 @@ _box() {{
                                 _files -/
                                 ;;
                         esac
+                    fi
+                    ;;
+                preset)
+                    if (( CURRENT == 2 )); then
+                        local -a preset_subcmds
+                        preset_subcmds=('add:Create or update a preset' 'remove:Remove a preset' 'rm:Remove a preset' 'list:List presets' 'ls:List presets')
+                        _describe 'preset subcommand' preset_subcmds
+                    elif (( CURRENT == 3 )); then
+                        case $words[2] in
+                            remove|rm)
+                                __box_presets
+                                ;;
+                        esac
+                    elif [[ $words[2] == "add" ]]; then
+                        _arguments \
+                            '*--repo=[Select specific repo]:repo:__box_repos'
                     fi
                     ;;
                 config)
@@ -742,7 +842,7 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new edit remove rm list switch sw cd repo upgrade config"
+    local subcommands="new edit remove rm list switch sw cd repo preset upgrade config"
     local session_cmds="edit remove rm switch sw cd"
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
@@ -758,7 +858,7 @@ fn cmd_config_bash() -> Result<i32> {
         new)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--repo --strategy" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--repo --preset --strategy" -- "$cur"))
                     ;;
             esac
             if [[ "$prev" == "--strategy" ]]; then
@@ -802,6 +902,24 @@ fn cmd_config_bash() -> Result<i32> {
                     add)
                         COMPREPLY=($(compgen -d -- "$cur"))
                         ;;
+                        ;;
+                esac
+            fi
+            ;;
+        preset)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
+            elif [[ $cword -eq 3 ]]; then
+                case "${{words[2]}}" in
+                    remove|rm)
+                        local presets=""
+                        if [[ -d "$__box_root/presets" ]]; then
+                            for f in "$__box_root/presets"/*; do
+                                [[ -f "$f" ]] || continue
+                                presets+=" $(basename "$f")"
+                            done
+                        fi
+                        COMPREPLY=($(compgen -W "$presets" -- "$cur"))
                         ;;
                 esac
             fi
@@ -1059,8 +1177,33 @@ mod tests {
     }
 
     #[test]
-    fn test_new_requires_repo() {
-        let result = try_parse(&["new", "my-session"]);
+    fn test_new_name_only_parses() {
+        // --repo and --preset are both optional at parse time; runtime enforces at least one
+        let cli = parse(&["new", "my-session"]);
+        match cli.command {
+            Some(Commands::New(args)) => {
+                assert!(args.repo.is_empty());
+                assert!(args.preset.is_none());
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_with_preset() {
+        let cli = parse(&["new", "my-session", "--preset", "work"]);
+        match cli.command {
+            Some(Commands::New(args)) => {
+                assert_eq!(args.preset.as_deref(), Some("work"));
+                assert!(args.repo.is_empty());
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_preset_and_repo_conflict() {
+        let result = try_parse(&["new", "my-session", "--preset", "work", "--repo", "app"]);
         assert!(result.is_err());
     }
 
@@ -1339,6 +1482,68 @@ mod tests {
             cli.command,
             Some(Commands::Repo {
                 action: RepoAction::List
+            })
+        ));
+    }
+
+    // -- preset subcommand --
+
+    #[test]
+    fn test_preset_add_parses() {
+        let cli = parse(&[
+            "preset", "add", "work", "--repo", "app-a", "--repo", "app-b",
+        ]);
+        match cli.command {
+            Some(Commands::Preset {
+                action: PresetAction::Add { name, repo },
+            }) => {
+                assert_eq!(name, "work");
+                assert_eq!(repo, vec!["app-a", "app-b"]);
+            }
+            other => panic!("expected Preset Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_preset_remove_parses() {
+        let cli = parse(&["preset", "remove", "work"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Preset {
+                action: PresetAction::Remove { name }
+            }) if name == "work"
+        ));
+    }
+
+    #[test]
+    fn test_preset_remove_alias_rm() {
+        let cli = parse(&["preset", "rm", "work"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Preset {
+                action: PresetAction::Remove { name }
+            }) if name == "work"
+        ));
+    }
+
+    #[test]
+    fn test_preset_list_parses() {
+        let cli = parse(&["preset", "list"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Preset {
+                action: PresetAction::List
+            })
+        ));
+    }
+
+    #[test]
+    fn test_preset_list_alias_ls() {
+        let cli = parse(&["preset", "ls"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Preset {
+                action: PresetAction::List
             })
         ));
     }

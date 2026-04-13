@@ -6,6 +6,7 @@ use ratatui::{TerminalOptions, Viewport};
 use std::io;
 
 use crate::config;
+use crate::preset;
 use crate::repo;
 use crate::session;
 
@@ -68,6 +69,7 @@ pub enum TuiAction {
 
 #[derive(PartialEq)]
 enum Mode {
+    PresetSelect,
     RepoSelect,
     Name,
 }
@@ -183,7 +185,7 @@ fn clear_viewport(
     Ok(())
 }
 
-/// Minimal create-session TUI: prompts for repo selection, name, command.
+/// Minimal create-session TUI: prompts for preset/repo selection, name.
 /// Returns `TuiAction::New` or `TuiAction::Quit`.
 pub fn create_session() -> Result<TuiAction> {
     let all_repos = repo::list()?;
@@ -191,9 +193,19 @@ pub fn create_session() -> Result<TuiAction> {
         anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
     }
 
+    let presets = preset::list().unwrap_or_default();
     let repo_count = all_repos.len();
-    // viewport height: repo list + header line
-    let viewport_height = (repo_count as u16) + 1;
+
+    // Start in PresetSelect if presets exist, otherwise RepoSelect
+    let has_presets = !presets.is_empty();
+    // preset_items = number of presets + 1 for "Custom..."
+    let preset_item_count = presets.len() + 1;
+    let initial_height = if has_presets {
+        (preset_item_count as u16) + 1 // items + header
+    } else {
+        (repo_count as u16) + 1 // repos + header
+    };
+    let mut viewport_height = initial_height;
 
     terminal::enable_raw_mode()?;
     let _guard = TermGuard;
@@ -204,7 +216,11 @@ pub fn create_session() -> Result<TuiAction> {
     let mut terminal = Terminal::with_options(CrosstermBackend::new(io::stderr()), options)?;
 
     let mut input = TextInput::new();
-    let mut mode = Mode::RepoSelect;
+    let mut mode = if has_presets {
+        Mode::PresetSelect
+    } else {
+        Mode::RepoSelect
+    };
     let mut footer_msg = String::new();
 
     // Repo selection state — restore from last session if available
@@ -239,6 +255,35 @@ pub fn create_session() -> Result<TuiAction> {
             }
 
             match &mode {
+                Mode::PresetSelect => {
+                    let mut lines: Vec<Line> = Vec::new();
+                    lines.push(Line::from(Span::styled(
+                        "Select a preset (Enter=confirm):",
+                        Style::default().bold(),
+                    )));
+                    for (i, (name, repos)) in presets.iter().enumerate() {
+                        let label = format!(" {} ({})", name, repos.join(", "));
+                        let style = if i == cursor_pos {
+                            Style::default().reversed()
+                        } else {
+                            Style::default()
+                        };
+                        lines.push(Line::from(Span::styled(label, style)));
+                    }
+                    // "Custom..." entry
+                    let custom_style = if cursor_pos == presets.len() {
+                        Style::default().reversed()
+                    } else {
+                        Style::default()
+                    };
+                    lines.push(Line::from(Span::styled(" Custom...", custom_style)));
+                    for (i, line) in lines.into_iter().enumerate() {
+                        if (i as u16) < area.height {
+                            let row = Rect::new(area.x, area.y + i as u16, area.width, 1);
+                            f.render_widget(line, row);
+                        }
+                    }
+                }
                 Mode::RepoSelect => {
                     let mut lines: Vec<Line> = Vec::new();
                     lines.push(Line::from(Span::styled(
@@ -292,6 +337,65 @@ pub fn create_session() -> Result<TuiAction> {
             }
 
             match mode {
+                Mode::PresetSelect => match key.code {
+                    KeyCode::Up => {
+                        cursor_pos = cursor_pos.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if cursor_pos + 1 < preset_item_count {
+                            cursor_pos += 1;
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if cursor_pos < presets.len() {
+                            // Selected a preset
+                            let (_, repos) = &presets[cursor_pos];
+                            let all_repo_names: Vec<&str> =
+                                all_repos.iter().map(|r| r.name.as_str()).collect();
+                            selected_repos = repos
+                                .iter()
+                                .filter(|r| all_repo_names.contains(&r.as_str()))
+                                .cloned()
+                                .collect();
+                            if selected_repos.is_empty() {
+                                footer_msg =
+                                    "All repos in this preset have been removed.".to_string();
+                            } else {
+                                save_last_selected_repos(&selected_repos);
+                                // Transition to Name mode
+                                clear_viewport(&mut terminal, viewport_height)?;
+                                drop(terminal);
+                                terminal = Terminal::with_options(
+                                    CrosstermBackend::new(io::stderr()),
+                                    TerminalOptions {
+                                        viewport: Viewport::Inline(1),
+                                    },
+                                )?;
+                                viewport_height = 1;
+                                mode = Mode::Name;
+                            }
+                        } else {
+                            // "Custom..." selected — fall through to RepoSelect
+                            clear_viewport(&mut terminal, viewport_height)?;
+                            drop(terminal);
+                            let new_height = (repo_count as u16) + 1;
+                            terminal = Terminal::with_options(
+                                CrosstermBackend::new(io::stderr()),
+                                TerminalOptions {
+                                    viewport: Viewport::Inline(new_height),
+                                },
+                            )?;
+                            viewport_height = new_height;
+                            cursor_pos = 0;
+                            mode = Mode::RepoSelect;
+                        }
+                    }
+                    KeyCode::Esc => {
+                        clear_viewport(&mut terminal, viewport_height)?;
+                        return Ok(TuiAction::Quit);
+                    }
+                    _ => {}
+                },
                 Mode::RepoSelect => match key.code {
                     KeyCode::Up => {
                         cursor_pos = cursor_pos.saturating_sub(1);
@@ -325,6 +429,7 @@ pub fn create_session() -> Result<TuiAction> {
                                 CrosstermBackend::new(io::stderr()),
                                 options,
                             )?;
+                            viewport_height = 1;
                             mode = Mode::Name;
                         }
                     }
