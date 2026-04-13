@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -89,6 +89,11 @@ enum PresetAction {
         /// Repos to include (can be repeated; opens interactive selector if omitted)
         #[arg(long)]
         repo: Vec<String>,
+    },
+    /// Edit repos in an existing preset
+    Edit {
+        /// Preset name
+        name: String,
     },
     /// Remove a preset
     #[command(alias = "rm")]
@@ -168,6 +173,7 @@ fn main() {
         },
         Some(Commands::Preset { action }) => match action {
             PresetAction::Add { name, repo } => cmd_preset_add(&name, &repo),
+            PresetAction::Edit { name } => cmd_preset_edit(&name),
             PresetAction::Remove { name } => cmd_preset_remove(&name),
             PresetAction::List => cmd_preset_list(),
         },
@@ -656,6 +662,19 @@ fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+fn cmd_preset_edit(name: &str) -> Result<i32> {
+    let current = preset::load(name)?;
+    match tui::select_preset_repos(&current)? {
+        tui::TuiAction::Edit { repos } => {
+            preset::add(name, &repos)?;
+        }
+        _ => {
+            return Ok(0);
+        }
+    }
+    Ok(0)
+}
+
 fn cmd_preset_remove(name: &str) -> Result<i32> {
     preset::remove(name)?;
     Ok(0)
@@ -810,11 +829,11 @@ _box() {{
                 preset)
                     if (( CURRENT == 2 )); then
                         local -a preset_subcmds
-                        preset_subcmds=('add:Create or update a preset' 'remove:Remove a preset' 'rm:Remove a preset' 'list:List presets' 'ls:List presets')
+                        preset_subcmds=('add:Create or update a preset' 'edit:Edit repos in an existing preset' 'remove:Remove a preset' 'rm:Remove a preset' 'list:List presets' 'ls:List presets')
                         _describe 'preset subcommand' preset_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
-                            remove|rm)
+                            edit|remove|rm)
                                 __box_presets
                                 ;;
                         esac
@@ -926,10 +945,10 @@ fn cmd_config_bash() -> Result<i32> {
             ;;
         preset)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
+                COMPREPLY=($(compgen -W "add edit remove rm list ls" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${{words[2]}}" in
-                    remove|rm)
+                    edit|remove|rm)
                         local presets=""
                         if [[ -d "$__box_root/presets" ]]; then
                             for f in "$__box_root/presets"/*; do
@@ -1520,6 +1539,17 @@ mod tests {
             }
             other => panic!("expected Preset Add, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_preset_edit_parses() {
+        let cli = parse(&["preset", "edit", "work"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Preset {
+                action: PresetAction::Edit { name }
+            }) if name == "work"
+        ));
     }
 
     #[test]
