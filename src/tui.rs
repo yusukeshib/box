@@ -509,10 +509,14 @@ pub fn create_session() -> Result<TuiAction> {
     }
 }
 
-/// Shared checkbox list for selecting repos. Takes a header string and initial
-/// selection state. Returns `TuiAction::Edit { repos }` or `TuiAction::Quit`.
-fn select_repos(header: &str, initial_selected: Vec<bool>) -> Result<TuiAction> {
-    let all_repos = repo::list()?;
+/// Shared checkbox list for selecting repos. Takes the repo list, a header
+/// string, and initial selection state. Returns `TuiAction::Edit { repos }`
+/// or `TuiAction::Quit`.
+fn select_repos(
+    all_repos: Vec<repo::RepoEntry>,
+    header: &str,
+    initial_selected: Vec<bool>,
+) -> Result<TuiAction> {
     if all_repos.is_empty() {
         anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
     }
@@ -531,9 +535,9 @@ fn select_repos(header: &str, initial_selected: Vec<bool>) -> Result<TuiAction> 
     let mut footer_msg = String::new();
     let mut selected = initial_selected;
     let mut cursor_pos: usize = 0;
+    let header = header.to_string();
 
     loop {
-        let header = header.to_string();
         terminal.draw(|f| {
             let area = f.area();
 
@@ -636,7 +640,11 @@ pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
         .iter()
         .map(|r| current_repos.contains(&r.name))
         .collect();
-    select_repos("Edit repos (Space=toggle, Enter=confirm):", selected)
+    select_repos(
+        all_repos,
+        "Edit repos (Space=toggle, Enter=confirm):",
+        selected,
+    )
 }
 
 /// TUI for selecting repos for a preset: shows checkbox list of all registered repos.
@@ -653,6 +661,7 @@ pub fn select_preset_repos(current_repos: &[String]) -> Result<TuiAction> {
             .collect()
     };
     select_repos(
+        all_repos,
         "Select repos for preset (Space=toggle, Enter=confirm):",
         selected,
     )

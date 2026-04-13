@@ -635,11 +635,12 @@ fn cmd_repo_list() -> Result<i32> {
 
 fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
     if repos.is_empty() {
-        // Interactive repo selection — pre-select existing preset repos if updating
-        let current = if preset::presets_dir()?.join(name).is_file() {
-            preset::load(name)?
-        } else {
-            Vec::new()
+        // Interactive repo selection — pre-select existing preset repos if updating.
+        // validate_name is called by load(), so path traversal is rejected.
+        let current = match preset::load(name) {
+            Ok(repos) => repos,
+            Err(e) if e.to_string().contains("No preset named") => Vec::new(),
+            Err(e) => return Err(e),
         };
         match tui::select_preset_repos(&current)? {
             tui::TuiAction::Edit { repos } => {
