@@ -28,6 +28,7 @@ pub fn list() -> Result<Vec<(String, Vec<String>)>> {
         let content = fs::read_to_string(&path)?;
         let repos: Vec<String> = content
             .lines()
+            .map(|l| l.trim())
             .filter(|l| !l.is_empty())
             .map(String::from)
             .collect();
@@ -48,6 +49,7 @@ pub fn load(name: &str) -> Result<Vec<String>> {
     let content = fs::read_to_string(&path)?;
     let repos: Vec<String> = content
         .lines()
+        .map(|l| l.trim())
         .filter(|l| !l.is_empty())
         .map(String::from)
         .collect();
