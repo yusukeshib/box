@@ -82,10 +82,11 @@ pub fn ensure_workspace_multi(
             let result = Command::new("git")
                 .args(["clone", "--local", &repo.path, &dest_str])
                 .current_dir(&root_str)
+                .env("GIT_TERMINAL_PROMPT", "0")
                 .output();
             match result {
                 Ok(output) => {
-                    let mut buf = String::from_utf8_lossy(&output.stderr).to_string();
+                    let mut buf = captured_output(&output);
                     if output.status.success() {
                         repoint_origin(&repo.path, &dest_str);
                         (true, buf)
@@ -154,23 +155,29 @@ pub fn ensure_workspace_multi_worktree(
                     .args([
                         "-C", &repo.path, "worktree", "add", &dest_str, "-b", &branch,
                     ])
+                    .env("GIT_TERMINAL_PROMPT", "0")
                     .output();
 
                 match result {
-                    Ok(output) if output.status.success() => {
-                        (true, String::from_utf8_lossy(&output.stderr).to_string())
-                    }
-                    Ok(_) => {
+                    Ok(output) if output.status.success() => (true, captured_output(&output)),
+                    Ok(first_output) => {
+                        let first_err = captured_output(&first_output);
                         // Branch may already exist from a partial retry; try without -b
                         match Command::new("git")
                             .args(["-C", &repo.path, "worktree", "add", &dest_str, &branch])
+                            .env("GIT_TERMINAL_PROMPT", "0")
                             .output()
                         {
                             Ok(output2) => {
-                                let buf = String::from_utf8_lossy(&output2.stderr).to_string();
+                                let mut buf = first_err;
+                                buf.push_str(&captured_output(&output2));
                                 (output2.status.success(), buf)
                             }
-                            Err(e) => (false, format!("failed to run git: {}\n", e)),
+                            Err(e) => {
+                                let mut buf = first_err;
+                                buf.push_str(&format!("failed to run git: {}\n", e));
+                                (false, buf)
+                            }
                         }
                     }
                     Err(e) => (false, format!("failed to run git: {}\n", e)),
@@ -302,6 +309,20 @@ pub fn remove_repo_by_strategy(session_name: &str, repo_name: &str, strategy: St
         Strategy::Clone => remove_repo_from_workspace(session_name, repo_name),
         Strategy::Worktree => remove_repo_from_workspace_worktree(session_name, repo_name),
     }
+}
+
+/// Combine stdout and stderr from a process Output into a single string.
+fn captured_output(output: &std::process::Output) -> String {
+    let mut buf = String::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.is_empty() {
+        buf.push_str(&stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        buf.push_str(&stderr);
+    }
+    buf
 }
 
 /// Re-point origin remote from local path to the real remote URL.

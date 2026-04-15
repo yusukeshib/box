@@ -1010,6 +1010,7 @@ fn update_repo_captured(entry: &repo::RepoEntry) -> (bool, String) {
     let result = if checked_out.is_empty() {
         std::process::Command::new("git")
             .args(["-C", &entry.path, "fetch", "--all"])
+            .env("GIT_TERMINAL_PROMPT", "0")
             .output()
     } else {
         let mut args: Vec<String> = vec![
@@ -1024,12 +1025,17 @@ fn update_repo_captured(entry: &repo::RepoEntry) -> (bool, String) {
         }
         std::process::Command::new("git")
             .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
+            .env("GIT_TERMINAL_PROMPT", "0")
             .output()
     };
 
     match result {
         Ok(output) => {
             let mut buf = String::new();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.is_empty() {
+                buf.push_str(&stdout);
+            }
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.is_empty() {
                 buf.push_str(&stderr);

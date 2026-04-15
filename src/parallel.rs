@@ -9,42 +9,66 @@ pub struct TaskResult {
     pub output: String,
 }
 
-/// Run named tasks in parallel (one std::thread per item).
+/// Run named tasks in parallel, capped at the number of available CPUs.
 /// Returns results in the same order as the input.
 pub fn run_parallel<T, F>(items: Vec<(String, T)>, task: F) -> Vec<TaskResult>
 where
     T: Send + 'static,
     F: Fn(&str, T) -> (bool, String) + Send + Sync + 'static,
 {
+    let max_threads = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     let task = Arc::new(task);
+    let mut results = Vec::with_capacity(items.len());
 
-    let handles: Vec<_> = items
-        .into_iter()
-        .map(|(name, item)| {
-            let task = Arc::clone(&task);
-            let name_clone = name.clone();
-            thread::spawn(move || {
-                let (success, output) = task(&name_clone, item);
-                TaskResult {
-                    name: name_clone,
-                    success,
-                    output,
-                }
+    for chunk in items.chunks_vec(max_threads) {
+        let handles: Vec<(String, thread::JoinHandle<TaskResult>)> = chunk
+            .into_iter()
+            .map(|(name, item)| {
+                let task = Arc::clone(&task);
+                let name_clone = name.clone();
+                let handle = thread::spawn(move || {
+                    let (success, output) = task(&name_clone, item);
+                    TaskResult {
+                        name: name_clone,
+                        success,
+                        output,
+                    }
+                });
+                (name, handle)
             })
-        })
-        .collect();
+            .collect();
 
-    handles
-        .into_iter()
-        .map(|h| match h.join() {
-            Ok(result) => result,
-            Err(_) => TaskResult {
-                name: String::from("unknown"),
-                success: false,
-                output: "thread panicked".to_string(),
-            },
-        })
-        .collect()
+        for (name, handle) in handles {
+            results.push(match handle.join() {
+                Ok(result) => result,
+                Err(_) => TaskResult {
+                    name,
+                    success: false,
+                    output: "thread panicked".to_string(),
+                },
+            });
+        }
+    }
+
+    results
+}
+
+/// Extension trait to chunk a Vec by ownership (avoids slice borrowing issues).
+trait ChunksVec<T> {
+    fn chunks_vec(self, size: usize) -> Vec<Vec<T>>;
+}
+
+impl<T> ChunksVec<T> for Vec<T> {
+    fn chunks_vec(self, size: usize) -> Vec<Vec<T>> {
+        let mut result = Vec::new();
+        let mut iter = self.into_iter().peekable();
+        while iter.peek().is_some() {
+            result.push(iter.by_ref().take(size).collect());
+        }
+        result
+    }
 }
 
 #[cfg(test)]
@@ -72,6 +96,19 @@ mod tests {
             (should_succeed, String::new())
         });
         assert!(results[0].success);
+        assert!(!results[1].success);
+    }
+
+    #[test]
+    fn test_run_parallel_preserves_name_on_panic() {
+        let items: Vec<(String, bool)> = vec![("good".into(), false), ("panicker".into(), true)];
+        let results = run_parallel(items, |_name, should_panic| {
+            if should_panic {
+                panic!("boom");
+            }
+            (true, String::new())
+        });
+        assert_eq!(results[1].name, "panicker");
         assert!(!results[1].success);
     }
 }
