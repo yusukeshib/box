@@ -67,19 +67,50 @@ pub fn ensure_workspace_multi(
         std::fs::set_permissions(&root, perms)?;
     }
 
-    for repo in repos {
-        let dest = root.join(&repo.name);
-        let dest_str = dest.to_string_lossy().to_string();
-        if !dest.join(".git").exists() {
-            eprintln!("\x1b[2mcloning {}:\x1b[0m", repo.name);
-            let status = Command::new("git")
+    let to_clone: Vec<(String, (crate::repo::RepoEntry, String))> = repos
+        .iter()
+        .filter(|repo| !root.join(&repo.name).join(".git").exists())
+        .map(|repo| {
+            let dest_str = root.join(&repo.name).to_string_lossy().to_string();
+            (repo.name.clone(), (repo.clone(), dest_str))
+        })
+        .collect();
+
+    if !to_clone.is_empty() {
+        let root_str = root.to_string_lossy().to_string();
+        let results = crate::parallel::run_parallel(to_clone, move |_name, (repo, dest_str)| {
+            let result = Command::new("git")
                 .args(["clone", "--local", &repo.path, &dest_str])
-                .current_dir(&root)
-                .status()?;
-            if !status.success() {
-                bail!("git clone --local failed for '{}'", repo.name);
+                .current_dir(&root_str)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output();
+            match result {
+                Ok(output) => {
+                    let mut buf = captured_output(&output);
+                    if output.status.success() {
+                        repoint_origin(&repo.path, &dest_str);
+                        (true, buf)
+                    } else {
+                        buf.push_str(&format!("git clone --local failed for '{}'\n", repo.name));
+                        (false, buf)
+                    }
+                }
+                Err(e) => (false, format!("failed to run git: {}\n", e)),
             }
-            repoint_origin(&repo.path, &dest_str);
+        });
+
+        let mut failures = Vec::new();
+        for result in &results {
+            eprintln!("\x1b[2mcloning {}:\x1b[0m", result.name);
+            if !result.output.is_empty() {
+                eprint!("{}", result.output);
+            }
+            if !result.success {
+                failures.push(result.name.clone());
+            }
+        }
+        if !failures.is_empty() {
+            bail!("git clone --local failed for: {}", failures.join(", "));
         }
     }
 
@@ -104,32 +135,67 @@ pub fn ensure_workspace_multi_worktree(
 
     let branch_name = format!("box/{}", session_name);
 
-    for repo in repos {
-        let dest = root.join(&repo.name);
-        let dest_str = dest.to_string_lossy().to_string();
-        if !dest.join(".git").exists() {
-            eprintln!("\x1b[2mworktree {}:\x1b[0m", repo.name);
-            // Try with -b first to create a new branch
-            let status = Command::new("git")
-                .args([
-                    "-C",
-                    &repo.path,
-                    "worktree",
-                    "add",
-                    &dest_str,
-                    "-b",
-                    &branch_name,
-                ])
-                .status()?;
-            if !status.success() {
-                // Branch may already exist from a partial retry; try without -b
-                let status = Command::new("git")
-                    .args(["-C", &repo.path, "worktree", "add", &dest_str, &branch_name])
-                    .status()?;
-                if !status.success() {
-                    bail!("git worktree add failed for '{}'", repo.name);
+    let to_create: Vec<(String, (crate::repo::RepoEntry, String, String))> = repos
+        .iter()
+        .filter(|repo| !root.join(&repo.name).join(".git").exists())
+        .map(|repo| {
+            let dest_str = root.join(&repo.name).to_string_lossy().to_string();
+            (
+                repo.name.clone(),
+                (repo.clone(), dest_str, branch_name.clone()),
+            )
+        })
+        .collect();
+
+    if !to_create.is_empty() {
+        let results =
+            crate::parallel::run_parallel(to_create, |_name, (repo, dest_str, branch)| {
+                // Try with -b first to create a new branch
+                let result = Command::new("git")
+                    .args([
+                        "-C", &repo.path, "worktree", "add", &dest_str, "-b", &branch,
+                    ])
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .output();
+
+                match result {
+                    Ok(output) if output.status.success() => (true, captured_output(&output)),
+                    Ok(first_output) => {
+                        let first_err = captured_output(&first_output);
+                        // Branch may already exist from a partial retry; try without -b
+                        match Command::new("git")
+                            .args(["-C", &repo.path, "worktree", "add", &dest_str, &branch])
+                            .env("GIT_TERMINAL_PROMPT", "0")
+                            .output()
+                        {
+                            Ok(output2) => {
+                                let mut buf = first_err;
+                                buf.push_str(&captured_output(&output2));
+                                (output2.status.success(), buf)
+                            }
+                            Err(e) => {
+                                let mut buf = first_err;
+                                buf.push_str(&format!("failed to run git: {}\n", e));
+                                (false, buf)
+                            }
+                        }
+                    }
+                    Err(e) => (false, format!("failed to run git: {}\n", e)),
                 }
+            });
+
+        let mut failures = Vec::new();
+        for result in &results {
+            eprintln!("\x1b[2mworktree {}:\x1b[0m", result.name);
+            if !result.output.is_empty() {
+                eprint!("{}", result.output);
             }
+            if !result.success {
+                failures.push(result.name.clone());
+            }
+        }
+        if !failures.is_empty() {
+            bail!("git worktree add failed for: {}", failures.join(", "));
         }
     }
 
@@ -245,6 +311,20 @@ pub fn remove_repo_by_strategy(session_name: &str, repo_name: &str, strategy: St
     }
 }
 
+/// Combine stdout and stderr from a process Output into a single string.
+fn captured_output(output: &std::process::Output) -> String {
+    let mut buf = String::new();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.is_empty() {
+        buf.push_str(&stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.is_empty() {
+        buf.push_str(&stderr);
+    }
+    buf
+}
+
 /// Re-point origin remote from local path to the real remote URL.
 fn repoint_origin(project_dir: &str, clone_dir: &str) {
     if let Ok(output) = Command::new("git")
@@ -256,7 +336,7 @@ fn repoint_origin(project_dir: &str, clone_dir: &str) {
             if !url.is_empty() {
                 let _ = Command::new("git")
                     .args(["-C", clone_dir, "remote", "set-url", "origin", &url])
-                    .status();
+                    .output();
             }
         }
     }

@@ -1,5 +1,6 @@
 mod config;
 mod git;
+mod parallel;
 mod preset;
 mod repo;
 mod session;
@@ -996,19 +997,21 @@ box() {{
     Ok(0)
 }
 
-/// Fetch all refs for a bare repo.
+/// Fetch all refs for a bare repo, capturing output.
 ///
 /// When worktrees have branches checked out, git refuses to update those refs
 /// via fetch.  We detect checked-out branches and exclude them with negative
 /// refspecs so the remaining branches still get updated.
-fn update_repo(entry: &repo::RepoEntry) -> Result<bool> {
-    // Discover branches checked out in worktrees.
+///
+/// Returns (success, captured_output) for use in parallel execution.
+fn update_repo_captured(entry: &repo::RepoEntry) -> (bool, String) {
     let checked_out = worktree_checked_out_branches(&entry.path);
 
-    let status = if checked_out.is_empty() {
+    let result = if checked_out.is_empty() {
         std::process::Command::new("git")
             .args(["-C", &entry.path, "fetch", "--all"])
-            .status()?
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
     } else {
         let mut args: Vec<String> = vec![
             "-C".into(),
@@ -1022,14 +1025,29 @@ fn update_repo(entry: &repo::RepoEntry) -> Result<bool> {
         }
         std::process::Command::new("git")
             .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-            .status()?
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
     };
 
-    if !status.success() {
-        eprintln!("  \x1b[31mfetch failed\x1b[0m");
-        return Ok(false);
+    match result {
+        Ok(output) => {
+            let mut buf = String::new();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.is_empty() {
+                buf.push_str(&stdout);
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.is_empty() {
+                buf.push_str(&stderr);
+            }
+            if !output.status.success() {
+                buf.push_str("  \x1b[31mfetch failed\x1b[0m\n");
+                return (false, buf);
+            }
+            (true, buf)
+        }
+        Err(e) => (false, format!("  \x1b[31mfetch error: {}\x1b[0m\n", e)),
     }
-    Ok(true)
 }
 
 /// Return branch names currently checked out in any worktree of the given repo.
@@ -1047,22 +1065,29 @@ fn worktree_checked_out_branches(bare_path: &str) -> Vec<String> {
         .collect()
 }
 
-/// Fetch & pull only the named repos (used by --update flag).
+/// Fetch named repos in parallel.
 fn update_repos(names: &[String]) -> Result<()> {
     let all_repos = repo::list()?;
-    let selected: Vec<&repo::RepoEntry> = all_repos
-        .iter()
+    let items: Vec<(String, repo::RepoEntry)> = all_repos
+        .into_iter()
         .filter(|r| names.contains(&r.name))
+        .map(|r| (r.name.clone(), r))
         .collect();
-    if selected.is_empty() {
+    if items.is_empty() {
         return Ok(());
     }
 
     eprintln!("\x1b[2mUpdating repos…\x1b[0m");
-    for entry in &selected {
-        eprintln!("\x1b[1m{}\x1b[0m", entry.name);
-        update_repo(entry)?;
-        eprintln!();
+    let results = parallel::run_parallel(items, |_name, entry| update_repo_captured(&entry));
+
+    for result in &results {
+        eprintln!("\x1b[1m{}\x1b[0m", result.name);
+        if !result.output.is_empty() {
+            eprint!("{}", result.output);
+        }
+        if result.success {
+            eprintln!("  \x1b[32mok\x1b[0m");
+        }
     }
 
     Ok(())
