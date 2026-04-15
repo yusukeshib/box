@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use std::fmt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use crate::config;
 
@@ -231,7 +231,7 @@ pub fn remove_repo_from_workspace(session_name: &str, repo_name: &str) {
 /// Remove worktrees for a session. For each repo, removes the worktree and
 /// deletes the branch. Falls back to rm -rf if repo not in registry.
 /// Repos are removed in parallel for speed.
-pub fn remove_workspace_worktree(name: &str, repo_names: &[String]) {
+pub fn remove_workspace_worktree(name: &str, repo_names: &[String], verbose: bool) {
     let all_repos = crate::repo::list().unwrap_or_default();
     let root = match config::box_root() {
         Ok(r) => r,
@@ -252,22 +252,33 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String]) {
         .collect();
 
     if !items.is_empty() {
-        crate::parallel::run_parallel(items, |_name, (repo_path, dest, branch)| {
+        let count = items.len();
+        if !verbose {
+            eprint!(
+                "\x1b[2mRemoving {} worktree{}…\x1b[0m ",
+                count,
+                if count == 1 { "" } else { "s" }
+            );
+        }
+        let results = crate::parallel::run_parallel(items, |_name, (repo_path, dest, branch)| {
             if let Some(path) = repo_path {
                 let dest_str = dest.to_string_lossy().to_string();
                 // Remove worktree via git
-                let _ = Command::new("git")
+                let wt = Command::new("git")
                     .args(["-C", &path, "worktree", "remove", "--force", &dest_str])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                    .output();
                 // Delete the branch
-                let _ = Command::new("git")
+                let br = Command::new("git")
                     .args(["-C", &path, "branch", "-D", &branch])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
-                (true, String::new())
+                    .output();
+                let mut buf = String::new();
+                if let Ok(o) = wt {
+                    buf.push_str(&captured_output(&o));
+                }
+                if let Ok(o) = br {
+                    buf.push_str(&captured_output(&o));
+                }
+                (true, buf)
             } else {
                 // Repo not in registry, fall back to rm -rf
                 match std::fs::remove_dir_all(&dest) {
@@ -279,6 +290,28 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String]) {
                 }
             }
         });
+
+        if verbose {
+            for result in &results {
+                eprintln!("\x1b[2mremove {}:\x1b[0m", result.name);
+                if !result.output.is_empty() {
+                    eprint!("{}", result.output);
+                }
+                if result.success {
+                    eprintln!("  \x1b[32mok\x1b[0m");
+                }
+            }
+        } else {
+            let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
+            if failures.is_empty() {
+                eprintln!("\x1b[32mok\x1b[0m");
+            } else {
+                eprintln!("\x1b[31m{} failed\x1b[0m", failures.len());
+                for f in &failures {
+                    eprintln!("  \x1b[1m{}\x1b[0m: {}", f.name, f.output.trim());
+                }
+            }
+        }
     }
 
     // Remove session workspace root dir
@@ -352,10 +385,15 @@ pub fn ensure_workspace(
 }
 
 /// Remove workspace using the given strategy.
-pub fn remove_workspace_by_strategy(name: &str, repo_names: &[String], strategy: Strategy) {
+pub fn remove_workspace_by_strategy(
+    name: &str,
+    repo_names: &[String],
+    strategy: Strategy,
+    verbose: bool,
+) {
     match strategy {
         Strategy::Clone => remove_workspace(name),
-        Strategy::Worktree => remove_workspace_worktree(name, repo_names),
+        Strategy::Worktree => remove_workspace_worktree(name, repo_names, verbose),
     }
 }
 

@@ -168,8 +168,8 @@ fn main() {
         Some(Commands::New(args)) => cmd_new(args, verbose),
         Some(Commands::Edit(args)) => cmd_edit(&args.name, verbose),
         Some(Commands::Remove(args)) => match &args.name {
-            Some(name) => cmd_remove(name),
-            None => cmd_remove_tui(),
+            Some(name) => cmd_remove(name, verbose),
+            None => cmd_remove_tui(verbose),
         },
         Some(Commands::List(args)) => cmd_list_sessions(&args),
         Some(Commands::Switch { name }) => cmd_cd(&name),
@@ -549,7 +549,7 @@ fn cmd_edit(name: &str, verbose: bool) -> Result<i32> {
     }
 }
 
-fn cmd_remove(name: &str) -> Result<i32> {
+fn cmd_remove(name: &str, verbose: bool) -> Result<i32> {
     let name = session::validate_name(name)?;
     let name = name.as_str();
 
@@ -561,7 +561,7 @@ fn cmd_remove(name: &str) -> Result<i32> {
     let strategy =
         workspace::Strategy::from_str(&sess.strategy).unwrap_or(workspace::Strategy::Clone);
 
-    workspace::remove_workspace_by_strategy(name, &sess.repos, strategy);
+    workspace::remove_workspace_by_strategy(name, &sess.repos, strategy, verbose);
     session::remove_dir(name)?;
 
     if !sess.project_dir.is_empty() {
@@ -571,14 +571,14 @@ fn cmd_remove(name: &str) -> Result<i32> {
     Ok(0)
 }
 
-fn cmd_remove_tui() -> Result<i32> {
+fn cmd_remove_tui(verbose: bool) -> Result<i32> {
     match tui::select_sessions()? {
         tui::TuiAction::Remove { sessions } => {
             for name in &sessions {
                 if let Ok(sess) = session::load(name) {
                     let strategy = workspace::Strategy::from_str(&sess.strategy)
                         .unwrap_or(workspace::Strategy::Clone);
-                    workspace::remove_workspace_by_strategy(name, &sess.repos, strategy);
+                    workspace::remove_workspace_by_strategy(name, &sess.repos, strategy, verbose);
                 } else {
                     workspace::remove_workspace(name);
                 }
