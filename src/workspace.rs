@@ -55,6 +55,7 @@ pub fn remove_workspace(name: &str) {
 pub fn ensure_workspace_multi(
     session_name: &str,
     repos: &[crate::repo::RepoEntry],
+    verbose: bool,
 ) -> Result<String> {
     let root = config::box_root()?.join("workspaces").join(session_name);
     std::fs::create_dir_all(&root)?;
@@ -100,13 +101,21 @@ pub fn ensure_workspace_multi(
         });
 
         let mut failures = Vec::new();
-        for result in &results {
-            eprintln!("\x1b[2mcloning {}:\x1b[0m", result.name);
-            if !result.output.is_empty() {
-                eprint!("{}", result.output);
+        if verbose {
+            for result in &results {
+                eprintln!("\x1b[2mcloning {}:\x1b[0m", result.name);
+                if !result.output.is_empty() {
+                    eprint!("{}", result.output);
+                }
+                if !result.success {
+                    failures.push(result.name.clone());
+                }
             }
-            if !result.success {
-                failures.push(result.name.clone());
+        } else {
+            for result in &results {
+                if !result.success {
+                    failures.push(result.name.clone());
+                }
             }
         }
         if !failures.is_empty() {
@@ -121,6 +130,7 @@ pub fn ensure_workspace_multi(
 pub fn ensure_workspace_multi_worktree(
     session_name: &str,
     repos: &[crate::repo::RepoEntry],
+    verbose: bool,
 ) -> Result<String> {
     let root = config::box_root()?.join("workspaces").join(session_name);
     std::fs::create_dir_all(&root)?;
@@ -185,13 +195,21 @@ pub fn ensure_workspace_multi_worktree(
             });
 
         let mut failures = Vec::new();
-        for result in &results {
-            eprintln!("\x1b[2mworktree {}:\x1b[0m", result.name);
-            if !result.output.is_empty() {
-                eprint!("{}", result.output);
+        if verbose {
+            for result in &results {
+                eprintln!("\x1b[2mworktree {}:\x1b[0m", result.name);
+                if !result.output.is_empty() {
+                    eprint!("{}", result.output);
+                }
+                if !result.success {
+                    failures.push(result.name.clone());
+                }
             }
-            if !result.success {
-                failures.push(result.name.clone());
+        } else {
+            for result in &results {
+                if !result.success {
+                    failures.push(result.name.clone());
+                }
             }
         }
         if !failures.is_empty() {
@@ -305,11 +323,32 @@ pub fn ensure_workspace(
     name: &str,
     repos: &[crate::repo::RepoEntry],
     strategy: Strategy,
+    verbose: bool,
 ) -> Result<String> {
-    match strategy {
-        Strategy::Clone => ensure_workspace_multi(name, repos),
-        Strategy::Worktree => ensure_workspace_multi_worktree(name, repos),
+    let count = repos.len();
+    let label = match strategy {
+        Strategy::Clone => "Cloning",
+        Strategy::Worktree => "Creating worktrees",
+    };
+    if !verbose {
+        eprint!(
+            "\x1b[2m{} for {} repo{}…\x1b[0m ",
+            label,
+            count,
+            if count == 1 { "" } else { "s" }
+        );
     }
+    let result = match strategy {
+        Strategy::Clone => ensure_workspace_multi(name, repos, verbose),
+        Strategy::Worktree => ensure_workspace_multi_worktree(name, repos, verbose),
+    };
+    if !verbose {
+        match &result {
+            Ok(_) => eprintln!("\x1b[32mok\x1b[0m"),
+            Err(_) => eprintln!("\x1b[31mfailed\x1b[0m"),
+        }
+    }
+    result
 }
 
 /// Remove workspace using the given strategy.

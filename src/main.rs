@@ -22,6 +22,10 @@ use std::path::{Path, PathBuf};
     after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
 )]
 struct Cli {
+    /// Show detailed output
+    #[arg(long, short = 'v', global = true, env = "BOX_VERBOSE")]
+    verbose: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -158,9 +162,11 @@ enum ConfigShell {
 fn main() {
     let cli = Cli::parse();
 
+    let verbose = cli.verbose;
+
     let result = match cli.command {
-        Some(Commands::New(args)) => cmd_new(args),
-        Some(Commands::Edit(args)) => cmd_edit(&args.name),
+        Some(Commands::New(args)) => cmd_new(args, verbose),
+        Some(Commands::Edit(args)) => cmd_edit(&args.name, verbose),
         Some(Commands::Remove(args)) => match &args.name {
             Some(name) => cmd_remove(name),
             None => cmd_remove_tui(),
@@ -183,7 +189,7 @@ fn main() {
             ConfigShell::Zsh => cmd_config_zsh(),
             ConfigShell::Bash => cmd_config_bash(),
         },
-        None => cmd_default(),
+        None => cmd_default(verbose),
     };
 
     match result {
@@ -298,25 +304,25 @@ fn resolve_project_dir(
 }
 
 /// `box` with no args: interactive TUI to create a session.
-fn cmd_default() -> Result<i32> {
+fn cmd_default(verbose: bool) -> Result<i32> {
     if std::env::var_os("BOX_SESSION").is_some() {
         bail!(
             "Cannot nest box sessions (already inside session {:?}).",
             std::env::var("BOX_SESSION").unwrap_or_default()
         );
     }
-    cmd_create_tui()
+    cmd_create_tui(verbose)
 }
 
 /// `box create` with no name: prompt for session details.
-fn cmd_create_tui() -> Result<i32> {
+fn cmd_create_tui(verbose: bool) -> Result<i32> {
     let strategy = workspace::Strategy::resolve(None)?;
     match tui::create_session()? {
         tui::TuiAction::New { name, repos } => {
-            if let Err(e) = update_repos(&repos) {
+            if let Err(e) = update_repos(&repos, verbose) {
                 eprintln!("Warning: repo update failed: {}", e);
             }
-            cmd_create(&name, repos, strategy)
+            cmd_create(&name, repos, strategy, verbose)
         }
         _ => Ok(0),
     }
@@ -397,7 +403,7 @@ fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn cmd_new(args: CreateArgs) -> Result<i32> {
+fn cmd_new(args: CreateArgs, verbose: bool) -> Result<i32> {
     if std::env::var_os("BOX_SESSION").is_some() {
         bail!(
             "Cannot nest box sessions (already inside session {:?}).",
@@ -411,14 +417,19 @@ fn cmd_new(args: CreateArgs) -> Result<i32> {
     } else {
         bail!("Either --repo or --preset is required.");
     };
-    if let Err(e) = update_repos(&repo_names) {
+    if let Err(e) = update_repos(&repo_names, verbose) {
         eprintln!("Warning: repo update failed: {}", e);
     }
     let strategy = workspace::Strategy::from_str(&args.strategy)?;
-    cmd_create(&args.name, repo_names, strategy)
+    cmd_create(&args.name, repo_names, strategy, verbose)
 }
 
-fn cmd_create(name: &str, repo_names: Vec<String>, strategy: workspace::Strategy) -> Result<i32> {
+fn cmd_create(
+    name: &str,
+    repo_names: Vec<String>,
+    strategy: workspace::Strategy,
+    verbose: bool,
+) -> Result<i32> {
     let name = session::validate_name(name)?;
     let name = name.as_str();
 
@@ -454,16 +465,18 @@ fn cmd_create(name: &str, repo_names: Vec<String>, strategy: workspace::Strategy
         repos: repo_names_list,
     })?;
 
-    eprintln!("\x1b[2msession:\x1b[0m {}", name);
-    eprintln!("\x1b[2mrepos:\x1b[0m {}", cfg.repos.join(", "));
-    eprintln!("\x1b[2mstrategy:\x1b[0m {}", strategy);
-    eprintln!();
+    eprintln!(
+        "\x1b[2msession:\x1b[0m {} \x1b[2m({} repos, {})\x1b[0m",
+        name,
+        cfg.repos.len(),
+        strategy
+    );
 
     let mut sess = session::Session::from(cfg);
     sess.strategy = strategy.as_str().to_string();
     session::save(&sess)?;
 
-    let workspace_path = workspace::ensure_workspace(name, &selected_repos, strategy)?;
+    let workspace_path = workspace::ensure_workspace(name, &selected_repos, strategy, verbose)?;
     if selected_repos.len() == 1 {
         let repo_path = Path::new(&workspace_path).join(&selected_repos[0].name);
         output_cd_path(&repo_path.to_string_lossy());
@@ -475,7 +488,7 @@ fn cmd_create(name: &str, repo_names: Vec<String>, strategy: workspace::Strategy
     Ok(0)
 }
 
-fn cmd_edit(name: &str) -> Result<i32> {
+fn cmd_edit(name: &str, verbose: bool) -> Result<i32> {
     let name = session::validate_name(name)?;
     let name = name.as_str();
 
@@ -509,7 +522,7 @@ fn cmd_edit(name: &str) -> Result<i32> {
                     .iter()
                     .filter_map(|name| all_repos.iter().find(|r| r.name == *name).cloned())
                     .collect();
-                workspace::ensure_workspace(name, &repos_to_add, strategy)?;
+                workspace::ensure_workspace(name, &repos_to_add, strategy, verbose)?;
             }
 
             // Remove workspace directories for removed repos
@@ -779,6 +792,7 @@ _box() {{
                         '*--repo=[Select specific repo]:repo:__box_repos' \
                         '--preset=[Use a preset]:preset:__box_presets' \
                         '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
+                        '(-v --verbose)'{{-v,--verbose}}'[Show detailed output]' \
                         '1:session name:' \
                         '*:command:'
                     ;;
@@ -894,7 +908,7 @@ fn cmd_config_bash() -> Result<i32> {
         new)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--repo --preset --strategy" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--repo --preset --strategy --verbose -v" -- "$cur"))
                     ;;
             esac
             if [[ "$prev" == "--strategy" ]]; then
@@ -1066,7 +1080,7 @@ fn worktree_checked_out_branches(bare_path: &str) -> Vec<String> {
 }
 
 /// Fetch named repos in parallel.
-fn update_repos(names: &[String]) -> Result<()> {
+fn update_repos(names: &[String], verbose: bool) -> Result<()> {
     let all_repos = repo::list()?;
     let items: Vec<(String, repo::RepoEntry)> = all_repos
         .into_iter()
@@ -1077,16 +1091,37 @@ fn update_repos(names: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!("\x1b[2mUpdating repos…\x1b[0m");
+    let count = items.len();
+    if verbose {
+        eprintln!("\x1b[2mUpdating repos…\x1b[0m");
+    } else {
+        eprint!(
+            "\x1b[2mFetching {} repo{}…\x1b[0m ",
+            count,
+            if count == 1 { "" } else { "s" }
+        );
+    }
     let results = parallel::run_parallel(items, |_name, entry| update_repo_captured(&entry));
 
-    for result in &results {
-        eprintln!("\x1b[1m{}\x1b[0m", result.name);
-        if !result.output.is_empty() {
-            eprint!("{}", result.output);
+    if verbose {
+        for result in &results {
+            eprintln!("\x1b[1m{}\x1b[0m", result.name);
+            if !result.output.is_empty() {
+                eprint!("{}", result.output);
+            }
+            if result.success {
+                eprintln!("  \x1b[32mok\x1b[0m");
+            }
         }
-        if result.success {
-            eprintln!("  \x1b[32mok\x1b[0m");
+    } else {
+        let failures: Vec<&parallel::TaskResult> = results.iter().filter(|r| !r.success).collect();
+        if failures.is_empty() {
+            eprintln!("\x1b[32mok\x1b[0m");
+        } else {
+            eprintln!("\x1b[31m{} failed\x1b[0m", failures.len());
+            for f in &failures {
+                eprintln!("  \x1b[1m{}\x1b[0m: {}", f.name, f.output.trim());
+            }
         }
     }
 
