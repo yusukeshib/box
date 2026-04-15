@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use std::fmt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::config;
 
@@ -212,6 +212,7 @@ pub fn remove_repo_from_workspace(session_name: &str, repo_name: &str) {
 
 /// Remove worktrees for a session. For each repo, removes the worktree and
 /// deletes the branch. Falls back to rm -rf if repo not in registry.
+/// Repos are removed in parallel for speed.
 pub fn remove_workspace_worktree(name: &str, repo_names: &[String]) {
     let all_repos = crate::repo::list().unwrap_or_default();
     let root = match config::box_root() {
@@ -220,30 +221,46 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String]) {
     };
     let branch_name = format!("box/{}", name);
 
-    for repo_name in repo_names {
-        let dest = root.join("workspaces").join(name).join(repo_name);
-        let dest_str = dest.to_string_lossy().to_string();
+    let items: Vec<_> = repo_names
+        .iter()
+        .map(|repo_name| {
+            let dest = root.join("workspaces").join(name).join(repo_name);
+            let repo_path = all_repos
+                .iter()
+                .find(|r| r.name == *repo_name)
+                .map(|r| r.path.clone());
+            (repo_name.clone(), (repo_path, dest, branch_name.clone()))
+        })
+        .collect();
 
-        if let Some(entry) = all_repos.iter().find(|r| r.name == *repo_name) {
-            // Remove worktree via git
-            let _ = Command::new("git")
-                .args([
-                    "-C",
-                    &entry.path,
-                    "worktree",
-                    "remove",
-                    "--force",
-                    &dest_str,
-                ])
-                .status();
-            // Delete the branch
-            let _ = Command::new("git")
-                .args(["-C", &entry.path, "branch", "-D", &branch_name])
-                .status();
-        } else {
-            // Repo not in registry, fall back to rm -rf
-            let _ = std::fs::remove_dir_all(&dest);
-        }
+    if !items.is_empty() {
+        crate::parallel::run_parallel(items, |_name, (repo_path, dest, branch)| {
+            if let Some(path) = repo_path {
+                let dest_str = dest.to_string_lossy().to_string();
+                // Remove worktree via git
+                let _ = Command::new("git")
+                    .args(["-C", &path, "worktree", "remove", "--force", &dest_str])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                // Delete the branch
+                let _ = Command::new("git")
+                    .args(["-C", &path, "branch", "-D", &branch])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                (true, String::new())
+            } else {
+                // Repo not in registry, fall back to rm -rf
+                match std::fs::remove_dir_all(&dest) {
+                    Ok(()) => (true, String::new()),
+                    Err(e) => (
+                        false,
+                        format!("failed to remove '{}': {}", dest.display(), e),
+                    ),
+                }
+            }
+        });
     }
 
     // Remove session workspace root dir
