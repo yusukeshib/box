@@ -804,11 +804,16 @@ _box() {{
                         '-q[Only print session names]'
                     ;;
                 remove|rm)
-                    if (( CURRENT == 2 )); then
-                        __box_sessions
-                    fi
+                    _arguments \
+                        '(-v --verbose)'{{-v,--verbose}}'[Show detailed output]' \
+                        '1:session name:__box_sessions'
                     ;;
-                edit|switch|sw|cd)
+                edit)
+                    _arguments \
+                        '(-v --verbose)'{{-v,--verbose}}'[Show detailed output]' \
+                        '1:session name:__box_sessions'
+                    ;;
+                switch|sw|cd)
                     if (( CURRENT == 2 )); then
                         __box_sessions
                     fi
@@ -922,7 +927,25 @@ fn cmd_config_bash() -> Result<i32> {
                     ;;
             esac
             ;;
-        edit|remove|rm|switch|sw|cd)
+        edit|remove|rm)
+            case "$cur" in
+                -*)
+                    COMPREPLY=($(compgen -W "--verbose -v" -- "$cur"))
+                    ;;
+                *)
+                    if [[ $cword -eq 2 ]]; then
+                        local sessions=""
+                        if [[ -d "$__box_root/sessions" ]]; then
+                            for sess in "$__box_root/sessions"/*/; do
+                                ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
+                            done
+                        fi
+                        COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+                    fi
+                    ;;
+            esac
+            ;;
+        switch|sw|cd)
             if [[ $cword -eq 2 ]]; then
                 local sessions=""
                 if [[ -d "$__box_root/sessions" ]]; then

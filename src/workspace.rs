@@ -114,6 +114,7 @@ pub fn ensure_workspace_multi(
         } else {
             for result in &results {
                 if !result.success {
+                    eprintln!("  \x1b[1m{}\x1b[0m: {}", result.name, result.output.trim());
                     failures.push(result.name.clone());
                 }
             }
@@ -208,6 +209,7 @@ pub fn ensure_workspace_multi_worktree(
         } else {
             for result in &results {
                 if !result.success {
+                    eprintln!("  \x1b[1m{}\x1b[0m: {}", result.name, result.output.trim());
                     failures.push(result.name.clone());
                 }
             }
@@ -272,13 +274,32 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String], verbose: boo
                     .args(["-C", &path, "branch", "-D", &branch])
                     .output();
                 let mut buf = String::new();
-                if let Ok(o) = wt {
-                    buf.push_str(&captured_output(&o));
+                let mut success = true;
+                match wt {
+                    Ok(o) => {
+                        buf.push_str(&captured_output(&o));
+                        if !o.status.success() {
+                            success = false;
+                        }
+                    }
+                    Err(e) => {
+                        success = false;
+                        buf.push_str(&format!("failed to run git worktree remove: {}\n", e));
+                    }
                 }
-                if let Ok(o) = br {
-                    buf.push_str(&captured_output(&o));
+                match br {
+                    Ok(o) => {
+                        buf.push_str(&captured_output(&o));
+                        if !o.status.success() {
+                            success = false;
+                        }
+                    }
+                    Err(e) => {
+                        success = false;
+                        buf.push_str(&format!("failed to run git branch -D: {}\n", e));
+                    }
                 }
-                (true, buf)
+                (success, buf)
             } else {
                 // Repo not in registry, fall back to rm -rf
                 match std::fs::remove_dir_all(&dest) {
@@ -299,6 +320,8 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String], verbose: boo
                 }
                 if result.success {
                     eprintln!("  \x1b[32mok\x1b[0m");
+                } else {
+                    eprintln!("  \x1b[31mfailed\x1b[0m");
                 }
             }
         } else {
