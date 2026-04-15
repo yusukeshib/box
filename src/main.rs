@@ -465,12 +465,19 @@ fn cmd_create(
         repos: repo_names_list,
     })?;
 
-    eprintln!(
-        "\x1b[2msession:\x1b[0m {} \x1b[2m({} repos, {})\x1b[0m",
-        name,
-        cfg.repos.len(),
-        strategy
-    );
+    if verbose {
+        eprintln!("\x1b[2msession:\x1b[0m {}", name);
+        eprintln!("\x1b[2mrepos:\x1b[0m {}", cfg.repos.join(", "));
+        eprintln!("\x1b[2mstrategy:\x1b[0m {}", strategy);
+        eprintln!();
+    } else {
+        eprintln!(
+            "\x1b[2msession:\x1b[0m {} \x1b[2m({} repos, {})\x1b[0m",
+            name,
+            cfg.repos.len(),
+            strategy
+        );
+    }
 
     let mut sess = session::Session::from(cfg);
     sess.strategy = strategy.as_str().to_string();

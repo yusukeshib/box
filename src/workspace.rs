@@ -100,7 +100,7 @@ pub fn ensure_workspace_multi(
             }
         });
 
-        let mut failures = Vec::new();
+        let mut failure_msgs = Vec::new();
         if verbose {
             for result in &results {
                 eprintln!("\x1b[2mcloning {}:\x1b[0m", result.name);
@@ -108,19 +108,22 @@ pub fn ensure_workspace_multi(
                     eprint!("{}", result.output);
                 }
                 if !result.success {
-                    failures.push(result.name.clone());
+                    failure_msgs.push(result.name.clone());
                 }
             }
         } else {
             for result in &results {
                 if !result.success {
-                    eprintln!("  \x1b[1m{}\x1b[0m: {}", result.name, result.output.trim());
-                    failures.push(result.name.clone());
+                    failure_msgs.push(format!("  {}: {}", result.name, result.output.trim()));
                 }
             }
         }
-        if !failures.is_empty() {
-            bail!("git clone --local failed for: {}", failures.join(", "));
+        if !failure_msgs.is_empty() {
+            if verbose {
+                bail!("git clone --local failed for: {}", failure_msgs.join(", "));
+            } else {
+                bail!("git clone --local failed:\n{}", failure_msgs.join("\n"));
+            }
         }
     }
 
@@ -195,7 +198,7 @@ pub fn ensure_workspace_multi_worktree(
                 }
             });
 
-        let mut failures = Vec::new();
+        let mut failure_msgs = Vec::new();
         if verbose {
             for result in &results {
                 eprintln!("\x1b[2mworktree {}:\x1b[0m", result.name);
@@ -203,19 +206,22 @@ pub fn ensure_workspace_multi_worktree(
                     eprint!("{}", result.output);
                 }
                 if !result.success {
-                    failures.push(result.name.clone());
+                    failure_msgs.push(result.name.clone());
                 }
             }
         } else {
             for result in &results {
                 if !result.success {
-                    eprintln!("  \x1b[1m{}\x1b[0m: {}", result.name, result.output.trim());
-                    failures.push(result.name.clone());
+                    failure_msgs.push(format!("  {}: {}", result.name, result.output.trim()));
                 }
             }
         }
-        if !failures.is_empty() {
-            bail!("git worktree add failed for: {}", failures.join(", "));
+        if !failure_msgs.is_empty() {
+            if verbose {
+                bail!("git worktree add failed for: {}", failure_msgs.join(", "));
+            } else {
+                bail!("git worktree add failed:\n{}", failure_msgs.join("\n"));
+            }
         }
     }
 
