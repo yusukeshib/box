@@ -203,20 +203,8 @@ fn output_cd_path(path: &str) {
 }
 
 fn rename_terminal_tab(name: &str) {
-    if std::env::var_os("ZELLIJ").is_some() {
-        let _ = std::process::Command::new("zellij")
-            .args(["action", "rename-tab", name])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    } else if std::env::var_os("TMUX").is_some() {
-        let _ = std::process::Command::new("tmux")
-            .args(["rename-window", name])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+    if let Ok(rename_file) = std::env::var("BOX_RENAME_FILE") {
+        let _ = fs::write(rename_file, name);
     }
 }
 
@@ -856,16 +844,26 @@ _box() {{
 compdef _box box
 
 box() {{
-    local __box_cd_file
+    local __box_cd_file __box_rename_file
     __box_cd_file=$(mktemp "/tmp/.box-cd.XXXXXX")
-    BOX_CD_FILE="$__box_cd_file" command box "$@"
+    __box_rename_file=$(mktemp "/tmp/.box-rename.XXXXXX")
+    BOX_CD_FILE="$__box_cd_file" BOX_RENAME_FILE="$__box_rename_file" command box "$@"
     local __box_exit=$?
     if [[ -s "$__box_cd_file" ]]; then
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
     fi
-    rm -f "$__box_cd_file"
+    if [[ -s "$__box_rename_file" ]]; then
+        local __box_name
+        __box_name=$(<"$__box_rename_file")
+        if [[ -n "$ZELLIJ" ]]; then
+            command zellij action rename-tab "$__box_name" 2>/dev/null
+        elif [[ -n "$TMUX" ]]; then
+            command tmux rename-window "$__box_name" 2>/dev/null
+        fi
+    fi
+    rm -f "$__box_cd_file" "$__box_rename_file"
     return $__box_exit
 }}
 "#
@@ -971,16 +969,26 @@ fn cmd_config_bash() -> Result<i32> {
 complete -F _box box
 
 box() {{
-    local __box_cd_file
+    local __box_cd_file __box_rename_file
     __box_cd_file=$(mktemp "/tmp/.box-cd.XXXXXX")
-    BOX_CD_FILE="$__box_cd_file" command box "$@"
+    __box_rename_file=$(mktemp "/tmp/.box-rename.XXXXXX")
+    BOX_CD_FILE="$__box_cd_file" BOX_RENAME_FILE="$__box_rename_file" command box "$@"
     local __box_exit=$?
     if [[ -s "$__box_cd_file" ]]; then
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
     fi
-    rm -f "$__box_cd_file"
+    if [[ -s "$__box_rename_file" ]]; then
+        local __box_name
+        __box_name=$(<"$__box_rename_file")
+        if [[ -n "$ZELLIJ" ]]; then
+            command zellij action rename-tab "$__box_name" 2>/dev/null
+        elif [[ -n "$TMUX" ]]; then
+            command tmux rename-window "$__box_name" 2>/dev/null
+        fi
+    fi
+    rm -f "$__box_cd_file" "$__box_rename_file"
     return $__box_exit
 }}
 "#
