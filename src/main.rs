@@ -561,28 +561,16 @@ fn cmd_remove(name: &str) -> Result<i32> {
 fn cmd_remove_tui() -> Result<i32> {
     match tui::select_sessions()? {
         tui::TuiAction::Remove { sessions } => {
-            // Pre-load session data before parallel removal
-            let items: Vec<(String, Option<session::Session>)> = sessions
-                .iter()
-                .map(|name| (name.clone(), session::load(name).ok()))
-                .collect();
-
-            let results = parallel::run_parallel(items, |name, sess_opt| {
-                if let Some(sess) = sess_opt {
+            for name in &sessions {
+                if let Ok(sess) = session::load(name) {
                     let strategy = workspace::Strategy::from_str(&sess.strategy)
                         .unwrap_or(workspace::Strategy::Clone);
                     workspace::remove_workspace_by_strategy(name, &sess.repos, strategy);
                 } else {
                     workspace::remove_workspace(name);
                 }
-                match session::remove_dir(name) {
-                    Ok(()) => (true, format!("Session '{}' removed.", name)),
-                    Err(e) => (false, format!("Failed to remove '{}': {}", name, e)),
-                }
-            });
-
-            for result in &results {
-                eprintln!("{}", result.output);
+                session::remove_dir(name)?;
+                eprintln!("Session '{}' removed.", name);
             }
             Ok(0)
         }

@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use std::fmt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::config;
 
@@ -225,34 +225,41 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String]) {
         .iter()
         .map(|repo_name| {
             let dest = root.join("workspaces").join(name).join(repo_name);
-            let dest_str = dest.to_string_lossy().to_string();
             let repo_path = all_repos
                 .iter()
                 .find(|r| r.name == *repo_name)
                 .map(|r| r.path.clone());
-            (
-                repo_name.clone(),
-                (repo_path, dest_str, branch_name.clone()),
-            )
+            (repo_name.clone(), (repo_path, dest, branch_name.clone()))
         })
         .collect();
 
     if !items.is_empty() {
-        crate::parallel::run_parallel(items, |_name, (repo_path, dest_str, branch)| {
+        crate::parallel::run_parallel(items, |_name, (repo_path, dest, branch)| {
             if let Some(path) = repo_path {
+                let dest_str = dest.to_string_lossy().to_string();
                 // Remove worktree via git
                 let _ = Command::new("git")
                     .args(["-C", &path, "worktree", "remove", "--force", &dest_str])
-                    .output();
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
                 // Delete the branch
                 let _ = Command::new("git")
                     .args(["-C", &path, "branch", "-D", &branch])
-                    .output();
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                (true, String::new())
             } else {
                 // Repo not in registry, fall back to rm -rf
-                let _ = std::fs::remove_dir_all(&dest_str);
+                match std::fs::remove_dir_all(&dest) {
+                    Ok(()) => (true, String::new()),
+                    Err(e) => (
+                        false,
+                        format!("failed to remove '{}': {}", dest.display(), e),
+                    ),
+                }
             }
-            (true, String::new())
         });
     }
 
