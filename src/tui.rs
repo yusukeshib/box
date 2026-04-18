@@ -98,44 +98,36 @@ impl TextInput {
                 self.text.insert(self.cursor, c);
                 self.cursor += c.len_utf8();
             }
-            KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    let prev = self.text[..self.cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    self.text.drain(prev..self.cursor);
-                    self.cursor = prev;
-                }
+            KeyCode::Backspace if self.cursor > 0 => {
+                let prev = self.text[..self.cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                self.text.drain(prev..self.cursor);
+                self.cursor = prev;
             }
-            KeyCode::Delete => {
-                if self.cursor < self.text.len() {
-                    let next = self.text[self.cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| self.cursor + i)
-                        .unwrap_or(self.text.len());
-                    self.text.drain(self.cursor..next);
-                }
+            KeyCode::Delete if self.cursor < self.text.len() => {
+                let next = self.text[self.cursor..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(i, _)| self.cursor + i)
+                    .unwrap_or(self.text.len());
+                self.text.drain(self.cursor..next);
             }
-            KeyCode::Left => {
-                if self.cursor > 0 {
-                    self.cursor = self.text[..self.cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                }
+            KeyCode::Left if self.cursor > 0 => {
+                self.cursor = self.text[..self.cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
             }
-            KeyCode::Right => {
-                if self.cursor < self.text.len() {
-                    self.cursor = self.text[self.cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| self.cursor + i)
-                        .unwrap_or(self.text.len());
-                }
+            KeyCode::Right if self.cursor < self.text.len() => {
+                self.cursor = self.text[self.cursor..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(i, _)| self.cursor + i)
+                    .unwrap_or(self.text.len());
             }
             _ => {}
         }
@@ -341,10 +333,8 @@ pub fn create_session() -> Result<TuiAction> {
                     KeyCode::Up => {
                         cursor_pos = cursor_pos.saturating_sub(1);
                     }
-                    KeyCode::Down => {
-                        if cursor_pos + 1 < preset_item_count {
-                            cursor_pos += 1;
-                        }
+                    KeyCode::Down if cursor_pos + 1 < preset_item_count => {
+                        cursor_pos += 1;
                     }
                     KeyCode::Enter => {
                         if cursor_pos < presets.len() {
@@ -400,10 +390,8 @@ pub fn create_session() -> Result<TuiAction> {
                     KeyCode::Up => {
                         cursor_pos = cursor_pos.saturating_sub(1);
                     }
-                    KeyCode::Down => {
-                        if cursor_pos + 1 < repo_count {
-                            cursor_pos += 1;
-                        }
+                    KeyCode::Down if cursor_pos + 1 < repo_count => {
+                        cursor_pos += 1;
                     }
                     KeyCode::Char(' ') => {
                         selected[cursor_pos] = !selected[cursor_pos];
@@ -598,10 +586,8 @@ fn select_repos(
                 KeyCode::Up => {
                     cursor_pos = cursor_pos.saturating_sub(1);
                 }
-                KeyCode::Down => {
-                    if cursor_pos + 1 < repo_count {
-                        cursor_pos += 1;
-                    }
+                KeyCode::Down if cursor_pos + 1 < repo_count => {
+                    cursor_pos += 1;
                 }
                 KeyCode::Char(' ') => {
                     selected[cursor_pos] = !selected[cursor_pos];
@@ -756,10 +742,8 @@ pub fn select_sessions() -> Result<TuiAction> {
                 KeyCode::Up => {
                     cursor_pos = cursor_pos.saturating_sub(1);
                 }
-                KeyCode::Down => {
-                    if cursor_pos + 1 < count {
-                        cursor_pos += 1;
-                    }
+                KeyCode::Down if cursor_pos + 1 < count => {
+                    cursor_pos += 1;
                 }
                 KeyCode::Char(' ') => {
                     selected[cursor_pos] = !selected[cursor_pos];

@@ -887,7 +887,7 @@ box() {{
         if [[ -n "$ZELLIJ" ]]; then
             command zellij action rename-tab "$__box_name" 2>/dev/null
         elif [[ -n "$TMUX" ]]; then
-            command tmux rename-window "$__box_name" 2>/dev/null
+            command tmux rename-window -t "$TMUX_PANE" "$__box_name" 2>/dev/null
         fi
     fi
     rm -f "$__box_cd_file" "$__box_rename_file"
@@ -1030,7 +1030,7 @@ box() {{
         if [[ -n "$ZELLIJ" ]]; then
             command zellij action rename-tab "$__box_name" 2>/dev/null
         elif [[ -n "$TMUX" ]]; then
-            command tmux rename-window "$__box_name" 2>/dev/null
+            command tmux rename-window -t "$TMUX_PANE" "$__box_name" 2>/dev/null
         fi
     fi
     rm -f "$__box_cd_file" "$__box_rename_file"
