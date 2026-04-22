@@ -319,12 +319,7 @@ fn cmd_default(verbose: bool) -> Result<i32> {
 fn cmd_create_tui(verbose: bool) -> Result<i32> {
     let strategy = workspace::Strategy::resolve(None)?;
     match tui::create_session()? {
-        tui::TuiAction::New { name, repos } => {
-            if let Err(e) = update_repos(&repos, verbose) {
-                eprintln!("Warning: repo update failed: {}", e);
-            }
-            cmd_create(&name, repos, strategy, verbose)
-        }
+        tui::TuiAction::New { name, repos } => cmd_create(&name, repos, strategy, true, verbose),
         _ => Ok(0),
     }
 }
@@ -418,17 +413,15 @@ fn cmd_new(args: CreateArgs, verbose: bool) -> Result<i32> {
     } else {
         bail!("Either --repo or --preset is required.");
     };
-    if let Err(e) = update_repos(&repo_names, verbose) {
-        eprintln!("Warning: repo update failed: {}", e);
-    }
     let strategy = workspace::Strategy::from_str(&args.strategy)?;
-    cmd_create(&args.name, repo_names, strategy, verbose)
+    cmd_create(&args.name, repo_names, strategy, true, verbose)
 }
 
 fn cmd_create(
     name: &str,
     repo_names: Vec<String>,
     strategy: workspace::Strategy,
+    fetch: bool,
     verbose: bool,
 ) -> Result<i32> {
     let name = session::validate_name(name)?;
@@ -484,7 +477,8 @@ fn cmd_create(
     sess.strategy = strategy.as_str().to_string();
     session::save(&sess)?;
 
-    let workspace_path = workspace::ensure_workspace(name, &selected_repos, strategy, verbose)?;
+    let workspace_path =
+        workspace::ensure_workspace(name, &selected_repos, strategy, fetch, verbose)?;
     if selected_repos.len() == 1 {
         let repo_path = Path::new(&workspace_path).join(&selected_repos[0].name);
         output_cd_path(&repo_path.to_string_lossy());
@@ -530,7 +524,7 @@ fn cmd_edit(name: &str, verbose: bool) -> Result<i32> {
                     .iter()
                     .filter_map(|name| all_repos.iter().find(|r| r.name == *name).cloned())
                     .collect();
-                workspace::ensure_workspace(name, &repos_to_add, strategy, verbose)?;
+                workspace::ensure_workspace(name, &repos_to_add, strategy, false, verbose)?;
             }
 
             // Remove workspace directories for removed repos
@@ -1040,155 +1034,6 @@ box() {{
 "#
     );
     Ok(0)
-}
-
-/// Fetch all refs for a bare repo, capturing output.
-///
-/// When worktrees have branches checked out, git refuses to update those refs
-/// via fetch. We detect checked-out branches and exclude them with negative
-/// refspecs. If git still refuses (e.g. a worktree admin entry we missed),
-/// we parse the error, add the offending branch to the excludes, and retry.
-///
-/// Returns (success, captured_output) for use in parallel execution.
-fn update_repo_captured(entry: &repo::RepoEntry) -> (bool, String) {
-    let mut excludes = worktree_checked_out_branches(&entry.path);
-    let mut log = String::new();
-
-    for _ in 0..8 {
-        let mut args: Vec<String> = vec![
-            "-C".into(),
-            entry.path.clone(),
-            "fetch".into(),
-            "origin".into(),
-            "+refs/heads/*:refs/heads/*".into(),
-        ];
-        for branch in &excludes {
-            args.push(format!("^refs/heads/{}", branch));
-        }
-
-        let result = std::process::Command::new("git")
-            .args(args.iter().map(|s| s.as_str()).collect::<Vec<_>>())
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output();
-
-        let output = match result {
-            Ok(o) => o,
-            Err(e) => {
-                log.push_str(&format!("  \x1b[31mfetch error: {}\x1b[0m\n", e));
-                return (false, log);
-            }
-        };
-
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-
-        if output.status.success() {
-            log.push_str(&stdout);
-            log.push_str(&stderr);
-            return (true, log);
-        }
-
-        let new_excludes = parse_refused_branches(&stderr);
-        let added: Vec<String> = new_excludes
-            .into_iter()
-            .filter(|b| !excludes.contains(b))
-            .collect();
-
-        if added.is_empty() {
-            log.push_str(&stdout);
-            log.push_str(&stderr);
-            log.push_str("  \x1b[31mfetch failed\x1b[0m\n");
-            return (false, log);
-        }
-
-        excludes.extend(added);
-    }
-
-    log.push_str("  \x1b[31mfetch failed: too many checked-out branches to exclude\x1b[0m\n");
-    (false, log)
-}
-
-/// Return branch names currently checked out in any worktree of the given repo.
-fn worktree_checked_out_branches(bare_path: &str) -> Vec<String> {
-    let output = std::process::Command::new("git")
-        .args(["-C", bare_path, "worktree", "list", "--porcelain"])
-        .output();
-    let Ok(output) = output else {
-        return Vec::new();
-    };
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.lines()
-        .filter_map(|l| l.strip_prefix("branch refs/heads/"))
-        .map(String::from)
-        .collect()
-}
-
-/// Extract branch names from git's "refusing to fetch into branch 'refs/heads/X'
-/// checked out at..." error lines.
-fn parse_refused_branches(stderr: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in stderr.lines() {
-        let Some(rest) = line
-            .split_once("refusing to fetch into branch '")
-            .map(|s| s.1)
-        else {
-            continue;
-        };
-        let Some((ref_name, _)) = rest.split_once('\'') else {
-            continue;
-        };
-        if let Some(branch) = ref_name.strip_prefix("refs/heads/") {
-            out.push(branch.to_string());
-        }
-    }
-    out
-}
-
-/// Fetch named repos in parallel.
-fn update_repos(names: &[String], verbose: bool) -> Result<()> {
-    let all_repos = repo::list()?;
-    let items: Vec<(String, repo::RepoEntry)> = all_repos
-        .into_iter()
-        .filter(|r| names.contains(&r.name))
-        .map(|r| (r.name.clone(), r))
-        .collect();
-    if items.is_empty() {
-        return Ok(());
-    }
-
-    let count = items.len();
-    let label = format!(
-        "Fetching {} repo{}",
-        count,
-        if count == 1 { "" } else { "s" }
-    );
-    if verbose {
-        eprintln!("\x1b[2mUpdating repos…\x1b[0m");
-    }
-    let results = progress::run_parallel_with_progress(&label, items, verbose, |_name, entry| {
-        update_repo_captured(&entry)
-    });
-
-    if verbose {
-        for result in &results {
-            eprintln!("\x1b[1m{}\x1b[0m", result.name);
-            if !result.output.is_empty() {
-                eprint!("{}", result.output);
-            }
-            if result.success {
-                eprintln!("  \x1b[32mok\x1b[0m");
-            }
-        }
-    } else {
-        let failures: Vec<&parallel::TaskResult> = results.iter().filter(|r| !r.success).collect();
-        if !failures.is_empty() {
-            for f in &failures {
-                eprintln!("  \x1b[1m{}\x1b[0m: {}", f.name, f.output.trim());
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn cmd_upgrade() -> Result<i32> {
@@ -1747,24 +1592,5 @@ mod tests {
     fn test_bare_name_rejected() {
         let result = try_parse(&["my-session"]);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_parse_refused_branches_single() {
-        let stderr = "fatal: refusing to fetch into branch 'refs/heads/box/conformance-2' checked out at '/Users/yusuke/.box/workspaces/conformance-2/jerboa'\n";
-        assert_eq!(parse_refused_branches(stderr), vec!["box/conformance-2"]);
-    }
-
-    #[test]
-    fn test_parse_refused_branches_multiple() {
-        let stderr = "fatal: refusing to fetch into branch 'refs/heads/a' checked out at '/x'\n\
-                      fatal: refusing to fetch into branch 'refs/heads/feat/b' checked out at '/y'\n";
-        assert_eq!(parse_refused_branches(stderr), vec!["a", "feat/b"]);
-    }
-
-    #[test]
-    fn test_parse_refused_branches_ignores_unrelated() {
-        let stderr = "From github.com:org/repo\n   abc..def  main -> main\n";
-        assert!(parse_refused_branches(stderr).is_empty());
     }
 }

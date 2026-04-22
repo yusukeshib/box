@@ -52,9 +52,14 @@ pub fn remove_workspace(name: &str) {
 }
 
 /// Create a multi-repo workspace using git clone --local.
+///
+/// When `fetch` is true, each repo is fetched from `origin` before cloning so
+/// the session picks up the latest upstream refs; fetch failures are
+/// captured but do not abort the clone.
 pub fn ensure_workspace_multi(
     session_name: &str,
     repos: &[crate::repo::RepoEntry],
+    fetch: bool,
     verbose: bool,
 ) -> Result<String> {
     let root = config::box_root()?.join("workspaces").join(session_name);
@@ -80,16 +85,33 @@ pub fn ensure_workspace_multi(
     if !to_clone.is_empty() {
         let root_str = root.to_string_lossy().to_string();
         let count = to_clone.len();
-        let label = format!(
-            "Cloning {} repo{}",
-            count,
-            if count == 1 { "" } else { "s" }
-        );
+        let label = if fetch {
+            format!(
+                "Preparing {} repo{}",
+                count,
+                if count == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "Cloning {} repo{}",
+                count,
+                if count == 1 { "" } else { "s" }
+            )
+        };
         let results = crate::progress::run_parallel_with_progress(
             &label,
             to_clone,
             verbose,
             move |_name, (repo, dest_str)| {
+                let mut buf = String::new();
+                if fetch {
+                    let (ok, fetch_log) = crate::git::fetch_repo(&repo);
+                    buf.push_str(&fetch_log);
+                    if !ok {
+                        buf.push_str("  \x1b[33mfetch failed; cloning local refs\x1b[0m\n");
+                    }
+                }
+
                 let result = Command::new("git")
                     .args(["clone", "--local", &repo.path, &dest_str])
                     .current_dir(&root_str)
@@ -97,7 +119,7 @@ pub fn ensure_workspace_multi(
                     .output();
                 match result {
                     Ok(output) => {
-                        let mut buf = captured_output(&output);
+                        buf.push_str(&captured_output(&output));
                         if output.status.success() {
                             repoint_origin(&repo.path, &dest_str);
                             (true, buf)
@@ -109,7 +131,10 @@ pub fn ensure_workspace_multi(
                             (false, buf)
                         }
                     }
-                    Err(e) => (false, format!("failed to run git: {}\n", e)),
+                    Err(e) => {
+                        buf.push_str(&format!("failed to run git: {}\n", e));
+                        (false, buf)
+                    }
                 }
             },
         );
@@ -145,9 +170,14 @@ pub fn ensure_workspace_multi(
 }
 
 /// Create a multi-repo workspace using git worktree add.
+///
+/// When `fetch` is true, each source repo is fetched from `origin` before the
+/// worktree is created so the new branch starts from the latest upstream;
+/// fetch failures are captured but do not abort the worktree creation.
 pub fn ensure_workspace_multi_worktree(
     session_name: &str,
     repos: &[crate::repo::RepoEntry],
+    fetch: bool,
     verbose: bool,
 ) -> Result<String> {
     let root = config::box_root()?.join("workspaces").join(session_name);
@@ -177,16 +207,33 @@ pub fn ensure_workspace_multi_worktree(
 
     if !to_create.is_empty() {
         let count = to_create.len();
-        let label = format!(
-            "Creating {} worktree{}",
-            count,
-            if count == 1 { "" } else { "s" }
-        );
+        let label = if fetch {
+            format!(
+                "Preparing {} repo{}",
+                count,
+                if count == 1 { "" } else { "s" }
+            )
+        } else {
+            format!(
+                "Creating {} worktree{}",
+                count,
+                if count == 1 { "" } else { "s" }
+            )
+        };
         let results = crate::progress::run_parallel_with_progress(
             &label,
             to_create,
             verbose,
-            |_name, (repo, dest_str, branch)| {
+            move |_name, (repo, dest_str, branch)| {
+                let mut buf = String::new();
+                if fetch {
+                    let (ok, fetch_log) = crate::git::fetch_repo(&repo);
+                    buf.push_str(&fetch_log);
+                    if !ok {
+                        buf.push_str("  \x1b[33mfetch failed; branching from local HEAD\x1b[0m\n");
+                    }
+                }
+
                 // Try with -b first to create a new branch
                 let result = Command::new("git")
                     .args([
@@ -196,9 +243,12 @@ pub fn ensure_workspace_multi_worktree(
                     .output();
 
                 match result {
-                    Ok(output) if output.status.success() => (true, captured_output(&output)),
+                    Ok(output) if output.status.success() => {
+                        buf.push_str(&captured_output(&output));
+                        (true, buf)
+                    }
                     Ok(first_output) => {
-                        let first_err = captured_output(&first_output);
+                        buf.push_str(&captured_output(&first_output));
                         // Branch may already exist from a partial retry; try without -b
                         match Command::new("git")
                             .args(["-C", &repo.path, "worktree", "add", &dest_str, &branch])
@@ -206,18 +256,19 @@ pub fn ensure_workspace_multi_worktree(
                             .output()
                         {
                             Ok(output2) => {
-                                let mut buf = first_err;
                                 buf.push_str(&captured_output(&output2));
                                 (output2.status.success(), buf)
                             }
                             Err(e) => {
-                                let mut buf = first_err;
                                 buf.push_str(&format!("failed to run git: {}\n", e));
                                 (false, buf)
                             }
                         }
                     }
-                    Err(e) => (false, format!("failed to run git: {}\n", e)),
+                    Err(e) => {
+                        buf.push_str(&format!("failed to run git: {}\n", e));
+                        (false, buf)
+                    }
                 }
             },
         );
@@ -409,11 +460,12 @@ pub fn ensure_workspace(
     name: &str,
     repos: &[crate::repo::RepoEntry],
     strategy: Strategy,
+    fetch: bool,
     verbose: bool,
 ) -> Result<String> {
     match strategy {
-        Strategy::Clone => ensure_workspace_multi(name, repos, verbose),
-        Strategy::Worktree => ensure_workspace_multi_worktree(name, repos, verbose),
+        Strategy::Clone => ensure_workspace_multi(name, repos, fetch, verbose),
+        Strategy::Worktree => ensure_workspace_multi_worktree(name, repos, fetch, verbose),
     }
 }
 
