@@ -2,6 +2,7 @@ mod config;
 mod git;
 mod parallel;
 mod preset;
+mod progress;
 mod repo;
 mod session;
 #[cfg(test)]
@@ -1156,16 +1157,17 @@ fn update_repos(names: &[String], verbose: bool) -> Result<()> {
     }
 
     let count = items.len();
+    let label = format!(
+        "Fetching {} repo{}",
+        count,
+        if count == 1 { "" } else { "s" }
+    );
     if verbose {
         eprintln!("\x1b[2mUpdating repos…\x1b[0m");
-    } else {
-        eprint!(
-            "\x1b[2mFetching {} repo{}…\x1b[0m ",
-            count,
-            if count == 1 { "" } else { "s" }
-        );
     }
-    let results = parallel::run_parallel(items, |_name, entry| update_repo_captured(&entry));
+    let results = progress::run_parallel_with_progress(&label, items, verbose, |_name, entry| {
+        update_repo_captured(&entry)
+    });
 
     if verbose {
         for result in &results {
@@ -1179,10 +1181,7 @@ fn update_repos(names: &[String], verbose: bool) -> Result<()> {
         }
     } else {
         let failures: Vec<&parallel::TaskResult> = results.iter().filter(|r| !r.success).collect();
-        if failures.is_empty() {
-            eprintln!("\x1b[32mok\x1b[0m");
-        } else {
-            eprintln!("\x1b[31m{} failed\x1b[0m", failures.len());
+        if !failures.is_empty() {
             for f in &failures {
                 eprintln!("  \x1b[1m{}\x1b[0m: {}", f.name, f.output.trim());
             }

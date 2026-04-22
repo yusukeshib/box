@@ -79,26 +79,40 @@ pub fn ensure_workspace_multi(
 
     if !to_clone.is_empty() {
         let root_str = root.to_string_lossy().to_string();
-        let results = crate::parallel::run_parallel(to_clone, move |_name, (repo, dest_str)| {
-            let result = Command::new("git")
-                .args(["clone", "--local", &repo.path, &dest_str])
-                .current_dir(&root_str)
-                .env("GIT_TERMINAL_PROMPT", "0")
-                .output();
-            match result {
-                Ok(output) => {
-                    let mut buf = captured_output(&output);
-                    if output.status.success() {
-                        repoint_origin(&repo.path, &dest_str);
-                        (true, buf)
-                    } else {
-                        buf.push_str(&format!("git clone --local failed for '{}'\n", repo.name));
-                        (false, buf)
+        let count = to_clone.len();
+        let label = format!(
+            "Cloning {} repo{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        );
+        let results = crate::progress::run_parallel_with_progress(
+            &label,
+            to_clone,
+            verbose,
+            move |_name, (repo, dest_str)| {
+                let result = Command::new("git")
+                    .args(["clone", "--local", &repo.path, &dest_str])
+                    .current_dir(&root_str)
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .output();
+                match result {
+                    Ok(output) => {
+                        let mut buf = captured_output(&output);
+                        if output.status.success() {
+                            repoint_origin(&repo.path, &dest_str);
+                            (true, buf)
+                        } else {
+                            buf.push_str(&format!(
+                                "git clone --local failed for '{}'\n",
+                                repo.name
+                            ));
+                            (false, buf)
+                        }
                     }
+                    Err(e) => (false, format!("failed to run git: {}\n", e)),
                 }
-                Err(e) => (false, format!("failed to run git: {}\n", e)),
-            }
-        });
+            },
+        );
 
         let mut failure_msgs = Vec::new();
         if verbose {
@@ -162,8 +176,17 @@ pub fn ensure_workspace_multi_worktree(
         .collect();
 
     if !to_create.is_empty() {
-        let results =
-            crate::parallel::run_parallel(to_create, |_name, (repo, dest_str, branch)| {
+        let count = to_create.len();
+        let label = format!(
+            "Creating {} worktree{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        );
+        let results = crate::progress::run_parallel_with_progress(
+            &label,
+            to_create,
+            verbose,
+            |_name, (repo, dest_str, branch)| {
                 // Try with -b first to create a new branch
                 let result = Command::new("git")
                     .args([
@@ -196,7 +219,8 @@ pub fn ensure_workspace_multi_worktree(
                     }
                     Err(e) => (false, format!("failed to run git: {}\n", e)),
                 }
-            });
+            },
+        );
 
         let mut failure_msgs = Vec::new();
         if verbose {
@@ -261,62 +285,65 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String], verbose: boo
 
     if !items.is_empty() {
         let count = items.len();
-        if !verbose {
-            eprint!(
-                "\x1b[2mRemoving {} worktree{}…\x1b[0m ",
-                count,
-                if count == 1 { "" } else { "s" }
-            );
-        }
-        let results = crate::parallel::run_parallel(items, |_name, (repo_path, dest, branch)| {
-            if let Some(path) = repo_path {
-                let dest_str = dest.to_string_lossy().to_string();
-                // Remove worktree via git
-                let wt = Command::new("git")
-                    .args(["-C", &path, "worktree", "remove", "--force", &dest_str])
-                    .output();
-                // Delete the branch
-                let br = Command::new("git")
-                    .args(["-C", &path, "branch", "-D", &branch])
-                    .output();
-                let mut buf = String::new();
-                let mut success = true;
-                match wt {
-                    Ok(o) => {
-                        buf.push_str(&captured_output(&o));
-                        if !o.status.success() {
+        let label = format!(
+            "Removing {} worktree{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        );
+        let results = crate::progress::run_parallel_with_progress(
+            &label,
+            items,
+            verbose,
+            |_name, (repo_path, dest, branch)| {
+                if let Some(path) = repo_path {
+                    let dest_str = dest.to_string_lossy().to_string();
+                    // Remove worktree via git
+                    let wt = Command::new("git")
+                        .args(["-C", &path, "worktree", "remove", "--force", &dest_str])
+                        .output();
+                    // Delete the branch
+                    let br = Command::new("git")
+                        .args(["-C", &path, "branch", "-D", &branch])
+                        .output();
+                    let mut buf = String::new();
+                    let mut success = true;
+                    match wt {
+                        Ok(o) => {
+                            buf.push_str(&captured_output(&o));
+                            if !o.status.success() {
+                                success = false;
+                            }
+                        }
+                        Err(e) => {
                             success = false;
+                            buf.push_str(&format!("failed to run git worktree remove: {}\n", e));
                         }
                     }
-                    Err(e) => {
-                        success = false;
-                        buf.push_str(&format!("failed to run git worktree remove: {}\n", e));
-                    }
-                }
-                match br {
-                    Ok(o) => {
-                        buf.push_str(&captured_output(&o));
-                        if !o.status.success() {
+                    match br {
+                        Ok(o) => {
+                            buf.push_str(&captured_output(&o));
+                            if !o.status.success() {
+                                success = false;
+                            }
+                        }
+                        Err(e) => {
                             success = false;
+                            buf.push_str(&format!("failed to run git branch -D: {}\n", e));
                         }
                     }
-                    Err(e) => {
-                        success = false;
-                        buf.push_str(&format!("failed to run git branch -D: {}\n", e));
+                    (success, buf)
+                } else {
+                    // Repo not in registry, fall back to rm -rf
+                    match std::fs::remove_dir_all(&dest) {
+                        Ok(()) => (true, String::new()),
+                        Err(e) => (
+                            false,
+                            format!("failed to remove '{}': {}", dest.display(), e),
+                        ),
                     }
                 }
-                (success, buf)
-            } else {
-                // Repo not in registry, fall back to rm -rf
-                match std::fs::remove_dir_all(&dest) {
-                    Ok(()) => (true, String::new()),
-                    Err(e) => (
-                        false,
-                        format!("failed to remove '{}': {}", dest.display(), e),
-                    ),
-                }
-            }
-        });
+            },
+        );
 
         if verbose {
             for result in &results {
@@ -332,10 +359,7 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String], verbose: boo
             }
         } else {
             let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
-            if failures.is_empty() {
-                eprintln!("\x1b[32mok\x1b[0m");
-            } else {
-                eprintln!("\x1b[31m{} failed\x1b[0m", failures.len());
+            if !failures.is_empty() {
                 for f in &failures {
                     eprintln!("  \x1b[1m{}\x1b[0m: {}", f.name, f.output.trim());
                 }
@@ -387,30 +411,10 @@ pub fn ensure_workspace(
     strategy: Strategy,
     verbose: bool,
 ) -> Result<String> {
-    let count = repos.len();
-    let label = match strategy {
-        Strategy::Clone => "Cloning",
-        Strategy::Worktree => "Creating worktrees",
-    };
-    if !verbose {
-        eprint!(
-            "\x1b[2m{} for {} repo{}…\x1b[0m ",
-            label,
-            count,
-            if count == 1 { "" } else { "s" }
-        );
-    }
-    let result = match strategy {
+    match strategy {
         Strategy::Clone => ensure_workspace_multi(name, repos, verbose),
         Strategy::Worktree => ensure_workspace_multi_worktree(name, repos, verbose),
-    };
-    if !verbose {
-        match &result {
-            Ok(_) => eprintln!("\x1b[32mok\x1b[0m"),
-            Err(_) => eprintln!("\x1b[31mfailed\x1b[0m"),
-        }
     }
-    result
 }
 
 /// Remove workspace using the given strategy.
