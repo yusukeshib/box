@@ -563,7 +563,7 @@ fn cmd_remove(name: &str, verbose: bool) -> Result<i32> {
     let strategy =
         workspace::Strategy::from_str(&sess.strategy).unwrap_or(workspace::Strategy::Clone);
 
-    workspace::remove_workspace_by_strategy(name, &sess.repos, strategy, verbose);
+    workspace::remove_sessions(&[(name.to_string(), strategy, sess.repos.clone())], verbose);
     session::remove_dir(name)?;
 
     if !sess.project_dir.is_empty() {
@@ -576,14 +576,21 @@ fn cmd_remove(name: &str, verbose: bool) -> Result<i32> {
 fn cmd_remove_tui(verbose: bool) -> Result<i32> {
     match tui::select_sessions()? {
         tui::TuiAction::Remove { sessions } => {
+            let to_remove: Vec<(String, workspace::Strategy, Vec<String>)> = sessions
+                .iter()
+                .map(|name| match session::load(name) {
+                    Ok(sess) => {
+                        let strategy = workspace::Strategy::from_str(&sess.strategy)
+                            .unwrap_or(workspace::Strategy::Clone);
+                        (name.clone(), strategy, sess.repos)
+                    }
+                    // Session metadata missing — fall through to Clone with no repos; the
+                    // post-bar cleanup still nukes the workspace root dir.
+                    Err(_) => (name.clone(), workspace::Strategy::Clone, Vec::new()),
+                })
+                .collect();
+            workspace::remove_sessions(&to_remove, verbose);
             for name in &sessions {
-                if let Ok(sess) = session::load(name) {
-                    let strategy = workspace::Strategy::from_str(&sess.strategy)
-                        .unwrap_or(workspace::Strategy::Clone);
-                    workspace::remove_workspace_by_strategy(name, &sess.repos, strategy, verbose);
-                } else {
-                    workspace::remove_workspace(name);
-                }
                 session::remove_dir(name)?;
                 eprintln!("Session '{}' removed.", name);
             }
