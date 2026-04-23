@@ -43,11 +43,168 @@ impl fmt::Display for Strategy {
     }
 }
 
-/// Remove the workspace directory for a session (clone strategy).
-pub fn remove_workspace(name: &str) {
-    if let Ok(root) = config::box_root() {
-        let dir = root.join("workspaces").join(name);
-        let _ = std::fs::remove_dir_all(&dir);
+/// Remove multiple sessions' workspaces in a single unified progress bar.
+///
+/// Every repo across every session becomes one unit in the same bar — matching
+/// the unified experience of `ensure_workspace_multi*`. For Worktree sessions
+/// each unit runs `git worktree remove --force` + `git branch -D`; for Clone
+/// sessions each unit is a per-repo `fs::remove_dir_all`. After the bar
+/// finishes the now-empty workspace root dir for each session is cleaned up.
+pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bool) {
+    let all_repos = crate::repo::list().unwrap_or_default();
+    let root = match config::box_root() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    enum Unit {
+        Worktree {
+            repo_path: Option<String>,
+            dest: std::path::PathBuf,
+            branch: String,
+        },
+        Clone {
+            dest: std::path::PathBuf,
+        },
+    }
+
+    let mut items: Vec<(String, Unit)> = Vec::new();
+    let mut all_worktree = true;
+    for (name, strategy, repo_names) in sessions {
+        match strategy {
+            Strategy::Worktree => {
+                let branch = format!("box/{}", name);
+                for repo_name in repo_names {
+                    let dest = root.join("workspaces").join(name).join(repo_name);
+                    let repo_path = all_repos
+                        .iter()
+                        .find(|r| r.name == *repo_name)
+                        .map(|r| r.path.clone());
+                    items.push((
+                        format!("{}/{}", name, repo_name),
+                        Unit::Worktree {
+                            repo_path,
+                            dest,
+                            branch: branch.clone(),
+                        },
+                    ));
+                }
+            }
+            Strategy::Clone => {
+                all_worktree = false;
+                for repo_name in repo_names {
+                    let dest = root.join("workspaces").join(name).join(repo_name);
+                    items.push((format!("{}/{}", name, repo_name), Unit::Clone { dest }));
+                }
+            }
+        }
+    }
+
+    if !items.is_empty() {
+        let count = items.len();
+        let noun = if all_worktree { "worktree" } else { "repo" };
+        let label = format!(
+            "Removing {} {}{}",
+            count,
+            noun,
+            if count == 1 { "" } else { "s" }
+        );
+
+        let results = crate::progress::run_parallel_with_progress(
+            &label,
+            items,
+            verbose,
+            false,
+            |_name, unit| match unit {
+                Unit::Worktree {
+                    repo_path,
+                    dest,
+                    branch,
+                } => {
+                    let dest_str = dest.to_string_lossy().to_string();
+                    if let Some(path) = repo_path {
+                        let mut buf = String::new();
+                        let mut success = true;
+                        match Command::new("git")
+                            .args(["-C", &path, "worktree", "remove", "--force", &dest_str])
+                            .output()
+                        {
+                            Ok(o) => {
+                                buf.push_str(&captured_output(&o));
+                                if !o.status.success() {
+                                    success = false;
+                                }
+                            }
+                            Err(e) => {
+                                success = false;
+                                buf.push_str(&format!(
+                                    "failed to run git worktree remove: {}\n",
+                                    e
+                                ));
+                            }
+                        }
+                        match Command::new("git")
+                            .args(["-C", &path, "branch", "-D", &branch])
+                            .output()
+                        {
+                            Ok(o) => {
+                                buf.push_str(&captured_output(&o));
+                                if !o.status.success() {
+                                    success = false;
+                                }
+                            }
+                            Err(e) => {
+                                success = false;
+                                buf.push_str(&format!("failed to run git branch -D: {}\n", e));
+                            }
+                        }
+                        (success, buf)
+                    } else {
+                        match std::fs::remove_dir_all(&dest) {
+                            Ok(()) => (true, String::new()),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                                (true, String::new())
+                            }
+                            Err(e) => (
+                                false,
+                                format!("failed to remove '{}': {}", dest.display(), e),
+                            ),
+                        }
+                    }
+                }
+                Unit::Clone { dest } => match std::fs::remove_dir_all(&dest) {
+                    Ok(()) => (true, String::new()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
+                    Err(e) => (
+                        false,
+                        format!("failed to remove '{}': {}", dest.display(), e),
+                    ),
+                },
+            },
+        );
+
+        if verbose {
+            for result in &results {
+                eprintln!("\x1b[2mremove {}:\x1b[0m", result.name);
+                if !result.output.is_empty() {
+                    eprint!("{}", result.output);
+                }
+                if result.success {
+                    eprintln!("  \x1b[32mok\x1b[0m");
+                } else {
+                    eprintln!("  \x1b[31mfailed\x1b[0m");
+                }
+            }
+        } else {
+            for f in results.iter().filter(|r| !r.success) {
+                eprintln!("  \x1b[1m{}\x1b[0m: {}", f.name, f.output.trim());
+            }
+        }
+    }
+
+    for (name, _, _) in sessions {
+        let session_root = root.join("workspaces").join(name);
+        let _ = std::fs::remove_dir_all(&session_root);
     }
 }
 
@@ -313,119 +470,6 @@ pub fn remove_repo_from_workspace(session_name: &str, repo_name: &str) {
     }
 }
 
-/// Remove worktrees for a session. For each repo, removes the worktree and
-/// deletes the branch. Falls back to rm -rf if repo not in registry.
-/// Repos are removed in parallel for speed.
-pub fn remove_workspace_worktree(name: &str, repo_names: &[String], verbose: bool) {
-    let all_repos = crate::repo::list().unwrap_or_default();
-    let root = match config::box_root() {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    let branch_name = format!("box/{}", name);
-
-    let items: Vec<_> = repo_names
-        .iter()
-        .map(|repo_name| {
-            let dest = root.join("workspaces").join(name).join(repo_name);
-            let repo_path = all_repos
-                .iter()
-                .find(|r| r.name == *repo_name)
-                .map(|r| r.path.clone());
-            (repo_name.clone(), (repo_path, dest, branch_name.clone()))
-        })
-        .collect();
-
-    if !items.is_empty() {
-        let count = items.len();
-        let label = format!(
-            "Removing {} worktree{}",
-            count,
-            if count == 1 { "" } else { "s" }
-        );
-        let results = crate::progress::run_parallel_with_progress(
-            &label,
-            items,
-            verbose,
-            false,
-            |_name, (repo_path, dest, branch)| {
-                if let Some(path) = repo_path {
-                    let dest_str = dest.to_string_lossy().to_string();
-                    // Remove worktree via git
-                    let wt = Command::new("git")
-                        .args(["-C", &path, "worktree", "remove", "--force", &dest_str])
-                        .output();
-                    // Delete the branch
-                    let br = Command::new("git")
-                        .args(["-C", &path, "branch", "-D", &branch])
-                        .output();
-                    let mut buf = String::new();
-                    let mut success = true;
-                    match wt {
-                        Ok(o) => {
-                            buf.push_str(&captured_output(&o));
-                            if !o.status.success() {
-                                success = false;
-                            }
-                        }
-                        Err(e) => {
-                            success = false;
-                            buf.push_str(&format!("failed to run git worktree remove: {}\n", e));
-                        }
-                    }
-                    match br {
-                        Ok(o) => {
-                            buf.push_str(&captured_output(&o));
-                            if !o.status.success() {
-                                success = false;
-                            }
-                        }
-                        Err(e) => {
-                            success = false;
-                            buf.push_str(&format!("failed to run git branch -D: {}\n", e));
-                        }
-                    }
-                    (success, buf)
-                } else {
-                    // Repo not in registry, fall back to rm -rf
-                    match std::fs::remove_dir_all(&dest) {
-                        Ok(()) => (true, String::new()),
-                        Err(e) => (
-                            false,
-                            format!("failed to remove '{}': {}", dest.display(), e),
-                        ),
-                    }
-                }
-            },
-        );
-
-        if verbose {
-            for result in &results {
-                eprintln!("\x1b[2mremove {}:\x1b[0m", result.name);
-                if !result.output.is_empty() {
-                    eprint!("{}", result.output);
-                }
-                if result.success {
-                    eprintln!("  \x1b[32mok\x1b[0m");
-                } else {
-                    eprintln!("  \x1b[31mfailed\x1b[0m");
-                }
-            }
-        } else {
-            let failures: Vec<_> = results.iter().filter(|r| !r.success).collect();
-            if !failures.is_empty() {
-                for f in &failures {
-                    eprintln!("  \x1b[1m{}\x1b[0m: {}", f.name, f.output.trim());
-                }
-            }
-        }
-    }
-
-    // Remove session workspace root dir
-    let session_root = root.join("workspaces").join(name);
-    let _ = std::fs::remove_dir_all(&session_root);
-}
-
 /// Remove a single repo worktree from a session.
 pub fn remove_repo_from_workspace_worktree(session_name: &str, repo_name: &str) {
     let all_repos = crate::repo::list().unwrap_or_default();
@@ -469,19 +513,6 @@ pub fn ensure_workspace(
     match strategy {
         Strategy::Clone => ensure_workspace_multi(name, repos, fetch, verbose),
         Strategy::Worktree => ensure_workspace_multi_worktree(name, repos, fetch, verbose),
-    }
-}
-
-/// Remove workspace using the given strategy.
-pub fn remove_workspace_by_strategy(
-    name: &str,
-    repo_names: &[String],
-    strategy: Strategy,
-    verbose: bool,
-) {
-    match strategy {
-        Strategy::Clone => remove_workspace(name),
-        Strategy::Worktree => remove_workspace_worktree(name, repo_names, verbose),
     }
 }
 
