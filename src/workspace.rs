@@ -102,6 +102,7 @@ pub fn ensure_workspace_multi(
             &label,
             to_clone,
             verbose,
+            true,
             move |_name, (repo, dest_str)| {
                 let mut buf = String::new();
                 if fetch {
@@ -224,6 +225,7 @@ pub fn ensure_workspace_multi_worktree(
             &label,
             to_create,
             verbose,
+            true,
             move |_name, (repo, dest_str, branch)| {
                 let mut buf = String::new();
                 if fetch {
@@ -345,6 +347,7 @@ pub fn remove_workspace_worktree(name: &str, repo_names: &[String], verbose: boo
             &label,
             items,
             verbose,
+            false,
             |_name, (repo_path, dest, branch)| {
                 if let Some(path) = repo_path {
                     let dest_str = dest.to_string_lossy().to_string();

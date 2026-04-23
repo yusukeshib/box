@@ -25,10 +25,14 @@ enum ItemState {
 /// Run tasks in parallel with a live progress UI (when stderr is a TTY and
 /// `verbose` is false). Falls back to the legacy single-line `label … ok`
 /// output in verbose or non-TTY contexts. Returns results in input order.
+///
+/// When `show_items` is false, only the progress bar is rendered (no per-item
+/// list beneath it) — useful for fast operations where the list is just noise.
 pub fn run_parallel_with_progress<T, F>(
     label: &str,
     items: Vec<(String, T)>,
     verbose: bool,
+    show_items: bool,
     task: F,
 ) -> Vec<TaskResult>
 where
@@ -63,7 +67,7 @@ where
     let label_owned = label.to_string();
 
     let renderer: JoinHandle<()> = thread::spawn(move || {
-        if let Err(e) = render_loop(label_owned, names, rx) {
+        if let Err(e) = render_loop(label_owned, names, show_items, rx) {
             eprintln!("progress renderer error: {}", e);
         }
     });
@@ -80,13 +84,22 @@ where
     results
 }
 
-fn render_loop(label: String, names: Vec<String>, rx: Receiver<ProgressEvent>) -> Result<()> {
+fn render_loop(
+    label: String,
+    names: Vec<String>,
+    show_items: bool,
+    rx: Receiver<ProgressEvent>,
+) -> Result<()> {
     let total = names.len();
     let term_height = terminal::size().map(|(_, h)| h).unwrap_or(24);
-    let desired = (total as u16).saturating_add(1);
-    let viewport_height = desired
-        .min(MAX_VIEWPORT_LINES)
-        .min(term_height.saturating_sub(1).max(2));
+    let viewport_height = if show_items {
+        let desired = (total as u16).saturating_add(1);
+        desired
+            .min(MAX_VIEWPORT_LINES)
+            .min(term_height.saturating_sub(1).max(2))
+    } else {
+        1
+    };
 
     terminal::enable_raw_mode()?;
     let _guard = RawGuard;
