@@ -170,37 +170,68 @@ pub fn add(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Check and fix fetch refspec on an existing bare repo if missing.
+/// Check and fix fetch refspec on an existing bare repo. Repairs both bare
+/// repos that are missing a refspec entirely (clone --bare default) and bare
+/// repos that only have the legacy single +refs/heads/*:refs/heads/* line
+/// (pre-origin-mapping versions of box).
 fn ensure_fetch_refspec(bare_dir: &str) {
-    let status = Command::new("git")
-        .args(["-C", bare_dir, "config", "remote.origin.fetch"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-    let needs_fix = match status {
-        Ok(s) => !s.success(),
-        Err(_) => true,
+    let output = Command::new("git")
+        .args(["-C", bare_dir, "config", "--get-all", "remote.origin.fetch"])
+        .output();
+    let needs_fix = match output {
+        Ok(o) if o.status.success() => {
+            let text = String::from_utf8_lossy(&o.stdout);
+            !text.lines().any(|l| l.trim() == REFSPEC_ORIGIN)
+        }
+        _ => true,
     };
     if needs_fix {
         let _ = configure_fetch_refspec(bare_dir);
     }
 }
 
+/// Refspec that mirrors the remote's branches onto the bare repo's local
+/// heads. Required so `git clone --local <bare>` and `git worktree add` see
+/// up-to-date refs.
+const REFSPEC_HEADS: &str = "+refs/heads/*:refs/heads/*";
+
+/// Refspec that also exposes remote branches under the conventional
+/// `refs/remotes/origin/*` namespace, so `git rebase origin/main` works inside
+/// box workspaces without any special handling.
+const REFSPEC_ORIGIN: &str = "+refs/heads/*:refs/remotes/origin/*";
+
 /// `git clone --bare` does not set `remote.origin.fetch`, so `git fetch` will
-/// download objects but never update local branch refs. This configures the
-/// refspec so that remote branches map directly onto the bare repo's heads.
+/// download objects but never update local refs. We configure two refspecs:
+/// the heads/heads line preserves the bare-as-cache semantics that `box new`
+/// (clone + worktree strategies) relies on, and the heads/remotes line
+/// produces the conventional `origin/<branch>` refs that humans and tools
+/// expect when they `git fetch && git rebase origin/main`.
 fn configure_fetch_refspec(bare_dir: &str) -> Result<()> {
-    let status = Command::new("git")
+    // Clear any pre-existing refspec lines so re-running on a partially
+    // configured bare doesn't leave duplicates.
+    let _ = Command::new("git")
         .args([
             "-C",
             bare_dir,
             "config",
+            "--unset-all",
             "remote.origin.fetch",
-            "+refs/heads/*:refs/heads/*",
         ])
-        .status()?;
-    if !status.success() {
-        bail!("Failed to configure fetch refspec for '{}'.", bare_dir);
+        .status();
+    for refspec in [REFSPEC_HEADS, REFSPEC_ORIGIN] {
+        let status = Command::new("git")
+            .args([
+                "-C",
+                bare_dir,
+                "config",
+                "--add",
+                "remote.origin.fetch",
+                refspec,
+            ])
+            .status()?;
+        if !status.success() {
+            bail!("Failed to configure fetch refspec for '{}'.", bare_dir);
+        }
     }
     Ok(())
 }
@@ -411,12 +442,71 @@ mod tests {
 
             let repos = list().unwrap();
             let output = Command::new("git")
-                .args(["-C", &repos[0].path, "config", "remote.origin.fetch"])
+                .args([
+                    "-C",
+                    &repos[0].path,
+                    "config",
+                    "--get-all",
+                    "remote.origin.fetch",
+                ])
                 .output()
                 .unwrap();
             assert!(output.status.success());
-            let refspec = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            assert_eq!(refspec, "+refs/heads/*:refs/heads/*");
+            let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .collect();
+            assert_eq!(
+                lines,
+                vec![
+                    "+refs/heads/*:refs/heads/*".to_string(),
+                    "+refs/heads/*:refs/remotes/origin/*".to_string(),
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn test_ensure_fetch_refspec_migrates_legacy_single_line() {
+        with_temp_home(|home| {
+            let repo = make_git_repo(home, "legacy");
+            add(repo.to_str().unwrap()).unwrap();
+
+            // Simulate a bare cloned by an older box version that only knew
+            // about the heads/heads refspec.
+            let repos = list().unwrap();
+            let bare = &repos[0].path;
+            let s = Command::new("git")
+                .args(["-C", bare, "config", "--unset-all", "remote.origin.fetch"])
+                .status()
+                .unwrap();
+            assert!(s.success());
+            let s = Command::new("git")
+                .args([
+                    "-C",
+                    bare,
+                    "config",
+                    "--add",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/heads/*",
+                ])
+                .status()
+                .unwrap();
+            assert!(s.success());
+
+            // list() invokes ensure_fetch_refspec on each bare; the second
+            // pass should re-add the origin/* line.
+            let _ = list().unwrap();
+
+            let output = Command::new("git")
+                .args(["-C", bare, "config", "--get-all", "remote.origin.fetch"])
+                .output()
+                .unwrap();
+            let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .collect();
+            assert!(lines.contains(&"+refs/heads/*:refs/remotes/origin/*".to_string()));
         });
     }
 
