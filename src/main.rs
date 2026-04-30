@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -48,6 +48,11 @@ enum Commands {
     Switch {
         /// Session name
         name: String,
+    },
+    /// Fetch origin and rebase the current branch onto another branch
+    Rebase {
+        /// Branch to rebase onto (e.g. main)
+        branch: String,
     },
     /// Manage registered repos
     Repo {
@@ -174,6 +179,7 @@ fn main() {
         },
         Some(Commands::List(args)) => cmd_list_sessions(&args),
         Some(Commands::Switch { name }) => cmd_cd(&name),
+        Some(Commands::Rebase { branch }) => cmd_rebase(&branch, verbose),
         Some(Commands::Repo { action }) => match action {
             RepoAction::Add { path } => cmd_repo_add(path),
             RepoAction::Remove { name } => cmd_repo_remove(&name),
@@ -612,6 +618,71 @@ fn cmd_cd(name: &str) -> Result<i32> {
     Ok(0)
 }
 
+/// Fetch origin in the bare repo backing the current worktree, then rebase
+/// the worktree's current branch onto `branch`.
+///
+/// Box workspaces share a single bare repo across worktrees, and `git fetch`
+/// from a worktree often refuses to update sibling-worktree branches. This
+/// command routes the fetch through `git::fetch_repo`, which knows how to
+/// exclude checked-out branches with negative refspecs.
+fn cmd_rebase(branch: &str, verbose: bool) -> Result<i32> {
+    let cwd = std::env::current_dir()?;
+    let worktree_root = git::find_root(&cwd)
+        .ok_or_else(|| anyhow::anyhow!("Not in a git repository."))?
+        .to_path_buf();
+    let worktree_root_str = worktree_root.to_string_lossy().to_string();
+
+    let output = std::process::Command::new("git")
+        .args(["-C", &worktree_root_str, "rev-parse", "--git-common-dir"])
+        .output()?;
+    if !output.status.success() {
+        bail!("Failed to determine git common directory.");
+    }
+    let common = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let common_path = if Path::new(&common).is_absolute() {
+        PathBuf::from(common)
+    } else {
+        worktree_root.join(common)
+    };
+    let common_canonical =
+        std::fs::canonicalize(&common_path).unwrap_or_else(|_| common_path.clone());
+    let common_str = common_canonical.to_string_lossy().to_string();
+
+    // Resolve the matching registered repo so fetch_repo's log uses the
+    // user-facing name; if cwd isn't a box-managed worktree we still attempt
+    // the fetch via a synthetic entry pointing at the common dir.
+    let entry = repo::list()
+        .ok()
+        .and_then(|all| {
+            all.into_iter().find(|r| {
+                std::fs::canonicalize(&r.path)
+                    .map(|p| p.to_string_lossy() == common_str)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or_else(|| repo::RepoEntry {
+            name: common_canonical
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "repo".to_string()),
+            path: common_str.clone(),
+        });
+
+    eprintln!("\x1b[2mfetching origin in {}…\x1b[0m", entry.name);
+    let (ok, log) = git::fetch_repo(&entry);
+    if verbose || !ok {
+        eprint!("{}", log);
+    }
+    if !ok {
+        bail!("Fetch failed.");
+    }
+
+    let status = std::process::Command::new("git")
+        .args(["-C", &worktree_root_str, "rebase", branch])
+        .status()?;
+    Ok(if status.success() { 0 } else { 1 })
+}
+
 fn cmd_repo_add(path: Option<String>) -> Result<i32> {
     let path = path.unwrap_or_else(|| ".".to_string());
     repo::add(&path)?;
@@ -787,6 +858,7 @@ _box() {{
                 'switch:Switch to a session'
                 'sw:Switch to a session'
                 'cd:Switch to a session'
+                'rebase:Fetch origin and rebase the current branch'
                 'repo:Manage registered repos'
                 'preset:Manage session presets'
                 'upgrade:Self-update to the latest version'
@@ -825,6 +897,11 @@ _box() {{
                 switch|sw|cd)
                     if (( CURRENT == 2 )); then
                         __box_sessions
+                    fi
+                    ;;
+                rebase)
+                    if (( CURRENT == 2 )); then
+                        _message 'branch (e.g. main)'
                     fi
                     ;;
                 repo)
@@ -906,7 +983,7 @@ fn cmd_config_bash() -> Result<i32> {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new edit remove rm list switch sw cd repo preset upgrade config"
+    local subcommands="new edit remove rm list switch sw cd rebase repo preset upgrade config"
     local session_cmds="edit remove rm switch sw cd"
     local __box_root="${{BOX_ROOT:-$HOME/.box}}"
 
