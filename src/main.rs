@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box remove --all                             # remove every session\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -145,6 +145,10 @@ struct EditArgs {
 struct RemoveArgs {
     /// Session name (opens interactive selector if omitted)
     name: Option<String>,
+
+    /// Remove every session
+    #[arg(long, short = 'a', conflicts_with = "name")]
+    all: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -173,10 +177,16 @@ fn main() {
     let result = match cli.command {
         Some(Commands::New(args)) => cmd_new(args, verbose),
         Some(Commands::Edit(args)) => cmd_edit(&args.name, verbose),
-        Some(Commands::Remove(args)) => match &args.name {
-            Some(name) => cmd_remove(name, verbose),
-            None => cmd_remove_tui(verbose),
-        },
+        Some(Commands::Remove(args)) => {
+            if args.all {
+                cmd_remove_all(verbose)
+            } else {
+                match &args.name {
+                    Some(name) => cmd_remove(name, verbose),
+                    None => cmd_remove_tui(verbose),
+                }
+            }
+        }
         Some(Commands::List(args)) => cmd_list_sessions(&args),
         Some(Commands::Switch { name }) => cmd_cd(&name),
         Some(Commands::Rebase { branch }) => cmd_rebase(&branch, verbose),
@@ -606,6 +616,30 @@ fn cmd_remove_tui(verbose: bool) -> Result<i32> {
     }
 }
 
+fn cmd_remove_all(verbose: bool) -> Result<i32> {
+    let sessions = session::list()?;
+    if sessions.is_empty() {
+        eprintln!("No sessions to remove.");
+        return Ok(0);
+    }
+
+    let to_remove: Vec<(String, workspace::Strategy, Vec<String>)> = sessions
+        .iter()
+        .map(|s| {
+            let strategy =
+                workspace::Strategy::from_str(&s.strategy).unwrap_or(workspace::Strategy::Clone);
+            (s.name.clone(), strategy, s.repos.clone())
+        })
+        .collect();
+
+    workspace::remove_sessions(&to_remove, verbose);
+    for s in &sessions {
+        session::remove_dir(&s.name)?;
+        eprintln!("Session '{}' removed.", s.name);
+    }
+    Ok(0)
+}
+
 fn cmd_cd(name: &str) -> Result<i32> {
     let name = session::validate_name(name)?;
     let name = name.as_str();
@@ -887,6 +921,7 @@ _box() {{
                 remove|rm)
                     _arguments \
                         '(-v --verbose)'{{-v,--verbose}}'[Show detailed output]' \
+                        '(-a --all)'{{-a,--all}}'[Remove every session]' \
                         '1:session name:__box_sessions'
                     ;;
                 edit)
@@ -1016,7 +1051,9 @@ fn cmd_config_bash() -> Result<i32> {
         edit|remove|rm)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--verbose -v" -- "$cur"))
+                    local rm_flags="--verbose -v"
+                    [[ "$subcmd" == "remove" || "$subcmd" == "rm" ]] && rm_flags+=" --all -a"
+                    COMPREPLY=($(compgen -W "$rm_flags" -- "$cur"))
                     ;;
                 *)
                     if [[ $cword -eq 2 ]]; then
@@ -1365,6 +1402,7 @@ mod tests {
         match cli.command {
             Some(Commands::Remove(args)) => {
                 assert_eq!(args.name.as_deref(), Some("my-session"));
+                assert!(!args.all);
             }
             other => panic!("expected Remove, got {:?}", other),
         }
@@ -1387,9 +1425,39 @@ mod tests {
         match cli.command {
             Some(Commands::Remove(args)) => {
                 assert!(args.name.is_none());
+                assert!(!args.all);
             }
             other => panic!("expected Remove, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_remove_all_flag_parses() {
+        let cli = parse(&["remove", "--all"]);
+        match cli.command {
+            Some(Commands::Remove(args)) => {
+                assert!(args.name.is_none());
+                assert!(args.all);
+            }
+            other => panic!("expected Remove, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_remove_all_short_flag_parses() {
+        let cli = parse(&["rm", "-a"]);
+        match cli.command {
+            Some(Commands::Remove(args)) => {
+                assert!(args.all);
+            }
+            other => panic!("expected Remove, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_remove_all_conflicts_with_name() {
+        let result = try_parse(&["remove", "--all", "my-session"]);
+        assert!(result.is_err());
     }
 
     #[test]
