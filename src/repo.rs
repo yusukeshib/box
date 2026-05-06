@@ -112,6 +112,8 @@ pub fn list() -> Result<Vec<RepoEntry>> {
                 let path_str = path.to_string_lossy().to_string();
                 // Ensure fetch refspec is set (repairs bare repos created before this fix)
                 ensure_fetch_refspec(&path_str);
+                // Fix box/* session branches that inherited main's upstream
+                repair_box_branch_upstreams(&path_str);
                 entries.push(RepoEntry {
                     name: name.to_string(),
                     path: path_str,
@@ -170,23 +172,90 @@ pub fn add(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Check and fix fetch refspec on an existing bare repo. Repairs both bare
-/// repos that are missing a refspec entirely (clone --bare default) and bare
-/// repos that only have the legacy single +refs/heads/*:refs/heads/* line
-/// (pre-origin-mapping versions of box).
+/// Check and fix fetch refspec and `push.autoSetupRemote` on an existing bare
+/// repo. Repairs bares that are missing a refspec entirely (clone --bare
+/// default), bares that only have the legacy single +refs/heads/*:refs/heads/*
+/// line (pre-origin-mapping versions of box), and bares created before
+/// `push.autoSetupRemote` was added.
 fn ensure_fetch_refspec(bare_dir: &str) {
-    let output = Command::new("git")
+    let needs_refspec = match Command::new("git")
         .args(["-C", bare_dir, "config", "--get-all", "remote.origin.fetch"])
-        .output();
-    let needs_fix = match output {
+        .output()
+    {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
             !text.lines().any(|l| l.trim() == REFSPEC_ORIGIN)
         }
         _ => true,
     };
-    if needs_fix {
+    let needs_autosetup = match Command::new("git")
+        .args(["-C", bare_dir, "config", "--get", "push.autoSetupRemote"])
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim() != "true",
+        _ => true,
+    };
+    if needs_refspec || needs_autosetup {
         let _ = configure_fetch_refspec(bare_dir);
+    }
+}
+
+/// Repair `branch.box/<session>.merge` entries that point at the start-point's
+/// upstream (typically `refs/heads/main`) instead of the session branch's own
+/// ref. Stock `git worktree add -b box/<session>` from a bare carries main's
+/// tracking forward, which silently breaks `git push` (default `simple` mode
+/// refuses on name mismatch) and `git push --force-with-lease` (the lease
+/// check then targets `origin/main`'s SHA). New sessions get this right via
+/// `workspace::set_self_upstream`; this is the migration for sessions created
+/// before that fix.
+fn repair_box_branch_upstreams(bare_dir: &str) {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            bare_dir,
+            "config",
+            "--get-regexp",
+            r"^branch\.box/.+\.merge$",
+        ])
+        .output();
+    let Ok(output) = output else { return };
+    if !output.status.success() {
+        // Exit 1 means no matching keys — nothing to repair.
+        return;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(' ') else {
+            continue;
+        };
+        let Some(branch) = key
+            .strip_prefix("branch.")
+            .and_then(|s| s.strip_suffix(".merge"))
+        else {
+            continue;
+        };
+        let expected = format!("refs/heads/{}", branch);
+        if value == expected {
+            continue;
+        }
+        let _ = Command::new("git")
+            .args([
+                "-C",
+                bare_dir,
+                "config",
+                &format!("branch.{}.merge", branch),
+                &expected,
+            ])
+            .output();
+        let _ = Command::new("git")
+            .args([
+                "-C",
+                bare_dir,
+                "config",
+                &format!("branch.{}.remote", branch),
+                "origin",
+            ])
+            .output();
     }
 }
 
@@ -206,6 +275,11 @@ const REFSPEC_ORIGIN: &str = "+refs/heads/*:refs/remotes/origin/*";
 /// (clone + worktree strategies) relies on, and the heads/remotes line
 /// produces the conventional `origin/<branch>` refs that humans and tools
 /// expect when they `git fetch && git rebase origin/main`.
+///
+/// We also set `push.autoSetupRemote = true` so the first `git push` of a
+/// branch box created locally records its upstream — without that,
+/// `refs/remotes/origin/<branch>` is never written and `git push
+/// --force-with-lease` fails with "no such ref".
 fn configure_fetch_refspec(bare_dir: &str) -> Result<()> {
     // Clear any pre-existing refspec lines so re-running on a partially
     // configured bare doesn't leave duplicates.
@@ -232,6 +306,12 @@ fn configure_fetch_refspec(bare_dir: &str) -> Result<()> {
         if !status.success() {
             bail!("Failed to configure fetch refspec for '{}'.", bare_dir);
         }
+    }
+    let status = Command::new("git")
+        .args(["-C", bare_dir, "config", "push.autoSetupRemote", "true"])
+        .status()?;
+    if !status.success() {
+        bail!("Failed to set push.autoSetupRemote for '{}'.", bare_dir);
     }
     Ok(())
 }
@@ -463,6 +543,46 @@ mod tests {
                     "+refs/heads/*:refs/remotes/origin/*".to_string(),
                 ]
             );
+
+            let auto = Command::new("git")
+                .args([
+                    "-C",
+                    &repos[0].path,
+                    "config",
+                    "--get",
+                    "push.autoSetupRemote",
+                ])
+                .output()
+                .unwrap();
+            assert!(auto.status.success());
+            assert_eq!(String::from_utf8_lossy(&auto.stdout).trim(), "true");
+        });
+    }
+
+    #[test]
+    fn test_ensure_fetch_refspec_sets_missing_push_autosetup() {
+        with_temp_home(|home| {
+            let repo = make_git_repo(home, "needs-autosetup");
+            add(repo.to_str().unwrap()).unwrap();
+
+            // Simulate a bare from a box version that configured the fetch
+            // refspec but not push.autoSetupRemote.
+            let repos = list().unwrap();
+            let bare = &repos[0].path;
+            let s = Command::new("git")
+                .args(["-C", bare, "config", "--unset", "push.autoSetupRemote"])
+                .status()
+                .unwrap();
+            assert!(s.success());
+
+            let _ = list().unwrap();
+
+            let auto = Command::new("git")
+                .args(["-C", bare, "config", "--get", "push.autoSetupRemote"])
+                .output()
+                .unwrap();
+            assert!(auto.status.success());
+            assert_eq!(String::from_utf8_lossy(&auto.stdout).trim(), "true");
         });
     }
 
@@ -507,6 +627,64 @@ mod tests {
                 .map(|l| l.trim().to_string())
                 .collect();
             assert!(lines.contains(&"+refs/heads/*:refs/remotes/origin/*".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_list_repairs_misconfigured_box_branch_upstreams() {
+        with_temp_home(|home| {
+            let repo = make_git_repo(home, "with-sessions");
+            add(repo.to_str().unwrap()).unwrap();
+            let bare = list().unwrap()[0].path.clone();
+
+            // Simulate two session branches created by an older box version:
+            // one misconfigured (tracks main), one configured by hand to track
+            // a sibling branch (we leave that one alone — only fix `box/*`
+            // entries that point at the wrong place).
+            for (branch, merge) in [
+                ("box/foo", "refs/heads/main"),
+                ("box/bar", "refs/heads/box/bar"), // already correct
+                ("feature/baz", "refs/heads/main"), // not a box branch — ignore
+            ] {
+                let s = Command::new("git")
+                    .args([
+                        "-C",
+                        &bare,
+                        "config",
+                        &format!("branch.{}.remote", branch),
+                        "origin",
+                    ])
+                    .status()
+                    .unwrap();
+                assert!(s.success());
+                let s = Command::new("git")
+                    .args([
+                        "-C",
+                        &bare,
+                        "config",
+                        &format!("branch.{}.merge", branch),
+                        merge,
+                    ])
+                    .status()
+                    .unwrap();
+                assert!(s.success());
+            }
+
+            // list() invokes repair_box_branch_upstreams on each bare.
+            let _ = list().unwrap();
+
+            let value = |key: &str| -> String {
+                let out = Command::new("git")
+                    .args(["-C", &bare, "config", "--get", key])
+                    .output()
+                    .unwrap();
+                String::from_utf8_lossy(&out.stdout).trim().to_string()
+            };
+
+            assert_eq!(value("branch.box/foo.merge"), "refs/heads/box/foo");
+            assert_eq!(value("branch.box/bar.merge"), "refs/heads/box/bar");
+            // feature/* untouched — only box/* sessions are box's responsibility.
+            assert_eq!(value("branch.feature/baz.merge"), "refs/heads/main");
         });
     }
 
