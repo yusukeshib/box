@@ -401,10 +401,10 @@ pub fn ensure_workspace_multi_worktree(
                     .env("GIT_TERMINAL_PROMPT", "0")
                     .output();
 
-                match result {
+                let success = match result {
                     Ok(output) if output.status.success() => {
                         buf.push_str(&captured_output(&output));
-                        (true, buf)
+                        true
                     }
                     Ok(first_output) => {
                         buf.push_str(&captured_output(&first_output));
@@ -416,19 +416,24 @@ pub fn ensure_workspace_multi_worktree(
                         {
                             Ok(output2) => {
                                 buf.push_str(&captured_output(&output2));
-                                (output2.status.success(), buf)
+                                output2.status.success()
                             }
                             Err(e) => {
                                 buf.push_str(&format!("failed to run git: {}\n", e));
-                                (false, buf)
+                                false
                             }
                         }
                     }
                     Err(e) => {
                         buf.push_str(&format!("failed to run git: {}\n", e));
-                        (false, buf)
+                        false
                     }
+                };
+
+                if success {
+                    set_self_upstream(&dest_str, &branch);
                 }
+                (success, buf)
             },
         );
 
@@ -538,6 +543,35 @@ fn captured_output(output: &std::process::Output) -> String {
     buf
 }
 
+/// Configure the worktree's branch to track `origin/<branch>` (a same-name
+/// upstream) rather than inheriting the start-point's tracking. `git worktree
+/// add -b` defaults to copying the start-point's upstream config — for a
+/// session branch like `box/foo` started from `main`, that leaves the branch
+/// tracking `origin/main`, which silently breaks `git push` (`push.default =
+/// simple` refuses on name mismatch) and `git push --force-with-lease` (the
+/// lease check then targets `origin/main`'s SHA, not the session branch's).
+fn set_self_upstream(worktree_dir: &str, branch: &str) {
+    let merge_ref = format!("refs/heads/{}", branch);
+    let _ = Command::new("git")
+        .args([
+            "-C",
+            worktree_dir,
+            "config",
+            &format!("branch.{}.remote", branch),
+            "origin",
+        ])
+        .output();
+    let _ = Command::new("git")
+        .args([
+            "-C",
+            worktree_dir,
+            "config",
+            &format!("branch.{}.merge", branch),
+            &merge_ref,
+        ])
+        .output();
+}
+
 /// Re-point origin remote from local path to the real remote URL.
 fn repoint_origin(project_dir: &str, clone_dir: &str) {
     if let Ok(output) = Command::new("git")
@@ -552,5 +586,121 @@ fn repoint_origin(project_dir: &str, clone_dir: &str) {
                     .output();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn run_git(args: &[&str]) {
+        let s = Command::new("git").args(args).status().unwrap();
+        assert!(s.success(), "git {:?} failed", args);
+    }
+
+    fn config_value(dir: &str, key: &str) -> String {
+        let out = Command::new("git")
+            .args(["-C", dir, "config", "--get", key])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git config --get {} failed", key);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn test_worktree_branch_tracks_itself_not_source_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let bare = home.join("repo.git");
+        let bare_str = bare.to_str().unwrap();
+
+        // Build a "remote" with a main branch, then clone --bare to mimic
+        // box's repo setup.
+        let remote = home.join("remote.git");
+        run_git(&[
+            "-c",
+            "init.defaultBranch=main",
+            "init",
+            "--bare",
+            remote.to_str().unwrap(),
+        ]);
+        let src = home.join("src");
+        run_git(&[
+            "-c",
+            "init.defaultBranch=main",
+            "clone",
+            remote.to_str().unwrap(),
+            src.to_str().unwrap(),
+        ]);
+        let src_str = src.to_str().unwrap();
+        run_git(&[
+            "-C",
+            src_str,
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+        run_git(&["-C", src_str, "push", "-q", "origin", "main"]);
+        run_git(&["clone", "--bare", remote.to_str().unwrap(), bare_str]);
+
+        // Mirror box's bare setup: BOTH the heads/heads refspec (which makes
+        // `refs/heads/*` act as the remote-tracking namespace and is what
+        // triggers git's `worktree add -b` to copy upstream forward) and the
+        // origin/* refspec.
+        run_git(&[
+            "-C",
+            bare_str,
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/heads/*",
+        ]);
+        run_git(&[
+            "-C",
+            bare_str,
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ]);
+        run_git(&["-C", bare_str, "fetch", "-q", "origin"]);
+
+        // Reproduce git's stock behavior: `git worktree add -b` from a bare
+        // copies main's upstream config to the new branch.
+        let wt = home.join("wt");
+        run_git(&[
+            "-C",
+            bare_str,
+            "worktree",
+            "add",
+            wt.to_str().unwrap(),
+            "-b",
+            "box/foo",
+        ]);
+        assert_eq!(
+            config_value(wt.to_str().unwrap(), "branch.box/foo.merge"),
+            "refs/heads/main",
+            "precondition: stock git misconfigures upstream"
+        );
+
+        // After our fix runs, the branch should track itself.
+        set_self_upstream(wt.to_str().unwrap(), "box/foo");
+        assert_eq!(
+            config_value(wt.to_str().unwrap(), "branch.box/foo.merge"),
+            "refs/heads/box/foo"
+        );
+        assert_eq!(
+            config_value(wt.to_str().unwrap(), "branch.box/foo.remote"),
+            "origin"
+        );
+
+        // Sanity: the worktree's git common dir is the bare, so the config
+        // wrote to the bare, not the worktree-only config.
+        assert!(Path::new(bare_str).join("config").exists());
     }
 }
