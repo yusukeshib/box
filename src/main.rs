@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box remove --all                             # remove every session\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session (TUI)\n  box edit my-feature --add app-c --remove app-a # non-interactive edit\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box remove --all                             # remove every session\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -139,6 +139,14 @@ struct CreateArgs {
 struct EditArgs {
     /// Session name
     name: String,
+
+    /// Add repos to the session (can be repeated). Skips the TUI when set.
+    #[arg(long)]
+    add: Vec<String>,
+
+    /// Remove repos from the session (can be repeated). Skips the TUI when set.
+    #[arg(long)]
+    remove: Vec<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -176,7 +184,7 @@ fn main() {
 
     let result = match cli.command {
         Some(Commands::New(args)) => cmd_new(args, verbose),
-        Some(Commands::Edit(args)) => cmd_edit(&args.name, verbose),
+        Some(Commands::Edit(args)) => cmd_edit(&args.name, &args.add, &args.remove, verbose),
         Some(Commands::Remove(args)) => {
             if args.all {
                 cmd_remove_all(verbose)
@@ -506,7 +514,7 @@ fn cmd_create(
     Ok(0)
 }
 
-fn cmd_edit(name: &str, verbose: bool) -> Result<i32> {
+fn cmd_edit(name: &str, add: &[String], remove: &[String], verbose: bool) -> Result<i32> {
     let name = session::validate_name(name)?;
     let name = name.as_str();
 
@@ -518,53 +526,113 @@ fn cmd_edit(name: &str, verbose: bool) -> Result<i32> {
     let strategy = workspace::Strategy::from_str(&sess.strategy)?;
     let current_repos = &sess.repos;
 
+    if !add.is_empty() || !remove.is_empty() {
+        let new_repos = compute_edit_repos(current_repos, add, remove)?;
+        return apply_edit_diff(name, current_repos, &new_repos, strategy, verbose);
+    }
+
     match tui::edit_session(current_repos)? {
         tui::TuiAction::Edit { repos: new_repos } => {
-            let all_repos = repo::list()?;
-
-            // Determine added and removed repos
-            let added: Vec<&str> = new_repos
-                .iter()
-                .filter(|r| !current_repos.contains(r))
-                .map(|r| r.as_str())
-                .collect();
-            let removed: Vec<&str> = current_repos
-                .iter()
-                .filter(|r| !new_repos.contains(r))
-                .map(|r| r.as_str())
-                .collect();
-
-            // Add newly added repos using the session's strategy
-            if !added.is_empty() {
-                let repos_to_add: Vec<repo::RepoEntry> = added
-                    .iter()
-                    .filter_map(|name| all_repos.iter().find(|r| r.name == *name).cloned())
-                    .collect();
-                workspace::ensure_workspace(name, &repos_to_add, strategy, false, verbose)?;
-            }
-
-            // Remove workspace directories for removed repos
-            for repo_name in &removed {
-                workspace::remove_repo_by_strategy(name, repo_name, strategy);
-            }
-
-            // Update session metadata
-            session::update_repos(name, &new_repos)?;
-
-            if !added.is_empty() {
-                eprintln!("\x1b[2madded:\x1b[0m {}", added.join(", "));
-            }
-            if !removed.is_empty() {
-                eprintln!("\x1b[2mremoved:\x1b[0m {}", removed.join(", "));
-            }
-            if added.is_empty() && removed.is_empty() {
-                eprintln!("No changes.");
-            }
-
-            Ok(0)
+            apply_edit_diff(name, current_repos, &new_repos, strategy, verbose)
         }
         _ => Ok(0),
     }
+}
+
+/// Compute the new repo set from --add/--remove flags. Errors when the same
+/// repo appears in both lists or when an --add target is not registered.
+/// Already-present adds and not-present removes warn but do not error.
+fn compute_edit_repos(
+    current: &[String],
+    add: &[String],
+    remove: &[String],
+) -> Result<Vec<String>> {
+    if let Some(dup) = add.iter().find(|r| remove.contains(r)) {
+        bail!("'{}' appears in both --add and --remove", dup);
+    }
+
+    let all_repos = repo::list()?;
+    for repo_name in add {
+        if !all_repos.iter().any(|r| &r.name == repo_name) {
+            bail!(
+                "Repo '{}' is not registered. Run `box repo add` first.",
+                repo_name
+            );
+        }
+    }
+
+    for repo_name in add {
+        if current.contains(repo_name) {
+            eprintln!(
+                "\x1b[2mskip:\x1b[0m '{}' is already in the session",
+                repo_name
+            );
+        }
+    }
+    for repo_name in remove {
+        if !current.contains(repo_name) {
+            eprintln!("\x1b[2mskip:\x1b[0m '{}' is not in the session", repo_name);
+        }
+    }
+
+    let mut new_repos: Vec<String> = current
+        .iter()
+        .filter(|r| !remove.contains(r))
+        .cloned()
+        .collect();
+    for repo_name in add {
+        if !new_repos.contains(repo_name) {
+            new_repos.push(repo_name.clone());
+        }
+    }
+    Ok(new_repos)
+}
+
+fn apply_edit_diff(
+    name: &str,
+    current_repos: &[String],
+    new_repos: &[String],
+    strategy: workspace::Strategy,
+    verbose: bool,
+) -> Result<i32> {
+    let all_repos = repo::list()?;
+
+    let added: Vec<&str> = new_repos
+        .iter()
+        .filter(|r| !current_repos.contains(r))
+        .map(|r| r.as_str())
+        .collect();
+    let removed: Vec<&str> = current_repos
+        .iter()
+        .filter(|r| !new_repos.contains(r))
+        .map(|r| r.as_str())
+        .collect();
+
+    if !added.is_empty() {
+        let repos_to_add: Vec<repo::RepoEntry> = added
+            .iter()
+            .filter_map(|n| all_repos.iter().find(|r| r.name == *n).cloned())
+            .collect();
+        workspace::ensure_workspace(name, &repos_to_add, strategy, false, verbose)?;
+    }
+
+    for repo_name in &removed {
+        workspace::remove_repo_by_strategy(name, repo_name, strategy);
+    }
+
+    session::update_repos(name, new_repos)?;
+
+    if !added.is_empty() {
+        eprintln!("\x1b[2madded:\x1b[0m {}", added.join(", "));
+    }
+    if !removed.is_empty() {
+        eprintln!("\x1b[2mremoved:\x1b[0m {}", removed.join(", "));
+    }
+    if added.is_empty() && removed.is_empty() {
+        eprintln!("No changes.");
+    }
+
+    Ok(0)
 }
 
 fn cmd_remove(name: &str, verbose: bool) -> Result<i32> {
@@ -927,6 +995,8 @@ _box() {{
                 edit)
                     _arguments \
                         '(-v --verbose)'{{-v,--verbose}}'[Show detailed output]' \
+                        '*--add=[Add a repo to the session]:repo:__box_repos' \
+                        '*--remove=[Remove a repo from the session]:repo:__box_repos' \
                         '1:session name:__box_sessions'
                     ;;
                 switch|sw|cd)
@@ -1048,12 +1118,40 @@ fn cmd_config_bash() -> Result<i32> {
                     ;;
             esac
             ;;
-        edit|remove|rm)
+        edit)
+            if [[ "$prev" == "--add" || "$prev" == "--remove" ]]; then
+                local repos=""
+                if [[ -d "$__box_root/repos" ]]; then
+                    for bare in "$__box_root/repos"/*.git; do
+                        [[ -d "$bare" ]] || continue
+                        local name=$(basename "$bare" .git)
+                        [[ -n "$name" ]] && repos+=" $name"
+                    done
+                fi
+                COMPREPLY=($(compgen -W "$repos" -- "$cur"))
+                return
+            fi
             case "$cur" in
                 -*)
-                    local rm_flags="--verbose -v"
-                    [[ "$subcmd" == "remove" || "$subcmd" == "rm" ]] && rm_flags+=" --all -a"
-                    COMPREPLY=($(compgen -W "$rm_flags" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--add --remove --verbose -v" -- "$cur"))
+                    ;;
+                *)
+                    if [[ $cword -eq 2 ]]; then
+                        local sessions=""
+                        if [[ -d "$__box_root/sessions" ]]; then
+                            for sess in "$__box_root/sessions"/*/; do
+                                ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
+                            done
+                        fi
+                        COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+                    fi
+                    ;;
+            esac
+            ;;
+        remove|rm)
+            case "$cur" in
+                -*)
+                    COMPREPLY=($(compgen -W "--all -a --verbose -v" -- "$cur"))
                     ;;
                 *)
                     if [[ $cword -eq 2 ]]; then
@@ -1383,6 +1481,8 @@ mod tests {
         match cli.command {
             Some(Commands::Edit(args)) => {
                 assert_eq!(args.name, "my-session");
+                assert!(args.add.is_empty());
+                assert!(args.remove.is_empty());
             }
             other => panic!("expected Edit, got {:?}", other),
         }
@@ -1392,6 +1492,52 @@ mod tests {
     fn test_edit_requires_name() {
         let result = try_parse(&["edit"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_edit_with_add_and_remove_flags() {
+        let cli = parse(&[
+            "edit",
+            "my-session",
+            "--add",
+            "app-c",
+            "--add",
+            "app-d",
+            "--remove",
+            "app-a",
+        ]);
+        match cli.command {
+            Some(Commands::Edit(args)) => {
+                assert_eq!(args.name, "my-session");
+                assert_eq!(args.add, vec!["app-c", "app-d"]);
+                assert_eq!(args.remove, vec!["app-a"]);
+            }
+            other => panic!("expected Edit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_edit_add_only() {
+        let cli = parse(&["edit", "my-session", "--add", "app-c"]);
+        match cli.command {
+            Some(Commands::Edit(args)) => {
+                assert_eq!(args.add, vec!["app-c"]);
+                assert!(args.remove.is_empty());
+            }
+            other => panic!("expected Edit, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_edit_remove_only() {
+        let cli = parse(&["edit", "my-session", "--remove", "app-a"]);
+        match cli.command {
+            Some(Commands::Edit(args)) => {
+                assert!(args.add.is_empty());
+                assert_eq!(args.remove, vec!["app-a"]);
+            }
+            other => panic!("expected Edit, got {:?}", other),
+        }
     }
 
     // -- remove subcommand --
