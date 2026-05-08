@@ -62,15 +62,19 @@ pub fn add(name: &str, repos: &[String]) -> Result<()> {
         bail!("A preset must contain at least one repo.");
     }
 
-    // Deduplicate repos while preserving order
+    // Deduplicate, preserving first occurrence order.
     let mut seen = std::collections::HashSet::new();
-    let repos: Vec<&String> = repos.iter().filter(|r| seen.insert(r.as_str())).collect();
+    let unique: Vec<&str> = repos
+        .iter()
+        .map(|r| r.as_str())
+        .filter(|r| seen.insert(*r))
+        .collect();
 
-    // Validate all repos exist
     let all_repos = repo::list()?;
-    let all_names: Vec<&str> = all_repos.iter().map(|r| r.name.as_str()).collect();
-    for r in &repos {
-        if !all_names.contains(&r.as_str()) {
+    let registered: std::collections::HashSet<&str> =
+        all_repos.iter().map(|r| r.name.as_str()).collect();
+    for r in &unique {
+        if !registered.contains(r) {
             bail!("Repo '{}' not found in registry.", r);
         }
     }
@@ -78,24 +82,17 @@ pub fn add(name: &str, repos: &[String]) -> Result<()> {
     let dir = presets_dir()?;
     fs::create_dir_all(&dir)?;
 
-    let repo_strs: Vec<&str> = repos.iter().map(|r| r.as_str()).collect();
     let path = dir.join(name);
     let exists = path.is_file();
-    fs::write(&path, repo_strs.join("\n").to_owned() + "\n")?;
+    fs::write(&path, unique.join("\n") + "\n")?;
 
-    if exists {
-        eprintln!(
-            "Preset '\x1b[1m{}\x1b[0m' updated ({}).",
-            name,
-            repo_strs.join(", ")
-        );
-    } else {
-        eprintln!(
-            "Preset '\x1b[1m{}\x1b[0m' saved ({}).",
-            name,
-            repo_strs.join(", ")
-        );
-    }
+    let verb = if exists { "updated" } else { "saved" };
+    eprintln!(
+        "Preset '\x1b[1m{}\x1b[0m' {} ({}).",
+        name,
+        verb,
+        unique.join(", ")
+    );
     Ok(())
 }
 
@@ -115,11 +112,12 @@ pub fn remove(name: &str) -> Result<()> {
 pub fn resolve(name: &str) -> Result<Vec<String>> {
     let repos = load(name)?;
     let all_repos = repo::list()?;
-    let all_names: Vec<&str> = all_repos.iter().map(|r| r.name.as_str()).collect();
+    let registered: std::collections::HashSet<&str> =
+        all_repos.iter().map(|r| r.name.as_str()).collect();
 
     let mut valid = Vec::new();
     for r in &repos {
-        if all_names.contains(&r.as_str()) {
+        if registered.contains(r.as_str()) {
             valid.push(r.clone());
         } else {
             eprintln!(

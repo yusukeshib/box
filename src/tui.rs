@@ -54,9 +54,13 @@ fn load_name_history() -> Vec<String> {
 
 fn save_name_history(history: &[String]) {
     if let Ok(path) = name_history_path() {
-        let capped: Vec<&String> = history.iter().take(MAX_HISTORY).collect();
-        let content: Vec<&str> = capped.iter().map(|s| s.as_str()).collect();
-        let _ = std::fs::write(path, content.join("\n") + "\n");
+        let content: String = history
+            .iter()
+            .take(MAX_HISTORY)
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = std::fs::write(path, content + "\n");
     }
 }
 

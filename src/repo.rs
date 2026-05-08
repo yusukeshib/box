@@ -316,9 +316,13 @@ fn configure_fetch_refspec(bare_dir: &str) -> Result<()> {
     Ok(())
 }
 
-/// Repoint the bare clone's origin from the local source path to the source's
+/// Repoint a clone's origin from the local source path to the source repo's
 /// actual remote URL (e.g. GitHub). If the source has no remote, leave as-is.
-fn repoint_origin(source_dir: &str, bare_dir: &str) {
+///
+/// Used by both `box repo add` (for the bare clone in `~/.box/repos/`) and the
+/// clone strategy in `workspace::ensure_workspace_multi` (for per-session
+/// clones), so it lives in this module as the canonical implementation.
+pub(crate) fn repoint_origin(source_dir: &str, dest_dir: &str) {
     if let Ok(output) = Command::new("git")
         .args(["-C", source_dir, "remote", "get-url", "origin"])
         .output()
@@ -327,7 +331,7 @@ fn repoint_origin(source_dir: &str, bare_dir: &str) {
             let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !url.is_empty() {
                 let _ = Command::new("git")
-                    .args(["-C", bare_dir, "remote", "set-url", "origin", &url])
+                    .args(["-C", dest_dir, "remote", "set-url", "origin", &url])
                     .status();
             }
         }
@@ -353,12 +357,11 @@ pub fn origin_url(path: &str) -> Option<String> {
 }
 
 pub fn remove(name: &str) -> Result<()> {
-    if name.contains('/') || name.contains('\\') || name == ".." || name == "." {
-        bail!("Invalid repo name '{}'.", name);
-    }
+    validate_name(name)?;
     let dir = repos_dir()?;
     let bare = dir.join(format!("{}.git", name));
-    // Ensure the resolved path stays within repos_dir
+    // Resolve symlinks and `..` defensively, then double-check the result is
+    // still inside repos_dir before recursive-removing.
     let canonical_bare = fs::canonicalize(&bare)
         .map_err(|_| anyhow::anyhow!("No repo named '{}' is registered.", name))?;
     let canonical_dir = fs::canonicalize(&dir)?;
@@ -367,6 +370,14 @@ pub fn remove(name: &str) -> Result<()> {
     }
     fs::remove_dir_all(&canonical_bare)?;
     eprintln!("Removed repo '{}'.", name);
+    Ok(())
+}
+
+/// Reject names that could escape `~/.box/repos/` via path traversal.
+fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
+        bail!("Invalid repo name '{}'.", name);
+    }
     Ok(())
 }
 

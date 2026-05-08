@@ -11,21 +11,8 @@ use crate::config;
 pub struct Session {
     pub name: String,
     pub project_dir: String,
-    pub env: Vec<String>,
     pub repos: Vec<String>,
     pub strategy: String,
-}
-
-impl From<config::BoxConfig> for Session {
-    fn from(cfg: config::BoxConfig) -> Self {
-        Session {
-            name: cfg.name,
-            project_dir: cfg.project_dir,
-            env: cfg.env,
-            repos: cfg.repos,
-            strategy: "clone".to_string(),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -42,8 +29,8 @@ pub fn sessions_dir() -> Result<PathBuf> {
 }
 
 const RESERVED_NAMES: &[&str] = &[
-    "new", "remove", "edit", "update", "upgrade", "path", "config", "list", "ls", "repo", "preset",
-    "rebase",
+    "new", "remove", "rm", "edit", "list", "ls", "switch", "sw", "cd", "rebase", "repo", "preset",
+    "config", "upgrade", "update", "path",
 ];
 
 /// Normalize a session name by replacing any non-alphanumeric character with `-`
@@ -106,14 +93,10 @@ pub fn save(session: &Session) -> Result<()> {
         dir.join("created_at"),
         Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
     )?;
-    if !session.env.is_empty() {
-        let content: Vec<&str> = session.env.iter().map(|s| s.as_str()).collect();
-        fs::write(dir.join("env"), content.join("\0"))?;
-    } else {
-        let _ = fs::remove_file(dir.join("env"));
-    }
+    // env file is no longer used; clean up any leftover from earlier versions.
+    let _ = fs::remove_file(dir.join("env"));
     if !session.repos.is_empty() {
-        fs::write(dir.join("repos"), session.repos.join("\n"))?;
+        fs::write(dir.join("repos"), session.repos.join("\n") + "\n")?;
     } else {
         let _ = fs::remove_file(dir.join("repos"));
     }
@@ -126,14 +109,13 @@ pub fn save(session: &Session) -> Result<()> {
 }
 
 /// Migrate a nested `sessions/<name>/default/` layout to flat `sessions/<name>/`.
-/// Moves files from `default/` up and removes the subdirectory.
+/// Moves files from `default/` up and removes the `default/` subdirectory.
 fn migrate_nested_to_flat(name: &str) -> Result<()> {
     let dir = sessions_dir()?.join(name);
     let default_dir = dir.join("default");
     if !default_dir.is_dir() || !default_dir.join("project_dir").exists() {
         return Ok(());
     }
-    // Move all files from default/ up to the session dir
     for entry in fs::read_dir(&default_dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -142,13 +124,7 @@ fn migrate_nested_to_flat(name: &str) -> Result<()> {
             fs::rename(&path, dir.join(&file_name))?;
         }
     }
-    // Remove the now-empty default/ subdir (and any other session subdirs)
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
-        if entry.path().is_dir() {
-            let _ = fs::remove_dir_all(entry.path());
-        }
-    }
+    fs::remove_dir_all(&default_dir)?;
     Ok(())
 }
 
@@ -174,15 +150,6 @@ pub fn load(name: &str) -> Result<Session> {
         bail!("Session '{}' is missing project directory metadata.", name);
     };
 
-    let env = fs::read_to_string(dir.join("env"))
-        .map(|s| {
-            s.split('\0')
-                .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-
     let repos = fs::read_to_string(dir.join("repos"))
         .map(|s| {
             s.lines()
@@ -199,7 +166,6 @@ pub fn load(name: &str) -> Result<Session> {
     Ok(Session {
         name: name.to_string(),
         project_dir,
-        env,
         repos,
         strategy,
     })
@@ -282,7 +248,7 @@ pub fn update_repos(name: &str, repos: &[String]) -> Result<()> {
     if repos.is_empty() {
         let _ = fs::remove_file(dir.join("repos"));
     } else {
-        fs::write(dir.join("repos"), repos.join("\n"))?;
+        fs::write(dir.join("repos"), repos.join("\n") + "\n")?;
     }
     Ok(())
 }
@@ -318,7 +284,6 @@ mod tests {
         Session {
             name: name.to_string(),
             project_dir: project_dir.to_string(),
-            env: vec![],
             repos: vec![],
             strategy: "clone".to_string(),
         }
@@ -553,38 +518,18 @@ mod tests {
     }
 
     #[test]
-    fn test_save_and_load_with_env() {
+    fn test_save_removes_legacy_env_file() {
         with_temp_home(|_| {
-            let sess = Session {
-                name: "env-test".to_string(),
-                project_dir: "/tmp/project".to_string(),
+            let sess = make_session("legacy-env", "/tmp/project");
+            // Simulate a session created by an older box version that
+            // persisted an env file alongside other metadata.
+            let dir = sessions_dir().unwrap().join("legacy-env");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("env"), "FOO=bar").unwrap();
 
-                env: vec!["FOO=bar".to_string(), "BAZ".to_string()],
-                repos: vec![],
-                strategy: "clone".to_string(),
-            };
             save(&sess).unwrap();
 
-            let loaded = load("env-test").unwrap();
-            assert_eq!(loaded.env, vec!["FOO=bar", "BAZ"]);
-
-            let dir = sessions_dir().unwrap().join("env-test");
-            let raw = fs::read_to_string(dir.join("env")).unwrap();
-            assert_eq!(raw, "FOO=bar\0BAZ");
-        });
-    }
-
-    #[test]
-    fn test_save_and_load_empty_env() {
-        with_temp_home(|_| {
-            let sess = make_session("no-env", "/tmp/project");
-            save(&sess).unwrap();
-
-            let dir = sessions_dir().unwrap().join("no-env");
             assert!(!dir.join("env").exists());
-
-            let loaded = load("no-env").unwrap();
-            assert!(loaded.env.is_empty());
         });
     }
 
@@ -594,8 +539,6 @@ mod tests {
             let sess = Session {
                 name: "multi".to_string(),
                 project_dir: String::new(),
-
-                env: vec![],
                 repos: vec!["app-a".to_string(), "app-b".to_string()],
                 strategy: "clone".to_string(),
             };

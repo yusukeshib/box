@@ -19,57 +19,10 @@ pub fn box_root() -> Result<std::path::PathBuf> {
     Ok(std::path::PathBuf::from(home_dir()?).join(".box"))
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct BoxConfig {
-    pub name: String,
-    pub project_dir: String,
-    pub env: Vec<String>,
-    pub repos: Vec<String>,
-}
-
-pub struct BoxConfigInput {
-    pub name: String,
-    pub project_dir: String,
-    pub env: Vec<String>,
-    pub repos: Vec<String>,
-}
-
-pub fn resolve(input: BoxConfigInput) -> Result<BoxConfig> {
-    Ok(BoxConfig {
-        name: input.name,
-        project_dir: input.project_dir,
-        env: input.env,
-        repos: input.repos,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_util::ENV_LOCK;
-
-    #[test]
-    fn test_resolve_defaults() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-
-        let config = resolve(BoxConfigInput {
-            name: "test".to_string(),
-            project_dir: "/home/user/myproject".to_string(),
-            env: vec![],
-            repos: vec![],
-        })
-        .unwrap();
-
-        assert_eq!(
-            config,
-            BoxConfig {
-                name: "test".to_string(),
-                project_dir: "/home/user/myproject".to_string(),
-                env: vec![],
-                repos: vec![],
-            }
-        );
-    }
 
     #[test]
     fn test_box_root_default() {
@@ -147,27 +100,5 @@ mod tests {
             Some(h) => std::env::set_var("HOME", h),
             None => std::env::remove_var("HOME"),
         }
-    }
-
-    #[test]
-    fn test_resolve_full() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let config = resolve(BoxConfigInput {
-            name: "full".to_string(),
-            project_dir: "/home/user/project".to_string(),
-            env: vec!["FOO=bar".to_string()],
-            repos: vec![],
-        })
-        .unwrap();
-
-        assert_eq!(
-            config,
-            BoxConfig {
-                name: "full".to_string(),
-                project_dir: "/home/user/project".to_string(),
-                env: vec!["FOO=bar".to_string()],
-                repos: vec![],
-            }
-        );
     }
 }
