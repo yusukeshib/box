@@ -4,6 +4,11 @@ use std::process::Command;
 
 use crate::config;
 
+/// The git branch name used for a session worktree.
+fn session_branch(session_name: &str) -> String {
+    format!("box/{}", session_name)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Strategy {
     Clone,
@@ -73,7 +78,7 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
     for (name, strategy, repo_names) in sessions {
         match strategy {
             Strategy::Worktree => {
-                let branch = format!("box/{}", name);
+                let branch = session_branch(name);
                 for repo_name in repo_names {
                     let dest = root.join("workspaces").join(name).join(repo_name);
                     let repo_path = all_repos
@@ -208,6 +213,85 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
     }
 }
 
+/// Build the empty workspace root for a session and ensure its permissions.
+fn prepare_workspace_root(session_name: &str) -> Result<std::path::PathBuf> {
+    let root = config::box_root()?.join("workspaces").join(session_name);
+    std::fs::create_dir_all(&root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&root)?.permissions();
+        perms.set_mode(0o775);
+        std::fs::set_permissions(&root, perms)?;
+    }
+    Ok(root)
+}
+
+/// Filter `repos` to those that are not already set up at `root/<name>` and
+/// pair each one with its destination path string.
+fn pending_repos(
+    root: &std::path::Path,
+    repos: &[crate::repo::RepoEntry],
+) -> Vec<(String, (crate::repo::RepoEntry, String))> {
+    repos
+        .iter()
+        .filter(|repo| !root.join(&repo.name).join(".git").exists())
+        .map(|repo| {
+            let dest_str = root.join(&repo.name).to_string_lossy().to_string();
+            (repo.name.clone(), (repo.clone(), dest_str))
+        })
+        .collect()
+}
+
+/// Format the progress-bar label: `Preparing N repos` when fetching, otherwise
+/// `<noun> N <unit>s`.
+fn progress_label(noun: &str, unit: &str, count: usize, fetch: bool) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    if fetch {
+        format!("Preparing {} repo{}", count, plural)
+    } else {
+        format!("{} {} {}{}", noun, count, unit, plural)
+    }
+}
+
+/// Print per-task output (verbose) and bail with a combined message if any task
+/// failed. `action` is the human-readable verb that shows up in error messages
+/// (e.g. "git clone --local"); `verbose_prefix` is the line printed before each
+/// task's captured log in verbose mode (e.g. "cloning").
+fn report_results(
+    results: &[crate::parallel::TaskResult],
+    verbose: bool,
+    action: &str,
+    verbose_prefix: &str,
+) -> Result<()> {
+    let mut failure_msgs = Vec::new();
+    if verbose {
+        for result in results {
+            eprintln!("\x1b[2m{} {}:\x1b[0m", verbose_prefix, result.name);
+            if !result.output.is_empty() {
+                eprint!("{}", result.output);
+            }
+            if !result.success {
+                failure_msgs.push(result.name.clone());
+            }
+        }
+    } else {
+        for result in results {
+            if !result.success {
+                failure_msgs.push(format!("  {}: {}", result.name, result.output.trim()));
+            }
+        }
+    }
+    if !failure_msgs.is_empty() {
+        if verbose {
+            bail!("{} failed for: {}", action, failure_msgs.join(", "));
+        } else {
+            bail!("{} failed:\n{}", action, failure_msgs.join("\n"));
+        }
+    }
+    Ok(())
+}
+
 /// Create a multi-repo workspace using git clone --local.
 ///
 /// When `fetch` is true, each repo is fetched from `origin` before cloning so
@@ -219,42 +303,12 @@ pub fn ensure_workspace_multi(
     fetch: bool,
     verbose: bool,
 ) -> Result<String> {
-    let root = config::box_root()?.join("workspaces").join(session_name);
-    std::fs::create_dir_all(&root)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&root)?.permissions();
-        perms.set_mode(0o775);
-        std::fs::set_permissions(&root, perms)?;
-    }
-
-    let to_clone: Vec<(String, (crate::repo::RepoEntry, String))> = repos
-        .iter()
-        .filter(|repo| !root.join(&repo.name).join(".git").exists())
-        .map(|repo| {
-            let dest_str = root.join(&repo.name).to_string_lossy().to_string();
-            (repo.name.clone(), (repo.clone(), dest_str))
-        })
-        .collect();
+    let root = prepare_workspace_root(session_name)?;
+    let to_clone = pending_repos(&root, repos);
 
     if !to_clone.is_empty() {
         let root_str = root.to_string_lossy().to_string();
-        let count = to_clone.len();
-        let label = if fetch {
-            format!(
-                "Preparing {} repo{}",
-                count,
-                if count == 1 { "" } else { "s" }
-            )
-        } else {
-            format!(
-                "Cloning {} repo{}",
-                count,
-                if count == 1 { "" } else { "s" }
-            )
-        };
+        let label = progress_label("Cloning", "repo", to_clone.len(), fetch);
         let results = crate::progress::run_parallel_with_progress(
             &label,
             to_clone,
@@ -279,7 +333,7 @@ pub fn ensure_workspace_multi(
                     Ok(output) => {
                         buf.push_str(&captured_output(&output));
                         if output.status.success() {
-                            repoint_origin(&repo.path, &dest_str);
+                            crate::repo::repoint_origin(&repo.path, &dest_str);
                             (true, buf)
                         } else {
                             buf.push_str(&format!(
@@ -297,31 +351,7 @@ pub fn ensure_workspace_multi(
             },
         );
 
-        let mut failure_msgs = Vec::new();
-        if verbose {
-            for result in &results {
-                eprintln!("\x1b[2mcloning {}:\x1b[0m", result.name);
-                if !result.output.is_empty() {
-                    eprint!("{}", result.output);
-                }
-                if !result.success {
-                    failure_msgs.push(result.name.clone());
-                }
-            }
-        } else {
-            for result in &results {
-                if !result.success {
-                    failure_msgs.push(format!("  {}: {}", result.name, result.output.trim()));
-                }
-            }
-        }
-        if !failure_msgs.is_empty() {
-            if verbose {
-                bail!("git clone --local failed for: {}", failure_msgs.join(", "));
-            } else {
-                bail!("git clone --local failed:\n{}", failure_msgs.join("\n"));
-            }
-        }
+        report_results(&results, verbose, "git clone --local", "cloning")?;
     }
 
     Ok(root.to_string_lossy().to_string())
@@ -338,46 +368,16 @@ pub fn ensure_workspace_multi_worktree(
     fetch: bool,
     verbose: bool,
 ) -> Result<String> {
-    let root = config::box_root()?.join("workspaces").join(session_name);
-    std::fs::create_dir_all(&root)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&root)?.permissions();
-        perms.set_mode(0o775);
-        std::fs::set_permissions(&root, perms)?;
-    }
-
-    let branch_name = format!("box/{}", session_name);
-
-    let to_create: Vec<(String, (crate::repo::RepoEntry, String, String))> = repos
-        .iter()
-        .filter(|repo| !root.join(&repo.name).join(".git").exists())
-        .map(|repo| {
-            let dest_str = root.join(&repo.name).to_string_lossy().to_string();
-            (
-                repo.name.clone(),
-                (repo.clone(), dest_str, branch_name.clone()),
-            )
-        })
-        .collect();
+    let root = prepare_workspace_root(session_name)?;
+    let branch_name = session_branch(session_name);
+    let to_create: Vec<(String, (crate::repo::RepoEntry, String, String))> =
+        pending_repos(&root, repos)
+            .into_iter()
+            .map(|(name, (repo, dest))| (name, (repo, dest, branch_name.clone())))
+            .collect();
 
     if !to_create.is_empty() {
-        let count = to_create.len();
-        let label = if fetch {
-            format!(
-                "Preparing {} repo{}",
-                count,
-                if count == 1 { "" } else { "s" }
-            )
-        } else {
-            format!(
-                "Creating {} worktree{}",
-                count,
-                if count == 1 { "" } else { "s" }
-            )
-        };
+        let label = progress_label("Creating", "worktree", to_create.len(), fetch);
         let results = crate::progress::run_parallel_with_progress(
             &label,
             to_create,
@@ -437,31 +437,7 @@ pub fn ensure_workspace_multi_worktree(
             },
         );
 
-        let mut failure_msgs = Vec::new();
-        if verbose {
-            for result in &results {
-                eprintln!("\x1b[2mworktree {}:\x1b[0m", result.name);
-                if !result.output.is_empty() {
-                    eprint!("{}", result.output);
-                }
-                if !result.success {
-                    failure_msgs.push(result.name.clone());
-                }
-            }
-        } else {
-            for result in &results {
-                if !result.success {
-                    failure_msgs.push(format!("  {}: {}", result.name, result.output.trim()));
-                }
-            }
-        }
-        if !failure_msgs.is_empty() {
-            if verbose {
-                bail!("git worktree add failed for: {}", failure_msgs.join(", "));
-            } else {
-                bail!("git worktree add failed:\n{}", failure_msgs.join("\n"));
-            }
-        }
+        report_results(&results, verbose, "git worktree add", "worktree")?;
     }
 
     Ok(root.to_string_lossy().to_string())
@@ -482,7 +458,7 @@ pub fn remove_repo_from_workspace_worktree(session_name: &str, repo_name: &str) 
         Ok(r) => r,
         Err(_) => return,
     };
-    let branch_name = format!("box/{}", session_name);
+    let branch_name = session_branch(session_name);
     let dest = root.join("workspaces").join(session_name).join(repo_name);
     let dest_str = dest.to_string_lossy().to_string();
 
@@ -570,23 +546,6 @@ fn set_self_upstream(worktree_dir: &str, branch: &str) {
             &merge_ref,
         ])
         .output();
-}
-
-/// Re-point origin remote from local path to the real remote URL.
-fn repoint_origin(project_dir: &str, clone_dir: &str) {
-    if let Ok(output) = Command::new("git")
-        .args(["-C", project_dir, "remote", "get-url", "origin"])
-        .output()
-    {
-        if output.status.success() {
-            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !url.is_empty() {
-                let _ = Command::new("git")
-                    .args(["-C", clone_dir, "remote", "set-url", "origin", &url])
-                    .output();
-            }
-        }
-    }
 }
 
 #[cfg(test)]
