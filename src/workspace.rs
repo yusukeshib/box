@@ -4,11 +4,6 @@ use std::process::Command;
 
 use crate::config;
 
-/// The git branch name used for a session worktree.
-fn session_branch(session_name: &str) -> String {
-    format!("box/{}", session_name)
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Strategy {
     Clone,
@@ -78,7 +73,7 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
     for (name, strategy, repo_names) in sessions {
         match strategy {
             Strategy::Worktree => {
-                let branch = session_branch(name);
+                let branch = name.clone();
                 for repo_name in repo_names {
                     let dest = root.join("workspaces").join(name).join(repo_name);
                     let repo_path = all_repos
@@ -369,7 +364,7 @@ pub fn ensure_workspace_multi_worktree(
     verbose: bool,
 ) -> Result<String> {
     let root = prepare_workspace_root(session_name)?;
-    let branch_name = session_branch(session_name);
+    let branch_name = session_name.to_string();
     let to_create: Vec<(String, (crate::repo::RepoEntry, String, String))> =
         pending_repos(&root, repos)
             .into_iter()
@@ -458,7 +453,7 @@ pub fn remove_repo_from_workspace_worktree(session_name: &str, repo_name: &str) 
         Ok(r) => r,
         Err(_) => return,
     };
-    let branch_name = session_branch(session_name);
+    let branch_name = session_name.to_string();
     let dest = root.join("workspaces").join(session_name).join(repo_name);
     let dest_str = dest.to_string_lossy().to_string();
 
@@ -522,7 +517,7 @@ fn captured_output(output: &std::process::Output) -> String {
 /// Configure the worktree's branch to track `origin/<branch>` (a same-name
 /// upstream) rather than inheriting the start-point's tracking. `git worktree
 /// add -b` defaults to copying the start-point's upstream config — for a
-/// session branch like `box/foo` started from `main`, that leaves the branch
+/// session branch like `foo` started from `main`, that leaves the branch
 /// tracking `origin/main`, which silently breaks `git push` (`push.default =
 /// simple` refuses on name mismatch) and `git push --force-with-lease` (the
 /// lease check then targets `origin/main`'s SHA, not the session branch's).
@@ -639,22 +634,22 @@ mod tests {
             "add",
             wt.to_str().unwrap(),
             "-b",
-            "box/foo",
+            "foo",
         ]);
         assert_eq!(
-            config_value(wt.to_str().unwrap(), "branch.box/foo.merge"),
+            config_value(wt.to_str().unwrap(), "branch.foo.merge"),
             "refs/heads/main",
             "precondition: stock git misconfigures upstream"
         );
 
         // After our fix runs, the branch should track itself.
-        set_self_upstream(wt.to_str().unwrap(), "box/foo");
+        set_self_upstream(wt.to_str().unwrap(), "foo");
         assert_eq!(
-            config_value(wt.to_str().unwrap(), "branch.box/foo.merge"),
-            "refs/heads/box/foo"
+            config_value(wt.to_str().unwrap(), "branch.foo.merge"),
+            "refs/heads/foo"
         );
         assert_eq!(
-            config_value(wt.to_str().unwrap(), "branch.box/foo.remote"),
+            config_value(wt.to_str().unwrap(), "branch.foo.remote"),
             "origin"
         );
 
