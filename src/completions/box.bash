@@ -18,7 +18,7 @@ _box() {
         new)
             case "$cur" in
                 -*)
-                    COMPREPLY=($(compgen -W "--repo --preset --strategy --verbose -v" -- "$cur"))
+                    COMPREPLY=($(compgen -W "--repo --preset --strategy --no-fetch --verbose -v" -- "$cur"))
                     ;;
             esac
             if [[ "$prev" == "--strategy" ]]; then

@@ -1,5 +1,7 @@
+use std::collections::VecDeque;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Result of a single parallel task.
@@ -17,8 +19,8 @@ pub enum ProgressEvent {
     Finish(String, bool),
 }
 
-/// Run named tasks in parallel, capped at the number of available CPUs.
-/// Returns results in the same order as the input.
+/// Run named tasks in parallel using a worker pool sized to the number of
+/// available CPUs. Returns results in the same order as the input.
 pub fn run_parallel<T, F>(items: Vec<(String, T)>, task: F) -> Vec<TaskResult>
 where
     T: Send + 'static,
@@ -52,71 +54,83 @@ where
     T: Send + 'static,
     F: Fn(&str, T) -> (bool, String) + Send + Sync + 'static,
 {
+    let total = items.len();
+    if total == 0 {
+        return Vec::new();
+    }
+
     let max_threads = thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4);
+        .unwrap_or(4)
+        .max(1);
+    let n_workers = max_threads.min(total);
+
     let task = Arc::new(task);
-    let mut results = Vec::with_capacity(items.len());
-
-    for chunk in items.chunks_vec(max_threads) {
-        let handles: Vec<(String, thread::JoinHandle<TaskResult>)> = chunk
+    // Shared FIFO queue. Workers race for the next item, so a slow task in
+    // one slot doesn't hold back subsequent items the way a chunked design did.
+    let queue: Arc<Mutex<VecDeque<(usize, String, T)>>> = Arc::new(Mutex::new(
+        items
             .into_iter()
-            .map(|(name, item)| {
-                let task = Arc::clone(&task);
-                let name_clone = name.clone();
-                let tx_clone = tx.clone();
-                let handle = thread::spawn(move || {
-                    if let Some(tx) = &tx_clone {
-                        let _ = tx.send(ProgressEvent::Start(name_clone.clone()));
-                    }
-                    let (success, output) = task(&name_clone, item);
-                    if let Some(tx) = &tx_clone {
-                        let _ = tx.send(ProgressEvent::Finish(name_clone.clone(), success));
-                    }
-                    TaskResult {
-                        name: name_clone,
-                        success,
-                        output,
-                    }
-                });
-                (name, handle)
-            })
-            .collect();
+            .enumerate()
+            .map(|(i, (n, it))| (i, n, it))
+            .collect(),
+    ));
+    // Result slots indexed by input position so the final order is stable.
+    let slots: Arc<Mutex<Vec<Option<TaskResult>>>> =
+        Arc::new(Mutex::new((0..total).map(|_| None).collect()));
 
-        for (name, handle) in handles {
-            results.push(match handle.join() {
-                Ok(result) => result,
-                Err(_) => {
-                    if let Some(tx) = &tx {
-                        let _ = tx.send(ProgressEvent::Finish(name.clone(), false));
-                    }
-                    TaskResult {
-                        name,
-                        success: false,
-                        output: "thread panicked".to_string(),
-                    }
-                }
+    let mut handles = Vec::with_capacity(n_workers);
+    for _ in 0..n_workers {
+        let queue = Arc::clone(&queue);
+        let slots = Arc::clone(&slots);
+        let task = Arc::clone(&task);
+        let tx = tx.clone();
+        handles.push(thread::spawn(move || loop {
+            let next = { queue.lock().unwrap().pop_front() };
+            let Some((idx, name, item)) = next else {
+                break;
+            };
+            if let Some(tx) = &tx {
+                let _ = tx.send(ProgressEvent::Start(name.clone()));
+            }
+            // Catch panics so a single task blowing up doesn't poison the
+            // worker (which would leave the remaining queue stranded) or
+            // produce an empty result slot.
+            let result = catch_unwind(AssertUnwindSafe(|| task(&name, item)));
+            let (success, output) = match result {
+                Ok(r) => r,
+                Err(_) => (false, "thread panicked".to_string()),
+            };
+            if let Some(tx) = &tx {
+                let _ = tx.send(ProgressEvent::Finish(name.clone(), success));
+            }
+            slots.lock().unwrap()[idx] = Some(TaskResult {
+                name,
+                success,
+                output,
             });
-        }
+        }));
     }
 
-    results
-}
-
-/// Extension trait to chunk a Vec by ownership (avoids slice borrowing issues).
-trait ChunksVec<T> {
-    fn chunks_vec(self, size: usize) -> Vec<Vec<T>>;
-}
-
-impl<T> ChunksVec<T> for Vec<T> {
-    fn chunks_vec(self, size: usize) -> Vec<Vec<T>> {
-        let mut result = Vec::new();
-        let mut iter = self.into_iter().peekable();
-        while iter.peek().is_some() {
-            result.push(iter.by_ref().take(size).collect());
-        }
-        result
+    for h in handles {
+        let _ = h.join();
     }
+
+    let mut slots = Arc::try_unwrap(slots)
+        .ok()
+        .expect("workers should have all exited")
+        .into_inner()
+        .unwrap_or_else(|e| e.into_inner());
+    slots
+        .drain(..)
+        .map(|r| {
+            r.unwrap_or_else(|| TaskResult {
+                name: String::new(),
+                success: false,
+                output: "missing result".to_string(),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -186,5 +200,37 @@ mod tests {
             .iter()
             .any(|e| matches!(e, ProgressEvent::Finish(n, false) if n == "b"));
         assert!(b_failed);
+    }
+
+    #[test]
+    fn test_run_parallel_no_barrier_between_items() {
+        // Reproduces the regression where chunked batching forced item 1
+        // (slow) and item 2 (fast) to complete before items 3+ could start.
+        // With a worker pool, fast items beyond the chunk boundary should
+        // finish while the slow item is still running.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let n_cpus = thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        // First item is the slow one; the rest are fast. With a queue of
+        // size n_cpus*2, the chunked design would block all items in chunk 2
+        // behind the slow item in chunk 1.
+        let total = n_cpus * 2 + 1;
+        let counter = Arc::new(AtomicUsize::new(0));
+        let items: Vec<(String, usize)> = (0..total).map(|i| (i.to_string(), i)).collect();
+
+        let counter_for_task = Arc::clone(&counter);
+        let results = run_parallel(items, move |_name, i| {
+            if i == 0 {
+                thread::sleep(Duration::from_millis(200));
+            }
+            // Record arrival order so we can verify fast items got ahead of slow.
+            counter_for_task.fetch_add(1, Ordering::SeqCst);
+            (true, String::new())
+        });
+        assert_eq!(results.len(), total);
+        assert!(results.iter().all(|r| r.success));
     }
 }

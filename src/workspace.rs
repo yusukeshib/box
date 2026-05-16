@@ -46,10 +46,12 @@ impl fmt::Display for Strategy {
 /// Remove multiple sessions' workspaces in a single unified progress bar.
 ///
 /// Every repo across every session becomes one unit in the same bar — matching
-/// the unified experience of `ensure_workspace_multi*`. For Worktree sessions
-/// each unit runs `git worktree remove --force` + `git branch -D`; for Clone
-/// sessions each unit is a per-repo `fs::remove_dir_all`. After the bar
-/// finishes the now-empty workspace root dir for each session is cleaned up.
+/// the unified experience of `ensure_workspace_multi*`. Each unit is a plain
+/// `fs::remove_dir_all` of the worktree/clone directory (much faster than
+/// `git worktree remove --force`, which scans the worktree). After the bar
+/// finishes we run `git worktree prune` + a single batched `git branch -D`
+/// per bare repo to clear leftover admin entries and session branches, then
+/// remove the now-empty workspace root dir for each session.
 pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bool) {
     let all_repos = crate::repo::list().unwrap_or_default();
     let root = match config::box_root() {
@@ -57,44 +59,36 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
         Err(_) => return,
     };
 
-    enum Unit {
-        Worktree {
-            repo_path: Option<String>,
-            dest: std::path::PathBuf,
-            branch: String,
-        },
-        Clone {
-            dest: std::path::PathBuf,
-        },
-    }
-
-    let mut items: Vec<(String, Unit)> = Vec::new();
+    // Each work item is just a directory to delete on disk; the actual git
+    // bookkeeping (worktree admin entries, branches) is batched per-bare-repo
+    // after the parallel phase so we don't pay 2 git subprocesses per repo.
+    let mut items: Vec<(String, std::path::PathBuf)> = Vec::new();
     let mut all_worktree = true;
+
+    // Branches to delete per bare-repo path: same session name across multiple
+    // repos becomes one git invocation per bare repo.
+    let mut per_bare_branches: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    // Bare paths that need `git worktree prune` after we delete worktree dirs
+    // via fs::remove_dir_all (git's admin entries linger otherwise).
+    let mut bares_to_prune: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
     for (name, strategy, repo_names) in sessions {
-        match strategy {
-            Strategy::Worktree => {
-                let branch = name.clone();
-                for repo_name in repo_names {
-                    let dest = root.join("workspaces").join(name).join(repo_name);
-                    let repo_path = all_repos
-                        .iter()
-                        .find(|r| r.name == *repo_name)
-                        .map(|r| r.path.clone());
-                    items.push((
-                        format!("{}/{}", name, repo_name),
-                        Unit::Worktree {
-                            repo_path,
-                            dest,
-                            branch: branch.clone(),
-                        },
-                    ));
-                }
-            }
-            Strategy::Clone => {
-                all_worktree = false;
-                for repo_name in repo_names {
-                    let dest = root.join("workspaces").join(name).join(repo_name);
-                    items.push((format!("{}/{}", name, repo_name), Unit::Clone { dest }));
+        if matches!(strategy, Strategy::Clone) {
+            all_worktree = false;
+        }
+        let branch = name.clone();
+        for repo_name in repo_names {
+            let dest = root.join("workspaces").join(name).join(repo_name);
+            items.push((format!("{}/{}", name, repo_name), dest));
+
+            if matches!(strategy, Strategy::Worktree) {
+                if let Some(repo) = all_repos.iter().find(|r| r.name == *repo_name) {
+                    bares_to_prune.insert(repo.path.clone());
+                    per_bare_branches
+                        .entry(repo.path.clone())
+                        .or_default()
+                        .push(branch.clone());
                 }
             }
         }
@@ -115,71 +109,13 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
             items,
             verbose,
             false,
-            |_name, unit| match unit {
-                Unit::Worktree {
-                    repo_path,
-                    dest,
-                    branch,
-                } => {
-                    let dest_str = dest.to_string_lossy().to_string();
-                    if let Some(path) = repo_path {
-                        let mut buf = String::new();
-                        let mut success = true;
-                        match Command::new("git")
-                            .args(["-C", &path, "worktree", "remove", "--force", &dest_str])
-                            .output()
-                        {
-                            Ok(o) => {
-                                buf.push_str(&captured_output(&o));
-                                if !o.status.success() {
-                                    success = false;
-                                }
-                            }
-                            Err(e) => {
-                                success = false;
-                                buf.push_str(&format!(
-                                    "failed to run git worktree remove: {}\n",
-                                    e
-                                ));
-                            }
-                        }
-                        match Command::new("git")
-                            .args(["-C", &path, "branch", "-D", &branch])
-                            .output()
-                        {
-                            Ok(o) => {
-                                buf.push_str(&captured_output(&o));
-                                if !o.status.success() {
-                                    success = false;
-                                }
-                            }
-                            Err(e) => {
-                                success = false;
-                                buf.push_str(&format!("failed to run git branch -D: {}\n", e));
-                            }
-                        }
-                        (success, buf)
-                    } else {
-                        match std::fs::remove_dir_all(&dest) {
-                            Ok(()) => (true, String::new()),
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                                (true, String::new())
-                            }
-                            Err(e) => (
-                                false,
-                                format!("failed to remove '{}': {}", dest.display(), e),
-                            ),
-                        }
-                    }
-                }
-                Unit::Clone { dest } => match std::fs::remove_dir_all(&dest) {
-                    Ok(()) => (true, String::new()),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
-                    Err(e) => (
-                        false,
-                        format!("failed to remove '{}': {}", dest.display(), e),
-                    ),
-                },
+            |_name, dest| match std::fs::remove_dir_all(&dest) {
+                Ok(()) => (true, String::new()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
+                Err(e) => (
+                    false,
+                    format!("failed to remove '{}': {}", dest.display(), e),
+                ),
             },
         );
 
@@ -202,10 +138,72 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
         }
     }
 
+    // Per-bare cleanup: prune stale worktree admin entries + delete the
+    // session branches in a single `git branch -D` per bare. This replaces
+    // the previous per-repo 2-subprocess pattern (worktree remove + branch -D).
+    // Parallelize across bares.
+    if !bares_to_prune.is_empty() {
+        let cleanup_items: Vec<(String, (String, Vec<String>))> = bares_to_prune
+            .into_iter()
+            .map(|bare| {
+                let branches = per_bare_branches.remove(&bare).unwrap_or_default();
+                (bare.clone(), (bare, branches))
+            })
+            .collect();
+
+        let cleanup_results =
+            crate::parallel::run_parallel(cleanup_items, |_name, (bare, branches)| {
+                let mut buf = String::new();
+                let mut success = true;
+                if let Err(e) = run_git_capture(&["-C", &bare, "worktree", "prune"], &mut buf) {
+                    success = false;
+                    buf.push_str(&format!("failed to run git worktree prune: {}\n", e));
+                }
+                // Dedupe just in case the same branch landed in the list twice.
+                let mut uniq: Vec<&str> = branches.iter().map(|s| s.as_str()).collect();
+                uniq.sort_unstable();
+                uniq.dedup();
+                if !uniq.is_empty() {
+                    let mut args: Vec<&str> = vec!["-C", &bare, "branch", "-D"];
+                    args.extend(uniq.iter().copied());
+                    if let Err(e) = run_git_capture(&args, &mut buf) {
+                        // Branch may already be gone; not fatal — surface only in verbose.
+                        buf.push_str(&format!("git branch -D: {}\n", e));
+                    }
+                }
+                (success, buf)
+            });
+
+        if verbose {
+            for r in &cleanup_results {
+                if !r.output.is_empty() {
+                    eprintln!("\x1b[2mcleanup {}:\x1b[0m", r.name);
+                    eprint!("{}", r.output);
+                }
+            }
+        }
+    }
+
     for (name, _, _) in sessions {
         let session_root = root.join("workspaces").join(name);
         let _ = std::fs::remove_dir_all(&session_root);
     }
+}
+
+/// Run a git command, append its combined stdout+stderr to `buf`, and return
+/// Err if git returned non-zero or the process couldn't be spawned. Used by
+/// per-bare worktree-prune + branch-D batching where we want a single error
+/// path covering both spawn failure and exit-status failure.
+fn run_git_capture(args: &[&str], buf: &mut String) -> std::io::Result<()> {
+    let output = Command::new("git").args(args).output()?;
+    buf.push_str(&captured_output(&output));
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "git exited {}",
+            output.status
+        )));
+    }
+    Ok(())
 }
 
 /// Build the empty workspace root for a session and ensure its permissions.
@@ -455,24 +453,19 @@ pub fn remove_repo_from_workspace_worktree(session_name: &str, repo_name: &str) 
     };
     let branch_name = session_name.to_string();
     let dest = root.join("workspaces").join(session_name).join(repo_name);
-    let dest_str = dest.to_string_lossy().to_string();
+
+    // Skip `git worktree remove --force` (slow: it scans the worktree).
+    // Delete the files directly, then have git clean up its admin entry and
+    // the session branch. Same pattern as `remove_sessions`.
+    let _ = std::fs::remove_dir_all(&dest);
 
     if let Some(entry) = all_repos.iter().find(|r| r.name == repo_name) {
         let _ = Command::new("git")
-            .args([
-                "-C",
-                &entry.path,
-                "worktree",
-                "remove",
-                "--force",
-                &dest_str,
-            ])
+            .args(["-C", &entry.path, "worktree", "prune"])
             .status();
         let _ = Command::new("git")
             .args(["-C", &entry.path, "branch", "-D", &branch_name])
             .status();
-    } else {
-        let _ = std::fs::remove_dir_all(&dest);
     }
 }
 

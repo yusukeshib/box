@@ -87,6 +87,7 @@ _box() {
                         '*--repo=[Select specific repo]:repo:__box_repos' \
                         '--preset=[Use a preset]:preset:__box_presets' \
                         '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
+                        '--no-fetch[Skip git fetch before creating the workspace]' \
                         '(-v --verbose)'{-v,--verbose}'[Show detailed output]' \
                         '1:session name:' \
                         '*:command:'

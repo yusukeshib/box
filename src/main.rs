@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box edit my-feature                          # add/remove repos in a session (TUI)\n  box edit my-feature --add app-c --remove app-a # non-interactive edit\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box remove --all                             # remove every session\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box new my-feature --repo app --no-fetch     # skip git fetch (faster, uses local refs)\n  box edit my-feature                          # add/remove repos in a session (TUI)\n  box edit my-feature --add app-c --remove app-a # non-interactive edit\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box remove --all                             # remove every session\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -133,6 +133,10 @@ struct CreateArgs {
     /// Workspace strategy: worktree (default) or clone
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
+
+    /// Skip the per-repo `git fetch origin` before creating the workspace
+    #[arg(long)]
+    no_fetch: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -438,7 +442,7 @@ fn cmd_new(args: CreateArgs, verbose: bool) -> Result<i32> {
         bail!("Either --repo or --preset is required.");
     };
     let strategy = workspace::Strategy::from_str(&args.strategy)?;
-    cmd_create(&args.name, repo_names, strategy, true, verbose)
+    cmd_create(&args.name, repo_names, strategy, !args.no_fetch, verbose)
 }
 
 fn cmd_create(
@@ -1104,6 +1108,28 @@ mod tests {
         match cli.command {
             Some(Commands::New(args)) => {
                 assert_eq!(args.strategy, "clone");
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_no_fetch_defaults_false() {
+        let cli = parse(&["new", "my-session", "--repo", "app"]);
+        match cli.command {
+            Some(Commands::New(args)) => {
+                assert!(!args.no_fetch);
+            }
+            other => panic!("expected New, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_new_with_no_fetch_flag() {
+        let cli = parse(&["new", "my-session", "--repo", "app", "--no-fetch"]);
+        match cli.command {
+            Some(Commands::New(args)) => {
+                assert!(args.no_fetch);
             }
             other => panic!("expected New, got {:?}", other),
         }

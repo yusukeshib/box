@@ -110,10 +110,14 @@ pub fn list() -> Result<Vec<RepoEntry>> {
         if let Some(name) = dir_name.strip_suffix(".git") {
             if !name.is_empty() && path.join("HEAD").exists() {
                 let path_str = path.to_string_lossy().to_string();
-                // Ensure fetch refspec is set (repairs bare repos created before this fix)
-                ensure_fetch_refspec(&path_str);
-                // Fix box/* session branches that inherited main's upstream
-                repair_box_branch_upstreams(&path_str);
+                // One-time migrations: gated by a per-bare sentinel so we don't
+                // re-spend ~3 git subprocesses per repo on every box invocation.
+                // Tests / users can re-trigger by deleting the sentinel.
+                if !migrations_current(&path) {
+                    ensure_fetch_refspec(&path_str);
+                    repair_box_branch_upstreams(&path_str);
+                    mark_migrations_current(&path);
+                }
                 entries.push(RepoEntry {
                     name: name.to_string(),
                     path: path_str,
@@ -123,6 +127,21 @@ pub fn list() -> Result<Vec<RepoEntry>> {
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
+}
+
+/// Version of the bare-repo migrations. Bump this when adding a new migration
+/// step in `list()` so existing bares re-run the migrations on next list().
+const MIGRATIONS_VERSION: &str = "v1";
+const MIGRATIONS_SENTINEL: &str = ".box-migrations";
+
+fn migrations_current(bare_dir: &Path) -> bool {
+    fs::read_to_string(bare_dir.join(MIGRATIONS_SENTINEL))
+        .map(|s| s.trim() == MIGRATIONS_VERSION)
+        .unwrap_or(false)
+}
+
+fn mark_migrations_current(bare_dir: &Path) {
+    let _ = fs::write(bare_dir.join(MIGRATIONS_SENTINEL), MIGRATIONS_VERSION);
 }
 
 pub fn add(path: &str) -> Result<()> {
@@ -167,6 +186,11 @@ pub fn add(path: &str) -> Result<()> {
 
     // Repoint origin to the actual remote URL (not the local path)
     repoint_origin(&canonical_str, &dest_str);
+
+    // Newly-created bare: refspec + push.autoSetupRemote were just set, and
+    // there are no box/* branches yet. Mark migrations current so the next
+    // list() call skips the per-bare git config subprocesses.
+    mark_migrations_current(&dest);
 
     eprintln!("Registered repo '\x1b[1m{}\x1b[0m' (bare clone)", name);
     Ok(())
@@ -585,6 +609,8 @@ mod tests {
                 .status()
                 .unwrap();
             assert!(s.success());
+            // Invalidate the migrations sentinel so list() re-runs the repair.
+            let _ = fs::remove_file(Path::new(bare).join(MIGRATIONS_SENTINEL));
 
             let _ = list().unwrap();
 
@@ -624,6 +650,8 @@ mod tests {
                 .status()
                 .unwrap();
             assert!(s.success());
+            // Invalidate the migrations sentinel so list() re-runs the repair.
+            let _ = fs::remove_file(Path::new(bare).join(MIGRATIONS_SENTINEL));
 
             // list() invokes ensure_fetch_refspec on each bare; the second
             // pass should re-add the origin/* line.
@@ -680,6 +708,8 @@ mod tests {
                     .unwrap();
                 assert!(s.success());
             }
+            // Invalidate the migrations sentinel so list() re-runs the repair.
+            let _ = fs::remove_file(Path::new(&bare).join(MIGRATIONS_SENTINEL));
 
             // list() invokes repair_box_branch_upstreams on each bare.
             let _ = list().unwrap();
