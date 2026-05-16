@@ -595,6 +595,44 @@ mod tests {
     }
 
     #[test]
+    fn test_migrations_sentinel_skips_repair_on_second_list() {
+        // The whole point of the sentinel is that list() doesn't keep
+        // re-running git config subprocesses on every invocation. Verify
+        // that by corrupting config AFTER add() (which wrote the sentinel)
+        // and confirming the next list() call leaves the corruption in place.
+        with_temp_home(|home| {
+            let repo = make_git_repo(home, "cache-hit");
+            add(repo.to_str().unwrap()).unwrap();
+            let bare = list().unwrap()[0].path.clone();
+
+            // Confirm the sentinel was written.
+            assert!(Path::new(&bare).join(MIGRATIONS_SENTINEL).exists());
+
+            // Corrupt push.autoSetupRemote — repair would normally fix this.
+            let s = Command::new("git")
+                .args(["-C", &bare, "config", "--unset", "push.autoSetupRemote"])
+                .status()
+                .unwrap();
+            assert!(s.success());
+
+            // list() must NOT re-run the repair because the sentinel is current.
+            let _ = list().unwrap();
+
+            let auto = Command::new("git")
+                .args(["-C", &bare, "config", "--get", "push.autoSetupRemote"])
+                .output()
+                .unwrap();
+            // get on a missing key exits non-zero — that's the signal the
+            // repair didn't run.
+            assert!(
+                !auto.status.success(),
+                "expected push.autoSetupRemote to remain unset, got: {}",
+                String::from_utf8_lossy(&auto.stdout).trim()
+            );
+        });
+    }
+
+    #[test]
     fn test_ensure_fetch_refspec_sets_missing_push_autosetup() {
         with_temp_home(|home| {
             let repo = make_git_repo(home, "needs-autosetup");

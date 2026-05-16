@@ -151,6 +151,11 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
             })
             .collect();
 
+        // Cleanup tasks intentionally don't propagate `git branch -D` failures
+        // into `success`: a session being removed when its branch is already
+        // gone is a normal race (e.g. half-cleaned-up state, manual `git
+        // branch -D`, repo unregistered then re-registered). We do log the
+        // git output into `buf` either way so verbose mode shows what happened.
         let cleanup_results =
             crate::parallel::run_parallel(cleanup_items, |_name, (bare, branches)| {
                 let mut buf = String::new();
@@ -167,7 +172,6 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
                     let mut args: Vec<&str> = vec!["-C", &bare, "branch", "-D"];
                     args.extend(uniq.iter().copied());
                     if let Err(e) = run_git_capture(&args, &mut buf) {
-                        // Branch may already be gone; not fatal — surface only in verbose.
                         buf.push_str(&format!("git branch -D: {}\n", e));
                     }
                 }
