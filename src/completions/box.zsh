@@ -168,25 +168,21 @@ _box() {
 compdef _box box
 
 box() {
-    local __box_cd_file __box_rename_file
+    local __box_cd_file __box_post_switch_file
     __box_cd_file=$(mktemp "/tmp/.box-cd.XXXXXX")
-    __box_rename_file=$(mktemp "/tmp/.box-rename.XXXXXX")
-    BOX_CD_FILE="$__box_cd_file" BOX_RENAME_FILE="$__box_rename_file" command box "$@"
+    __box_post_switch_file=$(mktemp "/tmp/.box-post-switch.XXXXXX")
+    BOX_CD_FILE="$__box_cd_file" BOX_POST_SWITCH_FILE="$__box_post_switch_file" command box "$@"
     local __box_exit=$?
     if [[ -s "$__box_cd_file" ]]; then
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
     fi
-    if [[ -s "$__box_rename_file" ]]; then
+    if [[ -s "$__box_post_switch_file" ]] && [[ -n "$BOX_POST_SWITCH_HOOK" ]]; then
         local __box_name
-        __box_name=$(<"$__box_rename_file")
-        if [[ -n "$ZELLIJ" ]]; then
-            command zellij action rename-tab "$__box_name" 2>/dev/null
-        elif [[ -n "$TMUX" ]]; then
-            command tmux rename-window -t "$TMUX_PANE" "$__box_name" 2>/dev/null
-        fi
+        __box_name=$(<"$__box_post_switch_file")
+        BOX_SESSION_NAME="$__box_name" eval "$BOX_POST_SWITCH_HOOK"
     fi
-    rm -f "$__box_cd_file" "$__box_rename_file"
+    rm -f "$__box_cd_file" "$__box_post_switch_file"
     return $__box_exit
 }

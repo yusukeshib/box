@@ -149,7 +149,7 @@ box cd my-feature               # Alias
 box sw my-feature               # Alias
 ```
 
-With shell integration enabled (`eval "$(box config zsh)"`), `box switch` changes your working directory and renames the current zellij/tmux tab to the session name. Without it, the workspace path is printed to stdout.
+With shell integration enabled (`eval "$(box config zsh)"`), `box switch` changes your working directory. If you set `BOX_POST_SWITCH_HOOK`, it also runs that hook with the session name (see [Shell Integration](#shell-integration)). Without shell integration, the workspace path is printed to stdout.
 
 ### Rebase the current branch
 
@@ -226,6 +226,7 @@ box new my-feature --preset work                     # use it
 | `BOX_STRATEGY` | Default workspace strategy (`worktree` or `clone`). Overridden by `--strategy` |
 | `BOX_VERBOSE` | When set, equivalent to `--verbose` |
 | `BOX_ROOT` | Override the box data directory (default `~/.box`). Read by the shell completions |
+| `BOX_POST_SWITCH_HOOK` | Shell snippet run after `box switch` / `box new`. The session name is available as `$BOX_SESSION_NAME`. See [Shell Integration](#shell-integration) |
 
 ## Shell Integration
 
@@ -241,7 +242,27 @@ This provides:
 
 - Tab completion for sessions, repos, and presets
 - A `box` shell function so `box switch` / `box new` change your working directory
-- Automatic zellij/tmux tab renaming to the session name when switching into or creating a session
+- A `BOX_POST_SWITCH_HOOK` that runs after switching into or creating a session, with the session name in `$BOX_SESSION_NAME`
+
+### Post-switch hook
+
+Set `BOX_POST_SWITCH_HOOK` to any shell snippet you want to run when a session is entered (fires on both `box new` and `box switch`). Common choices:
+
+```bash
+# tmux — rename the current window
+export BOX_POST_SWITCH_HOOK='tmux rename-window "$BOX_SESSION_NAME"'
+
+# zellij — rename the current tab
+export BOX_POST_SWITCH_HOOK='zellij action rename-tab "$BOX_SESSION_NAME"'
+
+# kitty — set the tab title
+export BOX_POST_SWITCH_HOOK='kitty @ set-tab-title "$BOX_SESSION_NAME"'
+
+# Generic OSC 2 — set the terminal window/tab title
+export BOX_POST_SWITCH_HOOK='printf "\033]2;%s\007" "$BOX_SESSION_NAME"'
+```
+
+The snippet runs in the current shell via `eval`, so `$TMUX`, `$ZELLIJ`, and other environment variables are available for branching.
 
 ## How It Works
 

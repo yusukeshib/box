@@ -149,7 +149,7 @@ box cd my-feature               # エイリアス
 box sw my-feature               # エイリアス
 ```
 
-シェル連携を有効にしている場合（`eval "$(box config zsh)"`）、`box switch`で作業ディレクトリが切り替わり、現在のzellij/tmuxタブがセッション名にリネームされます。未設定の場合はワークスペースのパスが標準出力に表示されます。
+シェル連携を有効にしている場合（`eval "$(box config zsh)"`）、`box switch`で作業ディレクトリが切り替わります。`BOX_POST_SWITCH_HOOK`を設定しておくと、セッション名を引数にそのフックも実行されます（[シェル連携](#シェル連携)参照）。シェル連携未設定の場合はワークスペースのパスが標準出力に表示されます。
 
 ### 現在のブランチをrebase
 
@@ -226,6 +226,7 @@ box new my-feature --preset work                     # 利用
 | `BOX_STRATEGY` | デフォルトのワークスペース戦略（`worktree`または`clone`）。`--strategy`で上書き可能 |
 | `BOX_VERBOSE` | 設定すると`--verbose`と同等 |
 | `BOX_ROOT` | boxのデータディレクトリを上書き（デフォルト`~/.box`）。シェル補完が参照 |
+| `BOX_POST_SWITCH_HOOK` | `box switch` / `box new`後に実行されるシェルスニペット。セッション名は`$BOX_SESSION_NAME`で参照可能。[シェル連携](#シェル連携)参照 |
 
 ## シェル連携
 
@@ -241,7 +242,27 @@ eval "$(box config bash)"
 
 - セッション・リポジトリ・プリセットのタブ補完
 - `box switch` / `box new`で作業ディレクトリを切り替える`box`シェル関数
-- セッション切り替えや作成時にzellij/tmuxのタブをセッション名に自動リネーム
+- セッションへ入った後に実行される`BOX_POST_SWITCH_HOOK`（セッション名は`$BOX_SESSION_NAME`で参照可能）
+
+### ポストスイッチフック
+
+セッション切り替え・作成時に実行したいシェルスニペットを`BOX_POST_SWITCH_HOOK`に設定します（`box new`と`box switch`の両方で発火）。よく使う例：
+
+```bash
+# tmux — 現在のウィンドウをリネーム
+export BOX_POST_SWITCH_HOOK='tmux rename-window "$BOX_SESSION_NAME"'
+
+# zellij — 現在のタブをリネーム
+export BOX_POST_SWITCH_HOOK='zellij action rename-tab "$BOX_SESSION_NAME"'
+
+# kitty — タブタイトルを設定
+export BOX_POST_SWITCH_HOOK='kitty @ set-tab-title "$BOX_SESSION_NAME"'
+
+# 汎用 OSC 2 — 端末のウィンドウ／タブタイトルを設定
+export BOX_POST_SWITCH_HOOK='printf "\033]2;%s\007" "$BOX_SESSION_NAME"'
+```
+
+スニペットは`eval`で現在のシェル内で実行されるため、`$TMUX`や`$ZELLIJ`などの環境変数も分岐に使えます。
 
 ## 仕組み
 
