@@ -12,31 +12,12 @@ use crate::session;
 
 const MAX_HISTORY: usize = 100;
 
-fn last_selected_repos_path() -> Result<std::path::PathBuf> {
-    Ok(config::box_root()?.join("last_selected_repos"))
-}
-
 fn name_history_path() -> Result<std::path::PathBuf> {
     Ok(config::box_root()?.join("name_history"))
 }
 
-fn load_last_selected_repos() -> Vec<String> {
-    last_selected_repos_path()
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| {
-            s.lines()
-                .filter(|l| !l.is_empty())
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn save_last_selected_repos(repos: &[String]) {
-    if let Ok(path) = last_selected_repos_path() {
-        let _ = std::fs::write(path, repos.join("\n") + "\n");
-    }
+fn preset_history_path() -> Result<std::path::PathBuf> {
+    Ok(config::box_root()?.join("preset_history"))
 }
 
 fn load_name_history() -> Vec<String> {
@@ -54,6 +35,31 @@ fn load_name_history() -> Vec<String> {
 
 fn save_name_history(history: &[String]) {
     if let Ok(path) = name_history_path() {
+        let content: String = history
+            .iter()
+            .take(MAX_HISTORY)
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = std::fs::write(path, content + "\n");
+    }
+}
+
+fn load_preset_history() -> Vec<String> {
+    preset_history_path()
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| {
+            s.lines()
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn save_preset_history(history: &[String]) {
+    if let Ok(path) = preset_history_path() {
         let content: String = history
             .iter()
             .take(MAX_HISTORY)
@@ -189,7 +195,15 @@ pub fn create_session() -> Result<TuiAction> {
         anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
     }
 
-    let presets = preset::list()?;
+    let mut presets = preset::list()?;
+    let mut preset_history = load_preset_history();
+    // Sort presets by MRU order; unseen presets fall to the end (alphabetical from preset::list()).
+    presets.sort_by_key(|(name, _)| {
+        preset_history
+            .iter()
+            .position(|h| h == name)
+            .unwrap_or(usize::MAX)
+    });
     let repo_count = all_repos.len();
 
     // Start in PresetSelect if presets exist, otherwise RepoSelect
@@ -219,16 +233,9 @@ pub fn create_session() -> Result<TuiAction> {
     };
     let mut footer_msg = String::new();
 
-    // Repo selection state — restore from last session if available
-    let last_selected = load_last_selected_repos();
-    let mut selected: Vec<bool> = if last_selected.is_empty() {
-        vec![true; repo_count]
-    } else {
-        all_repos
-            .iter()
-            .map(|r| last_selected.contains(&r.name))
-            .collect()
-    };
+    // Repo selection state. When entering RepoSelect via "Custom..." we reset
+    // to all-false; when jumping straight here (no presets) start all-true.
+    let mut selected: Vec<bool> = vec![true; repo_count];
     let mut cursor_pos: usize = 0;
     let mut selected_repos: Vec<String> = Vec::new();
 
@@ -343,7 +350,7 @@ pub fn create_session() -> Result<TuiAction> {
                     KeyCode::Enter => {
                         if cursor_pos < presets.len() {
                             // Selected a preset
-                            let (_, repos) = &presets[cursor_pos];
+                            let (preset_name, repos) = &presets[cursor_pos];
                             let all_repo_names: Vec<&str> =
                                 all_repos.iter().map(|r| r.name.as_str()).collect();
                             selected_repos = repos
@@ -355,7 +362,10 @@ pub fn create_session() -> Result<TuiAction> {
                                 footer_msg =
                                     "All repos in this preset have been removed.".to_string();
                             } else {
-                                save_last_selected_repos(&selected_repos);
+                                // Record MRU usage of this preset.
+                                preset_history.retain(|h| h != preset_name);
+                                preset_history.insert(0, preset_name.clone());
+                                save_preset_history(&preset_history);
                                 // Transition to Name mode
                                 clear_viewport(&mut terminal, viewport_height)?;
                                 drop(terminal);
@@ -369,7 +379,9 @@ pub fn create_session() -> Result<TuiAction> {
                                 mode = Mode::Name;
                             }
                         } else {
-                            // "Custom..." selected — fall through to RepoSelect
+                            // "Custom..." selected — fall through to RepoSelect.
+                            // Start with nothing selected (don't restore last selection).
+                            selected = vec![false; repo_count];
                             clear_viewport(&mut terminal, viewport_height)?;
                             drop(terminal);
                             let new_height = (repo_count as u16) + 1;
@@ -410,7 +422,6 @@ pub fn create_session() -> Result<TuiAction> {
                         if selected_repos.is_empty() {
                             footer_msg = "At least one repo must be selected.".to_string();
                         } else {
-                            save_last_selected_repos(&selected_repos);
                             // Resize viewport to 1 line for text input
                             clear_viewport(&mut terminal, viewport_height)?;
                             drop(terminal);
