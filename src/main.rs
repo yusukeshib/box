@@ -238,9 +238,9 @@ fn output_cd_path(path: &str) {
     }
 }
 
-fn rename_terminal_tab(name: &str) {
-    if let Ok(rename_file) = std::env::var("BOX_RENAME_FILE") {
-        let _ = fs::write(rename_file, name);
+fn signal_post_switch_hook(name: &str) {
+    if let Ok(hook_file) = std::env::var("BOX_POST_SWITCH_FILE") {
+        let _ = fs::write(hook_file, name);
     }
 }
 
@@ -510,7 +510,7 @@ fn cmd_create(
     } else {
         output_cd_path(&workspace_path);
     }
-    rename_terminal_tab(name);
+    signal_post_switch_hook(name);
 
     Ok(0)
 }
@@ -717,7 +717,7 @@ fn cmd_cd(name: &str) -> Result<i32> {
     }
     let path = resolve_workspace_path(name)?;
     output_cd_path(&path.to_string_lossy());
-    rename_terminal_tab(name);
+    signal_post_switch_hook(name);
     Ok(0)
 }
 
