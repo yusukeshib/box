@@ -20,6 +20,10 @@ pub fn find_root(dir: &Path) -> Option<&Path> {
 
 /// Fetch all refs for a bare repo, capturing output.
 ///
+/// Uses `--prune` so local heads whose upstream counterpart was deleted are
+/// removed, keeping the bare repo in sync with `origin`. Branches checked out
+/// in a worktree are excluded from the refspec, so they are never pruned.
+///
 /// When worktrees have branches checked out, git refuses to update those refs
 /// via fetch. We detect checked-out branches and exclude them with negative
 /// refspecs. If git still refuses (e.g. a worktree admin entry we missed),
@@ -35,6 +39,7 @@ pub fn fetch_repo(entry: &crate::repo::RepoEntry) -> (bool, String) {
             "-C".into(),
             entry.path.clone(),
             "fetch".into(),
+            "--prune".into(),
             "origin".into(),
             "+refs/heads/*:refs/heads/*".into(),
         ];
