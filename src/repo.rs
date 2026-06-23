@@ -144,19 +144,32 @@ fn mark_migrations_current(bare_dir: &Path) {
     let _ = fs::write(bare_dir.join(MIGRATIONS_SENTINEL), MIGRATIONS_VERSION);
 }
 
-pub fn add(path: &str) -> Result<()> {
-    let canonical =
-        fs::canonicalize(path).map_err(|_| anyhow::anyhow!("Path '{}' does not exist.", path))?;
-    let canonical_str = canonical.to_string_lossy().to_string();
+/// Register a repo from either a git remote URL (e.g.
+/// `git@github.com:user/app.git` or `https://github.com/user/app`) or a local
+/// filesystem path to a git repository.
+pub fn add(src: &str) -> Result<()> {
+    // `clone_src` is what we hand to `git clone --bare`; `repoint` carries the
+    // local source path when we still need to rewrite origin afterwards.
+    let (name, clone_src, repoint): (String, String, Option<String>) = if is_remote_url(src) {
+        let name = repo_name_from_url(src)
+            .ok_or_else(|| anyhow::anyhow!("Cannot derive repo name from URL '{}'.", src))?;
+        (name, src.to_string(), None)
+    } else {
+        let canonical =
+            fs::canonicalize(src).map_err(|_| anyhow::anyhow!("Path '{}' does not exist.", src))?;
+        let canonical_str = canonical.to_string_lossy().to_string();
 
-    if !crate::git::is_repo(&canonical) {
-        bail!("'{}' is not a git repository.", canonical_str);
-    }
+        if !crate::git::is_repo(&canonical) {
+            bail!("'{}' is not a git repository.", canonical_str);
+        }
 
-    let name = canonical
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .ok_or_else(|| anyhow::anyhow!("Cannot derive repo name from path."))?;
+        let name = canonical
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .ok_or_else(|| anyhow::anyhow!("Cannot derive repo name from path."))?;
+
+        (name, canonical_str.clone(), Some(canonical_str))
+    };
 
     let existing = list()?;
     for entry in &existing {
@@ -173,7 +186,7 @@ pub fn add(path: &str) -> Result<()> {
 
     eprintln!("\x1b[2mbare-cloning {}…\x1b[0m", name);
     let status = Command::new("git")
-        .args(["clone", "--bare", &canonical_str, &dest_str])
+        .args(["clone", "--bare", &clone_src, &dest_str])
         .status()?;
     if !status.success() {
         bail!("git clone --bare failed for '{}'.", name);
@@ -184,8 +197,12 @@ pub fn add(path: &str) -> Result<()> {
     // directly onto the bare repo's local refs.
     configure_fetch_refspec(&dest_str)?;
 
-    // Repoint origin to the actual remote URL (not the local path)
-    repoint_origin(&canonical_str, &dest_str);
+    // For a local-path source, origin points at the local path; repoint it to
+    // the source repo's actual remote URL. A remote-URL source already has the
+    // correct origin, so there is nothing to repoint.
+    if let Some(source) = repoint {
+        repoint_origin(&source, &dest_str);
+    }
 
     // Newly-created bare: refspec + push.autoSetupRemote were just set, and
     // there are no box/* branches yet. Mark migrations current so the next
@@ -194,6 +211,38 @@ pub fn add(path: &str) -> Result<()> {
 
     eprintln!("Registered repo '\x1b[1m{}\x1b[0m' (bare clone)", name);
     Ok(())
+}
+
+/// Heuristically decide whether `src` is a git remote URL rather than a local
+/// filesystem path. Recognizes scheme URLs (`https://`, `ssh://`, `git://`,
+/// `file://`, …) and scp-like syntax (`user@host:path`, `host:path`).
+fn is_remote_url(src: &str) -> bool {
+    if src.contains("://") {
+        return true;
+    }
+    // Explicit local-path markers can't be scp-like remotes.
+    if src.starts_with('.') || src.starts_with('/') || src.starts_with('~') {
+        return false;
+    }
+    // scp-like syntax has a colon before the path, with no slash in the host
+    // part (e.g. `git@github.com:user/repo.git`).
+    match src.split_once(':') {
+        Some((host, _)) => !host.is_empty() && !host.contains('/'),
+        None => false,
+    }
+}
+
+/// Derive a repo name from a git remote URL by taking the last path segment
+/// and stripping a trailing `.git`. e.g. `git@github.com:user/app.git` => `app`.
+fn repo_name_from_url(url: &str) -> Option<String> {
+    let trimmed = url.trim_end_matches('/');
+    let last = trimmed.rsplit(['/', ':']).next()?;
+    let name = last.strip_suffix(".git").unwrap_or(last);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
 }
 
 /// Check and fix fetch refspec and `push.autoSetupRemote` on an existing bare
@@ -458,6 +507,47 @@ mod tests {
             .unwrap();
         assert!(status.success(), "git commit failed");
         dir
+    }
+
+    #[test]
+    fn test_is_remote_url() {
+        assert!(is_remote_url("git@github.com:user/app.git"));
+        assert!(is_remote_url("https://github.com/user/app.git"));
+        assert!(is_remote_url("https://github.com/user/app"));
+        assert!(is_remote_url("ssh://git@github.com/user/app.git"));
+        assert!(is_remote_url("git://github.com/user/app.git"));
+        assert!(is_remote_url("github.com:user/app.git"));
+
+        assert!(!is_remote_url("."));
+        assert!(!is_remote_url("./repo"));
+        assert!(!is_remote_url("/abs/path/repo"));
+        assert!(!is_remote_url("~/repo"));
+        assert!(!is_remote_url("relative/path"));
+        assert!(!is_remote_url("repo"));
+    }
+
+    #[test]
+    fn test_repo_name_from_url() {
+        assert_eq!(
+            repo_name_from_url("git@github.com:user/app.git").as_deref(),
+            Some("app")
+        );
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/app.git").as_deref(),
+            Some("app")
+        );
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/app").as_deref(),
+            Some("app")
+        );
+        assert_eq!(
+            repo_name_from_url("https://github.com/user/app/").as_deref(),
+            Some("app")
+        );
+        assert_eq!(
+            repo_name_from_url("ssh://git@host:22/user/app.git").as_deref(),
+            Some("app")
+        );
     }
 
     #[test]
