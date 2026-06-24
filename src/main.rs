@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box new my-feature --repo app --no-fetch     # skip git fetch (faster, uses local refs)\n  box edit my-feature                          # add/remove repos in a session (TUI)\n  box edit my-feature --add app-c --remove app-a # non-interactive edit\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box remove --all                             # remove every session\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box new my-feature --repo app --no-fetch     # skip git fetch (faster, uses local refs)\n  box edit my-feature                          # add/remove repos in a session (TUI)\n  box edit my-feature --add app-c --remove app-a # non-interactive edit\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box remove --all                             # remove every session\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add git@github.com:user/app.git     # register a repo from a remote URL\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -77,8 +77,9 @@ enum Commands {
 enum RepoAction {
     /// Register a git repo
     Add {
-        /// Path to the repo (defaults to current directory)
-        path: Option<String>,
+        /// Git remote URL (e.g. git@github.com:user/app.git) or local path
+        /// to a repo (defaults to current directory)
+        src: Option<String>,
     },
     /// Unregister a repo by name
     #[command(alias = "rm")]
@@ -203,7 +204,7 @@ fn main() {
         Some(Commands::Switch { name }) => cmd_cd(&name),
         Some(Commands::Rebase { branch }) => cmd_rebase(&branch, verbose),
         Some(Commands::Repo { action }) => match action {
-            RepoAction::Add { path } => cmd_repo_add(path),
+            RepoAction::Add { src } => cmd_repo_add(src),
             RepoAction::Remove { name } => cmd_repo_remove(&name),
             RepoAction::List => cmd_repo_list(),
         },
@@ -474,7 +475,7 @@ fn cmd_create(
     };
 
     if selected_repos.is_empty() {
-        bail!("No repos registered. Run `box repo add <path>` first.");
+        bail!("No repos registered. Run `box repo add <url>` first.");
     }
 
     let repo_names_list: Vec<String> = selected_repos.iter().map(|r| r.name.clone()).collect();
@@ -786,9 +787,9 @@ fn cmd_rebase(branch: &str, verbose: bool) -> Result<i32> {
     Ok(if status.success() { 0 } else { 1 })
 }
 
-fn cmd_repo_add(path: Option<String>) -> Result<i32> {
-    let path = path.unwrap_or_else(|| ".".to_string());
-    repo::add(&path)?;
+fn cmd_repo_add(src: Option<String>) -> Result<i32> {
+    let src = src.unwrap_or_else(|| ".".to_string());
+    repo::add(&src)?;
     Ok(0)
 }
 
@@ -1401,9 +1402,9 @@ mod tests {
         let cli = parse(&["repo", "add"]);
         match cli.command {
             Some(Commands::Repo {
-                action: RepoAction::Add { path },
+                action: RepoAction::Add { src },
             }) => {
-                assert!(path.is_none());
+                assert!(src.is_none());
             }
             other => panic!("expected Repo Add, got {:?}", other),
         }
@@ -1414,9 +1415,22 @@ mod tests {
         let cli = parse(&["repo", "add", "/tmp/my-repo"]);
         match cli.command {
             Some(Commands::Repo {
-                action: RepoAction::Add { path },
+                action: RepoAction::Add { src },
             }) => {
-                assert_eq!(path.as_deref(), Some("/tmp/my-repo"));
+                assert_eq!(src.as_deref(), Some("/tmp/my-repo"));
+            }
+            other => panic!("expected Repo Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_repo_add_with_url() {
+        let cli = parse(&["repo", "add", "git@github.com:user/app.git"]);
+        match cli.command {
+            Some(Commands::Repo {
+                action: RepoAction::Add { src },
+            }) => {
+                assert_eq!(src.as_deref(), Some("git@github.com:user/app.git"));
             }
             other => panic!("expected Repo Add, got {:?}", other),
         }

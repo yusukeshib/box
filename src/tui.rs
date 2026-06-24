@@ -192,7 +192,7 @@ fn clear_viewport(
 pub fn create_session() -> Result<TuiAction> {
     let all_repos = repo::list()?;
     if all_repos.is_empty() {
-        anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
+        anyhow::bail!("No repos registered. Run `box repo add <url>` first.");
     }
 
     let mut presets = preset::list()?;
@@ -521,7 +521,7 @@ fn select_repos(
     initial_selected: Vec<bool>,
 ) -> Result<TuiAction> {
     if all_repos.is_empty() {
-        anyhow::bail!("No repos registered. Run `box repo add <path>` first.");
+        anyhow::bail!("No repos registered. Run `box repo add <url>` first.");
     }
 
     let repo_count = all_repos.len();
