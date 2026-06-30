@@ -20,7 +20,24 @@ use std::path::{Path, PathBuf};
 #[command(
     name = "box",
     about = "Sandboxed git workspaces for development",
-    after_help = "Examples:\n  box                                         # interactive session manager\n  box new my-feature --repo app-a              # create a new session\n  box new my-feature --repo app-a --repo app-b # select specific repos\n  box new my-feature --preset work             # create session from preset\n  box new my-feature --repo app --strategy worktree # use git worktree\n  box new my-feature --repo app --no-fetch     # skip git fetch (faster, uses local refs)\n  box edit my-feature                          # add/remove repos in a session (TUI)\n  box edit my-feature --add app-c --remove app-a # non-interactive edit\n  box list                                     # list all sessions\n  box remove                                   # interactive session removal\n  box remove my-feature                        # remove a session by name\n  box remove --all                             # remove every session\n  box switch my-feature                        # switch to a session\n  box rebase main                              # fetch origin and rebase HEAD onto main\n  box repo add git@github.com:user/app.git     # register a repo from a remote URL\n  box repo add .                               # register current dir as a repo\n  box repo list                                # list registered repos\n  box repo remove my-app                       # unregister a repo\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset edit work                          # edit repos in a preset\n  box preset list                               # list presets\n  box preset remove work                        # remove a preset\n  box upgrade                                  # self-update"
+    long_about = "box manages sandboxed git workspaces for development.\n\n\
+MENTAL MODEL (three tiers):\n\
+  source     an upstream git repo registered via `box source add`; bare-cloned to ~/.box/repos/.\n\
+  workspace  a named sandbox under ~/.box/workspaces/<name>/ built from one or more sources.\n\
+  repo       a source checked out inside a workspace (also the unit listed in a preset).\n\
+  preset     a named, reusable set of sources used to create workspaces.\n\n\
+TYPICAL FLOW:\n\
+  1. box source add <url|path>                  register a source\n\
+  2. box workspace add <name> --repo <source>   create a workspace (alias: ws)\n\
+  3. box workspace switch <name>                enter it (alias: sw)\n\
+  4. box repo add <source> --workspace <name>   add/remove repos later\n\n\
+CONVENTIONS (important for scripting/agents):\n\
+  - Every command targets an EXPLICIT object. There is no implicit current-directory resolution.\n\
+  - `box repo add|remove|list` requires exactly one of --workspace <name> or --preset <name>.\n\
+  - `box rebase` requires --workspace <name> and --repo <name>.\n\
+  - Subcommand aliases: workspace=ws, and within each group list=ls, remove=rm, switch=sw.\n\
+  - `box` with no arguments launches an interactive TUI to create a workspace.",
+    after_help = "Examples:\n  box                                          # interactive workspace manager\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -33,37 +50,29 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Create a new session
-    New(CreateArgs),
-    /// Edit repos in an existing session
-    Edit(EditArgs),
-    /// Remove a session
-    #[command(alias = "rm")]
-    Remove(RemoveArgs),
-    /// List sessions
-    #[command(alias = "ls")]
-    List(ListArgs),
-    /// Switch to a session
-    #[command(alias = "cd", alias = "sw")]
-    Switch {
-        /// Session name
-        name: String,
+    /// Manage workspaces (create, list, switch, remove)
+    #[command(alias = "ws")]
+    Workspace {
+        #[command(subcommand)]
+        action: WorkspaceAction,
     },
-    /// Fetch origin and rebase the current branch onto another branch
-    Rebase {
-        /// Branch to rebase onto (e.g. main)
-        branch: String,
-    },
-    /// Manage registered repos
+    /// Manage repos within a workspace or preset
     Repo {
         #[command(subcommand)]
         action: RepoAction,
     },
-    /// Manage session presets
+    /// Manage registered sources (upstream git repos)
+    Source {
+        #[command(subcommand)]
+        action: SourceAction,
+    },
+    /// Manage presets
     Preset {
         #[command(subcommand)]
         action: PresetAction,
     },
+    /// Fetch origin and rebase a workspace repo onto another branch
+    Rebase(RebaseArgs),
     /// Self-update to the latest version
     Upgrade,
     /// Output shell configuration (e.g. eval "$(box config zsh)")
@@ -74,20 +83,50 @@ enum Commands {
 }
 
 #[derive(Subcommand, Debug)]
-enum RepoAction {
-    /// Register a git repo
-    Add {
-        /// Git remote URL (e.g. git@github.com:user/app.git) or local path
-        /// to a repo (defaults to current directory)
-        src: Option<String>,
-    },
-    /// Unregister a repo by name
+enum WorkspaceAction {
+    /// Create a new workspace
+    Add(CreateArgs),
+    /// List workspaces
+    #[command(alias = "ls")]
+    List(ListArgs),
+    /// Remove a workspace
     #[command(alias = "rm")]
-    Remove {
-        /// Repo name
+    Remove(RemoveArgs),
+    /// Switch into a workspace
+    #[command(alias = "sw")]
+    Switch {
+        /// Workspace name
         name: String,
     },
-    /// List registered repos
+}
+
+#[derive(Subcommand, Debug)]
+enum RepoAction {
+    /// Add repo(s) to a workspace or preset
+    Add(RepoEditArgs),
+    /// Remove repo(s) from a workspace or preset
+    #[command(alias = "rm")]
+    Remove(RepoEditArgs),
+    /// List repos in a workspace or preset
+    #[command(alias = "ls")]
+    List(RepoListArgs),
+}
+
+#[derive(Subcommand, Debug)]
+enum SourceAction {
+    /// Register a git repo as a source
+    Add {
+        /// Git remote URL (e.g. git@github.com:user/app.git) or local path
+        /// to a repo (use `.` for the current directory)
+        src: String,
+    },
+    /// Unregister a source by name
+    #[command(alias = "rm")]
+    Remove {
+        /// Source name
+        name: String,
+    },
+    /// List registered sources
     #[command(alias = "ls")]
     List,
 }
@@ -102,11 +141,6 @@ enum PresetAction {
         #[arg(long)]
         repo: Vec<String>,
     },
-    /// Edit repos in an existing preset
-    Edit {
-        /// Preset name
-        name: String,
-    },
     /// Remove a preset
     #[command(alias = "rm")]
     Remove {
@@ -120,7 +154,7 @@ enum PresetAction {
 
 #[derive(clap::Args, Debug)]
 struct CreateArgs {
-    /// Session name
+    /// Workspace name
     name: String,
 
     /// Select specific repos by name (can be repeated)
@@ -141,37 +175,58 @@ struct CreateArgs {
 }
 
 #[derive(clap::Args, Debug)]
-struct EditArgs {
-    /// Session name
-    name: String,
+struct RepoEditArgs {
+    /// Repo name(s)
+    #[arg(required = true)]
+    repo: Vec<String>,
 
-    /// Add repos to the session (can be repeated). Skips the TUI when set.
-    #[arg(long)]
-    add: Vec<String>,
+    /// Target workspace (mutually exclusive with --preset)
+    #[arg(long, group = "repo_target")]
+    workspace: Option<String>,
 
-    /// Remove repos from the session (can be repeated). Skips the TUI when set.
-    #[arg(long)]
-    remove: Vec<String>,
+    /// Target preset (mutually exclusive with --workspace)
+    #[arg(long, group = "repo_target")]
+    preset: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+struct RepoListArgs {
+    /// Target workspace (mutually exclusive with --preset)
+    #[arg(long, group = "repo_target")]
+    workspace: Option<String>,
+
+    /// Target preset (mutually exclusive with --workspace)
+    #[arg(long, group = "repo_target")]
+    preset: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
 struct RemoveArgs {
-    /// Session name (opens interactive selector if omitted)
+    /// Workspace name (opens interactive selector if omitted)
     name: Option<String>,
 
-    /// Remove every session
+    /// Remove every workspace
     #[arg(long, short = 'a', conflicts_with = "name")]
     all: bool,
 }
 
 #[derive(clap::Args, Debug)]
 struct ListArgs {
-    /// Show only sessions for the current project directory
-    #[arg(long, short)]
-    project: bool,
-    /// Only print session names
+    /// Only print workspace names
     #[arg(long, short)]
     quiet: bool,
+}
+
+#[derive(clap::Args, Debug)]
+struct RebaseArgs {
+    /// Branch to rebase onto (e.g. main)
+    branch: String,
+    /// Workspace name
+    #[arg(long)]
+    workspace: String,
+    /// Repo name within the workspace
+    #[arg(long)]
+    repo: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -188,32 +243,43 @@ fn main() {
     let verbose = cli.verbose;
 
     let result = match cli.command {
-        Some(Commands::New(args)) => cmd_new(args, verbose),
-        Some(Commands::Edit(args)) => cmd_edit(&args.name, &args.add, &args.remove, verbose),
-        Some(Commands::Remove(args)) => {
-            if args.all {
-                cmd_remove_all(verbose)
-            } else {
-                match &args.name {
-                    Some(name) => cmd_remove(name, verbose),
-                    None => cmd_remove_tui(verbose),
+        Some(Commands::Workspace { action }) => match action {
+            WorkspaceAction::Add(args) => cmd_new(args, verbose),
+            WorkspaceAction::List(args) => cmd_list_sessions(&args),
+            WorkspaceAction::Remove(args) => {
+                if args.all {
+                    cmd_remove_all(verbose)
+                } else {
+                    match &args.name {
+                        Some(name) => cmd_remove(name, verbose),
+                        None => cmd_remove_tui(verbose),
+                    }
                 }
             }
-        }
-        Some(Commands::List(args)) => cmd_list_sessions(&args),
-        Some(Commands::Switch { name }) => cmd_cd(&name),
-        Some(Commands::Rebase { branch }) => cmd_rebase(&branch, verbose),
+            WorkspaceAction::Switch { name } => cmd_cd(&name),
+        },
         Some(Commands::Repo { action }) => match action {
-            RepoAction::Add { src } => cmd_repo_add(src),
-            RepoAction::Remove { name } => cmd_repo_remove(&name),
-            RepoAction::List => cmd_repo_list(),
+            RepoAction::Add(args) => {
+                cmd_repo_modify(&args.repo, args.workspace, args.preset, true, verbose)
+            }
+            RepoAction::Remove(args) => {
+                cmd_repo_modify(&args.repo, args.workspace, args.preset, false, verbose)
+            }
+            RepoAction::List(args) => cmd_repo_list_target(args.workspace, args.preset),
+        },
+        Some(Commands::Source { action }) => match action {
+            SourceAction::Add { src } => cmd_source_add(&src),
+            SourceAction::Remove { name } => cmd_source_remove(&name),
+            SourceAction::List => cmd_source_list(),
         },
         Some(Commands::Preset { action }) => match action {
             PresetAction::Add { name, repo } => cmd_preset_add(&name, &repo),
-            PresetAction::Edit { name } => cmd_preset_edit(&name),
             PresetAction::Remove { name } => cmd_preset_remove(&name),
             PresetAction::List => cmd_preset_list(),
         },
+        Some(Commands::Rebase(args)) => {
+            cmd_rebase(&args.branch, &args.workspace, &args.repo, verbose)
+        }
         Some(Commands::Upgrade) => cmd_upgrade(),
         Some(Commands::Config { shell }) => match shell {
             ConfigShell::Zsh => cmd_config_zsh(),
@@ -298,41 +364,6 @@ pub(crate) fn shorten_project_path(path: &str, home: &str) -> String {
     shortened.join("/")
 }
 
-/// Resolve the current directory to a project_dir suitable for filtering sessions.
-///
-/// 1. If the cwd is inside a workspace (`~/.box/workspaces/<name>/`), look up
-///    that session's project_dir so we can find sibling sessions for the same project.
-/// 2. Otherwise, walk up to the nearest git root and use that.
-fn resolve_project_dir(
-    cwd: &std::path::Path,
-    sessions: &[session::SessionSummary],
-) -> Option<String> {
-    // Check if we're inside a workspace directory
-    if let Ok(root) = config::box_root() {
-        let workspaces = root.join("workspaces");
-        if let Ok(workspaces) = std::fs::canonicalize(&workspaces) {
-            if cwd.starts_with(&workspaces) {
-                // Extract the workspace name (first component after workspaces/)
-                if let Some(ws_name) = cwd.strip_prefix(&workspaces).ok().and_then(|r| {
-                    r.components()
-                        .next()
-                        .map(|c| c.as_os_str().to_string_lossy().to_string())
-                }) {
-                    // Find session with this name to get its project_dir
-                    if let Some(s) = sessions.iter().find(|s| s.name == ws_name) {
-                        if !s.project_dir.is_empty() {
-                            return Some(s.project_dir.clone());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Fall back to git root
-    git::find_root(cwd).map(|r| r.to_string_lossy().to_string())
-}
-
 /// `box` with no args: interactive TUI to create a session.
 fn cmd_default(verbose: bool) -> Result<i32> {
     if std::env::var_os("BOX_SESSION").is_some() {
@@ -354,18 +385,7 @@ fn cmd_create_tui(verbose: bool) -> Result<i32> {
 }
 
 fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
-    let mut sessions = session::list()?;
-
-    if args.project {
-        let cwd = std::env::current_dir()?;
-        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-        let project = resolve_project_dir(&cwd, &sessions);
-        if let Some(project) = project {
-            sessions.retain(|s| s.project_dir == project);
-        } else {
-            sessions.clear();
-        }
-    }
+    let sessions = session::list()?;
 
     if args.quiet {
         for s in &sessions {
@@ -475,7 +495,7 @@ fn cmd_create(
     };
 
     if selected_repos.is_empty() {
-        bail!("No repos registered. Run `box repo add <url>` first.");
+        bail!("No sources registered. Run `box source add <url>` first.");
     }
 
     let repo_names_list: Vec<String> = selected_repos.iter().map(|r| r.name.clone()).collect();
@@ -516,29 +536,98 @@ fn cmd_create(
     Ok(0)
 }
 
-fn cmd_edit(name: &str, add: &[String], remove: &[String], verbose: bool) -> Result<i32> {
-    let name = session::validate_name(name)?;
-    let name = name.as_str();
+/// Target of a `box repo` operation: either a workspace or a preset.
+enum RepoTarget {
+    Workspace(String),
+    Preset(String),
+}
 
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
+/// Resolve the mutually-exclusive --workspace / --preset target, requiring
+/// exactly one to be set. (clap's `repo_target` group already prevents both.)
+fn resolve_repo_target(workspace: Option<String>, preset: Option<String>) -> Result<RepoTarget> {
+    match (workspace, preset) {
+        (Some(w), None) => Ok(RepoTarget::Workspace(w)),
+        (None, Some(p)) => Ok(RepoTarget::Preset(p)),
+        (None, None) => bail!("Specify a target with --workspace <name> or --preset <name>."),
+        (Some(_), Some(_)) => unreachable!("--workspace and --preset are mutually exclusive"),
     }
+}
 
-    let sess = session::load(name)?;
-    let strategy = workspace::Strategy::from_str(&sess.strategy)?;
-    let current_repos = &sess.repos;
+/// Add or remove repos in a workspace or preset (replaces the old `box edit`).
+fn cmd_repo_modify(
+    repos: &[String],
+    workspace: Option<String>,
+    preset: Option<String>,
+    adding: bool,
+    verbose: bool,
+) -> Result<i32> {
+    let (add, remove): (&[String], &[String]) = if adding { (repos, &[]) } else { (&[], repos) };
 
-    if !add.is_empty() || !remove.is_empty() {
-        let new_repos = compute_edit_repos(current_repos, add, remove)?;
-        return apply_edit_diff(name, current_repos, &new_repos, strategy, verbose);
-    }
-
-    match tui::edit_session(current_repos)? {
-        tui::TuiAction::Edit { repos: new_repos } => {
-            apply_edit_diff(name, current_repos, &new_repos, strategy, verbose)
+    match resolve_repo_target(workspace, preset)? {
+        RepoTarget::Workspace(name) => {
+            let name = session::validate_name(&name)?;
+            let name = name.as_str();
+            if !session::session_exists(name)? {
+                bail!("Workspace '{}' not found.", name);
+            }
+            let sess = session::load(name)?;
+            let strategy = workspace::Strategy::from_str(&sess.strategy)?;
+            let new_repos = compute_edit_repos(&sess.repos, add, remove)?;
+            apply_edit_diff(name, &sess.repos, &new_repos, strategy, verbose)
         }
-        _ => Ok(0),
+        RepoTarget::Preset(name) => {
+            let current = preset::load(&name)?;
+            let new_repos = compute_edit_repos(&current, add, remove)?;
+
+            let added: Vec<&str> = new_repos
+                .iter()
+                .filter(|r| !current.contains(r))
+                .map(|r| r.as_str())
+                .collect();
+            let removed: Vec<&str> = current
+                .iter()
+                .filter(|r| !new_repos.contains(r))
+                .map(|r| r.as_str())
+                .collect();
+
+            preset::add(&name, &new_repos)?;
+
+            if !added.is_empty() {
+                eprintln!("\x1b[2madded:\x1b[0m {}", added.join(", "));
+            }
+            if !removed.is_empty() {
+                eprintln!("\x1b[2mremoved:\x1b[0m {}", removed.join(", "));
+            }
+            if added.is_empty() && removed.is_empty() {
+                eprintln!("No changes.");
+            }
+            Ok(0)
+        }
     }
+}
+
+/// List the repos in a workspace or preset.
+fn cmd_repo_list_target(workspace: Option<String>, preset: Option<String>) -> Result<i32> {
+    let repos = match resolve_repo_target(workspace, preset)? {
+        RepoTarget::Workspace(name) => {
+            let name = session::validate_name(&name)?;
+            let name = name.as_str();
+            if !session::session_exists(name)? {
+                bail!("Workspace '{}' not found.", name);
+            }
+            session::load(name)?.repos
+        }
+        RepoTarget::Preset(name) => preset::load(&name)?,
+    };
+
+    if repos.is_empty() {
+        println!("No repos.");
+        return Ok(0);
+    }
+    for r in &repos {
+        println!("{}", r);
+    }
+    Ok(0)
 }
 
 /// Compute the new repo set from --add/--remove flags. Errors when the same
@@ -557,7 +646,7 @@ fn compute_edit_repos(
     for repo_name in add {
         if !all_repos.iter().any(|r| &r.name == repo_name) {
             bail!(
-                "Repo '{}' is not registered. Run `box repo add` first.",
+                "Repo '{}' is not registered. Run `box source add` first.",
                 repo_name
             );
         }
@@ -722,18 +811,25 @@ fn cmd_cd(name: &str) -> Result<i32> {
     Ok(0)
 }
 
-/// Fetch origin in the bare repo backing the current worktree, then rebase
-/// the worktree's current branch onto `branch`.
+/// Fetch origin in the bare repo backing a workspace repo, then rebase that
+/// repo's current branch onto `branch`.
 ///
 /// Box workspaces share a single bare repo across worktrees, and `git fetch`
 /// from a worktree often refuses to update sibling-worktree branches. This
 /// command routes the fetch through `git::fetch_repo`, which knows how to
 /// exclude checked-out branches with negative refspecs.
-fn cmd_rebase(branch: &str, verbose: bool) -> Result<i32> {
-    let cwd = std::env::current_dir()?;
-    let worktree_root = git::find_root(&cwd)
-        .ok_or_else(|| anyhow::anyhow!("Not in a git repository."))?
-        .to_path_buf();
+fn cmd_rebase(branch: &str, workspace: &str, repo: &str, verbose: bool) -> Result<i32> {
+    let workspace = session::validate_name(workspace)?;
+    if !session::session_exists(&workspace)? {
+        bail!("Workspace '{}' not found.", workspace);
+    }
+    let worktree_root = config::box_root()?
+        .join("workspaces")
+        .join(&workspace)
+        .join(repo);
+    if !worktree_root.is_dir() {
+        bail!("Repo '{}' not found in workspace '{}'.", repo, workspace);
+    }
     let worktree_root_str = worktree_root.to_string_lossy().to_string();
 
     let output = std::process::Command::new("git")
@@ -787,21 +883,20 @@ fn cmd_rebase(branch: &str, verbose: bool) -> Result<i32> {
     Ok(if status.success() { 0 } else { 1 })
 }
 
-fn cmd_repo_add(src: Option<String>) -> Result<i32> {
-    let src = src.unwrap_or_else(|| ".".to_string());
-    repo::add(&src)?;
+fn cmd_source_add(src: &str) -> Result<i32> {
+    repo::add(src)?;
     Ok(0)
 }
 
-fn cmd_repo_remove(name: &str) -> Result<i32> {
+fn cmd_source_remove(name: &str) -> Result<i32> {
     repo::remove(name)?;
     Ok(0)
 }
 
-fn cmd_repo_list() -> Result<i32> {
+fn cmd_source_list() -> Result<i32> {
     let repos = repo::list()?;
     if repos.is_empty() {
-        println!("No repos registered.");
+        println!("No sources registered.");
         return Ok(0);
     }
 
@@ -844,19 +939,6 @@ fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
         }
     } else {
         preset::add(name, repos)?;
-    }
-    Ok(0)
-}
-
-fn cmd_preset_edit(name: &str) -> Result<i32> {
-    let current = preset::load(name)?;
-    match tui::select_preset_repos(&current)? {
-        tui::TuiAction::Edit { repos } => {
-            preset::add(name, &repos)?;
-        }
-        _ => {
-            return Ok(0);
-        }
     }
     Ok(0)
 }
@@ -1029,285 +1111,301 @@ mod tests {
         assert!(cli.command.is_none());
     }
 
-    // -- new subcommand --
+    // -- workspace add subcommand --
 
-    #[test]
-    fn test_new_name_only() {
-        let cli = parse(&["new", "my-session", "--repo", "app"]);
+    fn ws_add(cli: Cli) -> CreateArgs {
         match cli.command {
-            Some(Commands::New(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert_eq!(args.repo, vec!["app"]);
-            }
-            other => panic!("expected New, got {:?}", other),
+            Some(Commands::Workspace {
+                action: WorkspaceAction::Add(args),
+            }) => args,
+            other => panic!("expected Workspace Add, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_new_requires_name() {
-        let result = try_parse(&["new"]);
-        assert!(result.is_err());
+    fn test_workspace_add_name_only() {
+        let args = ws_add(parse(&["workspace", "add", "my-session", "--repo", "app"]));
+        assert_eq!(args.name, "my-session");
+        assert_eq!(args.repo, vec!["app"]);
     }
 
     #[test]
-    fn test_new_name_only_parses() {
+    fn test_workspace_alias_ws() {
+        let args = ws_add(parse(&["ws", "add", "my-session", "--repo", "app"]));
+        assert_eq!(args.name, "my-session");
+    }
+
+    #[test]
+    fn test_workspace_add_requires_name() {
+        assert!(try_parse(&["workspace", "add"]).is_err());
+    }
+
+    #[test]
+    fn test_workspace_add_name_only_parses() {
         // --repo and --preset are both optional at parse time; runtime enforces at least one
-        let cli = parse(&["new", "my-session"]);
+        let args = ws_add(parse(&["workspace", "add", "my-session"]));
+        assert!(args.repo.is_empty());
+        assert!(args.preset.is_none());
+    }
+
+    #[test]
+    fn test_workspace_add_with_preset() {
+        let args = ws_add(parse(&[
+            "workspace",
+            "add",
+            "my-session",
+            "--preset",
+            "work",
+        ]));
+        assert_eq!(args.preset.as_deref(), Some("work"));
+        assert!(args.repo.is_empty());
+    }
+
+    #[test]
+    fn test_workspace_add_preset_and_repo_conflict() {
+        assert!(try_parse(&[
+            "workspace",
+            "add",
+            "my-session",
+            "--preset",
+            "work",
+            "--repo",
+            "app"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn test_workspace_add_with_repo_flags() {
+        let args = ws_add(parse(&[
+            "workspace",
+            "add",
+            "my-session",
+            "--repo",
+            "app-a",
+            "--repo",
+            "app-b",
+        ]));
+        assert_eq!(args.repo, vec!["app-a", "app-b"]);
+    }
+
+    #[test]
+    fn test_workspace_add_default_strategy() {
+        let args = ws_add(parse(&["workspace", "add", "my-session", "--repo", "app"]));
+        assert_eq!(args.strategy, "worktree");
+    }
+
+    #[test]
+    fn test_workspace_add_with_strategy_clone() {
+        let args = ws_add(parse(&[
+            "workspace",
+            "add",
+            "my-session",
+            "--repo",
+            "app",
+            "--strategy",
+            "clone",
+        ]));
+        assert_eq!(args.strategy, "clone");
+    }
+
+    #[test]
+    fn test_workspace_add_no_fetch_defaults_false() {
+        let args = ws_add(parse(&["workspace", "add", "my-session", "--repo", "app"]));
+        assert!(!args.no_fetch);
+    }
+
+    #[test]
+    fn test_workspace_add_with_no_fetch_flag() {
+        let args = ws_add(parse(&[
+            "workspace",
+            "add",
+            "my-session",
+            "--repo",
+            "app",
+            "--no-fetch",
+        ]));
+        assert!(args.no_fetch);
+    }
+
+    // -- repo subcommand (workspace/preset repo management) --
+
+    #[test]
+    fn test_repo_add_to_workspace() {
+        let cli = parse(&["repo", "add", "app-c", "--workspace", "my-session"]);
         match cli.command {
-            Some(Commands::New(args)) => {
-                assert!(args.repo.is_empty());
+            Some(Commands::Repo {
+                action: RepoAction::Add(args),
+            }) => {
+                assert_eq!(args.repo, vec!["app-c"]);
+                assert_eq!(args.workspace.as_deref(), Some("my-session"));
                 assert!(args.preset.is_none());
             }
-            other => panic!("expected New, got {:?}", other),
+            other => panic!("expected Repo Add, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_new_with_preset() {
-        let cli = parse(&["new", "my-session", "--preset", "work"]);
+    fn test_repo_add_multiple_to_preset() {
+        let cli = parse(&["repo", "add", "app-c", "app-d", "--preset", "work"]);
         match cli.command {
-            Some(Commands::New(args)) => {
+            Some(Commands::Repo {
+                action: RepoAction::Add(args),
+            }) => {
+                assert_eq!(args.repo, vec!["app-c", "app-d"]);
                 assert_eq!(args.preset.as_deref(), Some("work"));
-                assert!(args.repo.is_empty());
             }
-            other => panic!("expected New, got {:?}", other),
+            other => panic!("expected Repo Add, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_new_preset_and_repo_conflict() {
-        let result = try_parse(&["new", "my-session", "--preset", "work", "--repo", "app"]);
-        assert!(result.is_err());
+    fn test_repo_add_requires_repo() {
+        assert!(try_parse(&["repo", "add", "--workspace", "my-session"]).is_err());
     }
 
     #[test]
-    fn test_new_with_repo_flags() {
-        let cli = parse(&["new", "my-session", "--repo", "app-a", "--repo", "app-b"]);
+    fn test_repo_add_workspace_and_preset_conflict() {
+        assert!(try_parse(&[
+            "repo",
+            "add",
+            "app",
+            "--workspace",
+            "ws",
+            "--preset",
+            "work"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn test_repo_remove_from_workspace() {
+        let cli = parse(&["repo", "remove", "app-a", "--workspace", "my-session"]);
         match cli.command {
-            Some(Commands::New(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert_eq!(args.repo, vec!["app-a", "app-b"]);
+            Some(Commands::Repo {
+                action: RepoAction::Remove(args),
+            }) => {
+                assert_eq!(args.repo, vec!["app-a"]);
+                assert_eq!(args.workspace.as_deref(), Some("my-session"));
             }
-            other => panic!("expected New, got {:?}", other),
+            other => panic!("expected Repo Remove, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_new_default_strategy() {
-        let cli = parse(&["new", "my-session", "--repo", "app"]);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert_eq!(args.strategy, "worktree");
-            }
-            other => panic!("expected New, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_new_with_strategy_clone() {
-        let cli = parse(&["new", "my-session", "--repo", "app", "--strategy", "clone"]);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert_eq!(args.strategy, "clone");
-            }
-            other => panic!("expected New, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_new_no_fetch_defaults_false() {
-        let cli = parse(&["new", "my-session", "--repo", "app"]);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert!(!args.no_fetch);
-            }
-            other => panic!("expected New, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_new_with_no_fetch_flag() {
-        let cli = parse(&["new", "my-session", "--repo", "app", "--no-fetch"]);
-        match cli.command {
-            Some(Commands::New(args)) => {
-                assert!(args.no_fetch);
-            }
-            other => panic!("expected New, got {:?}", other),
-        }
-    }
-
-    // -- edit subcommand --
-
-    #[test]
-    fn test_edit_parses() {
-        let cli = parse(&["edit", "my-session"]);
-        match cli.command {
-            Some(Commands::Edit(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert!(args.add.is_empty());
-                assert!(args.remove.is_empty());
-            }
-            other => panic!("expected Edit, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_edit_requires_name() {
-        let result = try_parse(&["edit"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_edit_with_add_and_remove_flags() {
-        let cli = parse(&[
-            "edit",
-            "my-session",
-            "--add",
-            "app-c",
-            "--add",
-            "app-d",
-            "--remove",
-            "app-a",
-        ]);
-        match cli.command {
-            Some(Commands::Edit(args)) => {
-                assert_eq!(args.name, "my-session");
-                assert_eq!(args.add, vec!["app-c", "app-d"]);
-                assert_eq!(args.remove, vec!["app-a"]);
-            }
-            other => panic!("expected Edit, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_edit_add_only() {
-        let cli = parse(&["edit", "my-session", "--add", "app-c"]);
-        match cli.command {
-            Some(Commands::Edit(args)) => {
-                assert_eq!(args.add, vec!["app-c"]);
-                assert!(args.remove.is_empty());
-            }
-            other => panic!("expected Edit, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_edit_remove_only() {
-        let cli = parse(&["edit", "my-session", "--remove", "app-a"]);
-        match cli.command {
-            Some(Commands::Edit(args)) => {
-                assert!(args.add.is_empty());
-                assert_eq!(args.remove, vec!["app-a"]);
-            }
-            other => panic!("expected Edit, got {:?}", other),
-        }
-    }
-
-    // -- remove subcommand --
-
-    #[test]
-    fn test_remove_parses() {
-        let cli = parse(&["remove", "my-session"]);
-        match cli.command {
-            Some(Commands::Remove(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
-                assert!(!args.all);
-            }
-            other => panic!("expected Remove, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_remove_alias_rm() {
-        let cli = parse(&["rm", "my-session"]);
-        match cli.command {
-            Some(Commands::Remove(args)) => {
-                assert_eq!(args.name.as_deref(), Some("my-session"));
-            }
-            other => panic!("expected Remove, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_remove_no_name_parses() {
-        let cli = parse(&["remove"]);
-        match cli.command {
-            Some(Commands::Remove(args)) => {
-                assert!(args.name.is_none());
-                assert!(!args.all);
-            }
-            other => panic!("expected Remove, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_remove_all_flag_parses() {
-        let cli = parse(&["remove", "--all"]);
-        match cli.command {
-            Some(Commands::Remove(args)) => {
-                assert!(args.name.is_none());
-                assert!(args.all);
-            }
-            other => panic!("expected Remove, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_remove_all_short_flag_parses() {
-        let cli = parse(&["rm", "-a"]);
-        match cli.command {
-            Some(Commands::Remove(args)) => {
-                assert!(args.all);
-            }
-            other => panic!("expected Remove, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_remove_all_conflicts_with_name() {
-        let result = try_parse(&["remove", "--all", "my-session"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_remove_rejects_unknown_flags() {
-        let result = try_parse(&["remove", "my-session", "-d"]);
-        assert!(result.is_err());
-    }
-
-    // -- cd subcommand --
-
-    #[test]
-    fn test_switch_subcommand_parses() {
-        let cli = parse(&["switch", "my-session"]);
+    fn test_repo_remove_alias_rm() {
+        let cli = parse(&["repo", "rm", "app-a", "--workspace", "my-session"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Switch { ref name }) if name == "my-session"
+            Some(Commands::Repo {
+                action: RepoAction::Remove(_)
+            })
         ));
     }
 
     #[test]
-    fn test_switch_alias_cd() {
-        let cli = parse(&["cd", "my-session"]);
+    fn test_repo_list_workspace() {
+        let cli = parse(&["repo", "list", "--workspace", "my-session"]);
+        match cli.command {
+            Some(Commands::Repo {
+                action: RepoAction::List(args),
+            }) => assert_eq!(args.workspace.as_deref(), Some("my-session")),
+            other => panic!("expected Repo List, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_repo_list_alias_ls() {
+        let cli = parse(&["repo", "ls", "--preset", "work"]);
+        match cli.command {
+            Some(Commands::Repo {
+                action: RepoAction::List(args),
+            }) => assert_eq!(args.preset.as_deref(), Some("work")),
+            other => panic!("expected Repo List, got {:?}", other),
+        }
+    }
+
+    // -- workspace remove subcommand --
+
+    fn ws_remove(cli: Cli) -> RemoveArgs {
+        match cli.command {
+            Some(Commands::Workspace {
+                action: WorkspaceAction::Remove(args),
+            }) => args,
+            other => panic!("expected Workspace Remove, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_remove_parses() {
+        let args = ws_remove(parse(&["workspace", "remove", "my-session"]));
+        assert_eq!(args.name.as_deref(), Some("my-session"));
+        assert!(!args.all);
+    }
+
+    #[test]
+    fn test_remove_alias_rm() {
+        let args = ws_remove(parse(&["workspace", "rm", "my-session"]));
+        assert_eq!(args.name.as_deref(), Some("my-session"));
+    }
+
+    #[test]
+    fn test_remove_no_name_parses() {
+        let args = ws_remove(parse(&["workspace", "remove"]));
+        assert!(args.name.is_none());
+        assert!(!args.all);
+    }
+
+    #[test]
+    fn test_remove_all_flag_parses() {
+        let args = ws_remove(parse(&["workspace", "remove", "--all"]));
+        assert!(args.name.is_none());
+        assert!(args.all);
+    }
+
+    #[test]
+    fn test_remove_all_short_flag_parses() {
+        let args = ws_remove(parse(&["workspace", "rm", "-a"]));
+        assert!(args.all);
+    }
+
+    #[test]
+    fn test_remove_all_conflicts_with_name() {
+        assert!(try_parse(&["workspace", "remove", "--all", "my-session"]).is_err());
+    }
+
+    #[test]
+    fn test_remove_rejects_unknown_flags() {
+        assert!(try_parse(&["workspace", "remove", "my-session", "-d"]).is_err());
+    }
+
+    // -- workspace switch subcommand --
+
+    #[test]
+    fn test_switch_subcommand_parses() {
+        let cli = parse(&["workspace", "switch", "my-session"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Switch { ref name }) if name == "my-session"
+            Some(Commands::Workspace {
+                action: WorkspaceAction::Switch { ref name }
+            }) if name == "my-session"
         ));
     }
 
     #[test]
     fn test_switch_alias_sw() {
-        let cli = parse(&["sw", "my-session"]);
+        let cli = parse(&["workspace", "sw", "my-session"]);
         assert!(matches!(
             cli.command,
-            Some(Commands::Switch { ref name }) if name == "my-session"
+            Some(Commands::Workspace {
+                action: WorkspaceAction::Switch { ref name }
+            }) if name == "my-session"
         ));
     }
 
     #[test]
     fn test_switch_requires_name() {
-        let result = try_parse(&["switch"]);
-        assert!(result.is_err());
+        assert!(try_parse(&["workspace", "switch"]).is_err());
     }
 
     // -- upgrade subcommand --
@@ -1354,121 +1452,104 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // -- list subcommand --
+    // -- workspace list subcommand --
+
+    fn ws_list(cli: Cli) -> ListArgs {
+        match cli.command {
+            Some(Commands::Workspace {
+                action: WorkspaceAction::List(args),
+            }) => args,
+            other => panic!("expected Workspace List, got {:?}", other),
+        }
+    }
 
     #[test]
     fn test_list_no_flags() {
-        let cli = parse(&["list"]);
-        match cli.command {
-            Some(Commands::List(args)) => {
-                assert!(!args.quiet);
-            }
-            other => panic!("expected List, got {:?}", other),
-        }
+        assert!(!ws_list(parse(&["workspace", "list"])).quiet);
     }
 
     #[test]
     fn test_list_quiet_flag() {
-        let cli = parse(&["list", "-q"]);
-        match cli.command {
-            Some(Commands::List(args)) => {
-                assert!(args.quiet);
-            }
-            other => panic!("expected List, got {:?}", other),
-        }
+        assert!(ws_list(parse(&["workspace", "list", "-q"])).quiet);
     }
 
     #[test]
     fn test_list_alias_ls() {
-        let cli = parse(&["ls"]);
-        match cli.command {
-            Some(Commands::List(args)) => {
-                assert!(!args.quiet);
-            }
-            other => panic!("expected List, got {:?}", other),
-        }
+        assert!(!ws_list(parse(&["workspace", "ls"])).quiet);
     }
 
     #[test]
     fn test_list_rejects_positional_args() {
-        let result = try_parse(&["list", "my-session"]);
-        assert!(result.is_err());
+        assert!(try_parse(&["workspace", "list", "my-session"]).is_err());
     }
 
-    // -- repo subcommand --
+    // -- source subcommand (registry) --
 
     #[test]
-    fn test_repo_add_no_path() {
-        let cli = parse(&["repo", "add"]);
+    fn test_source_add_requires_path() {
+        assert!(try_parse(&["source", "add"]).is_err());
+    }
+
+    #[test]
+    fn test_source_add_with_path() {
+        let cli = parse(&["source", "add", "/tmp/my-repo"]);
         match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Add { src },
-            }) => {
-                assert!(src.is_none());
-            }
-            other => panic!("expected Repo Add, got {:?}", other),
+            Some(Commands::Source {
+                action: SourceAction::Add { src },
+            }) => assert_eq!(src, "/tmp/my-repo"),
+            other => panic!("expected Source Add, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_repo_add_with_path() {
-        let cli = parse(&["repo", "add", "/tmp/my-repo"]);
+    fn test_source_add_with_url() {
+        let cli = parse(&["source", "add", "git@github.com:user/app.git"]);
         match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Add { src },
-            }) => {
-                assert_eq!(src.as_deref(), Some("/tmp/my-repo"));
-            }
-            other => panic!("expected Repo Add, got {:?}", other),
+            Some(Commands::Source {
+                action: SourceAction::Add { src },
+            }) => assert_eq!(src, "git@github.com:user/app.git"),
+            other => panic!("expected Source Add, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_repo_add_with_url() {
-        let cli = parse(&["repo", "add", "git@github.com:user/app.git"]);
+    fn test_source_remove() {
+        let cli = parse(&["source", "remove", "my-app"]);
         match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Add { src },
-            }) => {
-                assert_eq!(src.as_deref(), Some("git@github.com:user/app.git"));
-            }
-            other => panic!("expected Repo Add, got {:?}", other),
+            Some(Commands::Source {
+                action: SourceAction::Remove { name },
+            }) => assert_eq!(name, "my-app"),
+            other => panic!("expected Source Remove, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_repo_remove() {
-        let cli = parse(&["repo", "remove", "my-app"]);
+    fn test_source_remove_alias_rm() {
+        let cli = parse(&["source", "rm", "my-app"]);
         match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Remove { name },
-            }) => {
-                assert_eq!(name, "my-app");
-            }
-            other => panic!("expected Repo Remove, got {:?}", other),
+            Some(Commands::Source {
+                action: SourceAction::Remove { name },
+            }) => assert_eq!(name, "my-app"),
+            other => panic!("expected Source Remove, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_repo_remove_alias_rm() {
-        let cli = parse(&["repo", "rm", "my-app"]);
-        match cli.command {
-            Some(Commands::Repo {
-                action: RepoAction::Remove { name },
-            }) => {
-                assert_eq!(name, "my-app");
-            }
-            other => panic!("expected Repo Remove, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_repo_list() {
-        let cli = parse(&["repo", "list"]);
+    fn test_source_list() {
         assert!(matches!(
-            cli.command,
-            Some(Commands::Repo {
-                action: RepoAction::List
+            parse(&["source", "list"]).command,
+            Some(Commands::Source {
+                action: SourceAction::List
+            })
+        ));
+    }
+
+    #[test]
+    fn test_source_list_alias_ls() {
+        assert!(matches!(
+            parse(&["source", "ls"]).command,
+            Some(Commands::Source {
+                action: SourceAction::List
             })
         ));
     }
@@ -1489,17 +1570,6 @@ mod tests {
             }
             other => panic!("expected Preset Add, got {:?}", other),
         }
-    }
-
-    #[test]
-    fn test_preset_edit_parses() {
-        let cli = parse(&["preset", "edit", "work"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Preset {
-                action: PresetAction::Edit { name }
-            }) if name == "work"
-        ));
     }
 
     #[test]
@@ -1556,7 +1626,14 @@ mod tests {
 
     #[test]
     fn test_new_update_flag_rejected() {
-        let result = try_parse(&["new", "my-session", "--repo", "app", "--update"]);
+        let result = try_parse(&[
+            "workspace",
+            "add",
+            "my-session",
+            "--repo",
+            "app",
+            "--update",
+        ]);
         assert!(result.is_err());
     }
 

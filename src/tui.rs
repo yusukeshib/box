@@ -192,7 +192,7 @@ fn clear_viewport(
 pub fn create_session() -> Result<TuiAction> {
     let all_repos = repo::list()?;
     if all_repos.is_empty() {
-        anyhow::bail!("No repos registered. Run `box repo add <url>` first.");
+        anyhow::bail!("No sources registered. Run `box source add <url>` first.");
     }
 
     let mut presets = preset::list()?;
@@ -521,7 +521,7 @@ fn select_repos(
     initial_selected: Vec<bool>,
 ) -> Result<TuiAction> {
     if all_repos.is_empty() {
-        anyhow::bail!("No repos registered. Run `box repo add <url>` first.");
+        anyhow::bail!("No sources registered. Run `box source add <url>` first.");
     }
 
     let repo_count = all_repos.len();
@@ -631,21 +631,6 @@ fn select_repos(
             }
         }
     }
-}
-
-/// TUI for editing session repos: shows checkbox list of all registered repos
-/// with the session's current repos pre-selected. Returns updated repo list.
-pub fn edit_session(current_repos: &[String]) -> Result<TuiAction> {
-    let all_repos = repo::list()?;
-    let selected = all_repos
-        .iter()
-        .map(|r| current_repos.contains(&r.name))
-        .collect();
-    select_repos(
-        all_repos,
-        "Edit repos (Space=toggle, Enter=confirm):",
-        selected,
-    )
 }
 
 /// TUI for selecting repos for a preset: shows checkbox list of all registered repos.
