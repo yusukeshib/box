@@ -19,7 +19,7 @@ __box_sessions() {
         done
     fi
     if (( ${#sessions} )); then
-        _describe 'session' sessions
+        _describe 'workspace' sessions
     fi
 }
 
@@ -34,7 +34,7 @@ __box_repos() {
         done
     fi
     if (( ${#repos} )); then
-        _describe 'repo' repos
+        _describe 'source' repos
     fi
 }
 
@@ -64,17 +64,12 @@ _box() {
         subcmd)
             local -a subcmds
             subcmds=(
-                'new:Create a new session'
-                'edit:Edit repos in an existing session'
-                'remove:Remove a session'
-                'rm:Remove a session'
-                'list:List sessions'
-                'switch:Switch to a session'
-                'sw:Switch to a session'
-                'cd:Switch to a session'
-                'rebase:Fetch origin and rebase the current branch'
-                'repo:Manage registered repos'
-                'preset:Manage session presets'
+                'workspace:Manage workspaces (create, list, switch, remove)'
+                'ws:Manage workspaces (alias of workspace)'
+                'repo:Manage repos within a workspace or preset'
+                'source:Manage registered sources (upstream git repos)'
+                'preset:Manage presets'
+                'rebase:Fetch origin and rebase a workspace repo'
                 'upgrade:Self-update to the latest version'
                 'config:Output shell configuration'
             )
@@ -82,51 +77,85 @@ _box() {
             ;;
         args)
             case $words[1] in
-                new)
-                    _arguments \
-                        '*--repo=[Select specific repo]:repo:__box_repos' \
-                        '--preset=[Use a preset]:preset:__box_presets' \
-                        '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
-                        '--no-fetch[Skip git fetch before creating the workspace]' \
-                        '(-v --verbose)'{-v,--verbose}'[Show detailed output]' \
-                        '1:session name:' \
-                        '*:command:'
-                    ;;
-                list|ls)
-                    _arguments \
-                        '--project[Show only sessions for the current project]' \
-                        '-p[Show only sessions for the current project]' \
-                        '--quiet[Only print session names]' \
-                        '-q[Only print session names]'
-                    ;;
-                remove|rm)
-                    _arguments \
-                        '(-v --verbose)'{-v,--verbose}'[Show detailed output]' \
-                        '(-a --all)'{-a,--all}'[Remove every session]' \
-                        '1:session name:__box_sessions'
-                    ;;
-                edit)
-                    _arguments \
-                        '(-v --verbose)'{-v,--verbose}'[Show detailed output]' \
-                        '*--add=[Add a repo to the session]:repo:__box_repos' \
-                        '*--remove=[Remove a repo from the session]:repo:__box_repos' \
-                        '1:session name:__box_sessions'
-                    ;;
-                switch|sw|cd)
+                workspace|ws)
                     if (( CURRENT == 2 )); then
-                        __box_sessions
-                    fi
-                    ;;
-                rebase)
-                    if (( CURRENT == 2 )); then
-                        _message 'branch (e.g. main)'
+                        local -a ws_subcmds
+                        ws_subcmds=(
+                            'add:Create a new workspace'
+                            'list:List workspaces'
+                            'ls:List workspaces'
+                            'remove:Remove a workspace'
+                            'rm:Remove a workspace'
+                            'switch:Switch into a workspace'
+                            'sw:Switch into a workspace'
+                        )
+                        _describe 'workspace subcommand' ws_subcmds
+                    else
+                        case $words[2] in
+                            add)
+                                _arguments \
+                                    '*--repo=[Select specific source]:source:__box_repos' \
+                                    '--preset=[Use a preset]:preset:__box_presets' \
+                                    '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
+                                    '--no-fetch[Skip git fetch before creating the workspace]'
+                                ;;
+                            list|ls)
+                                _arguments \
+                                    '(-q --quiet)'{-q,--quiet}'[Only print workspace names]'
+                                ;;
+                            remove|rm)
+                                if [[ $words[CURRENT] == -* ]]; then
+                                    _arguments '(-a --all)'{-a,--all}'[Remove every workspace]'
+                                elif (( CURRENT == 3 )); then
+                                    __box_sessions
+                                fi
+                                ;;
+                            switch|sw)
+                                if (( CURRENT == 3 )); then
+                                    __box_sessions
+                                fi
+                                ;;
+                        esac
                     fi
                     ;;
                 repo)
                     if (( CURRENT == 2 )); then
                         local -a repo_subcmds
-                        repo_subcmds=('add:Register a git repo' 'remove:Unregister a repo' 'rm:Unregister a repo' 'list:List registered repos' 'ls:List registered repos')
+                        repo_subcmds=(
+                            'add:Add repo(s) to a workspace or preset'
+                            'remove:Remove repo(s) from a workspace or preset'
+                            'rm:Remove repo(s) from a workspace or preset'
+                            'list:List repos in a workspace or preset'
+                            'ls:List repos in a workspace or preset'
+                        )
                         _describe 'repo subcommand' repo_subcmds
+                    else
+                        case $words[2] in
+                            add|remove|rm)
+                                _arguments \
+                                    '--workspace=[Target workspace]:workspace:__box_sessions' \
+                                    '--preset=[Target preset]:preset:__box_presets' \
+                                    '*:source:__box_repos'
+                                ;;
+                            list|ls)
+                                _arguments \
+                                    '--workspace=[Target workspace]:workspace:__box_sessions' \
+                                    '--preset=[Target preset]:preset:__box_presets'
+                                ;;
+                        esac
+                    fi
+                    ;;
+                source)
+                    if (( CURRENT == 2 )); then
+                        local -a source_subcmds
+                        source_subcmds=(
+                            'add:Register a git repo as a source'
+                            'remove:Unregister a source'
+                            'rm:Unregister a source'
+                            'list:List registered sources'
+                            'ls:List registered sources'
+                        )
+                        _describe 'source subcommand' source_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
                             remove|rm)
@@ -141,18 +170,30 @@ _box() {
                 preset)
                     if (( CURRENT == 2 )); then
                         local -a preset_subcmds
-                        preset_subcmds=('add:Create or update a preset' 'edit:Edit repos in an existing preset' 'remove:Remove a preset' 'rm:Remove a preset' 'list:List presets' 'ls:List presets')
+                        preset_subcmds=(
+                            'add:Create or update a preset'
+                            'remove:Remove a preset'
+                            'rm:Remove a preset'
+                            'list:List presets'
+                            'ls:List presets'
+                        )
                         _describe 'preset subcommand' preset_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
-                            edit|remove|rm)
+                            remove|rm)
                                 __box_presets
                                 ;;
                         esac
                     elif [[ $words[2] == "add" ]]; then
                         _arguments \
-                            '*--repo=[Select specific repo]:repo:__box_repos'
+                            '*--repo=[Select specific source]:source:__box_repos'
                     fi
+                    ;;
+                rebase)
+                    _arguments \
+                        '--workspace=[Workspace name]:workspace:__box_sessions' \
+                        '--repo=[Repo within the workspace]:repo:__box_repos' \
+                        '1:branch (e.g. main):'
                     ;;
                 config)
                     if (( CURRENT == 2 )); then

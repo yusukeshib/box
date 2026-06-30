@@ -1,111 +1,118 @@
+__box_sessions_list() {
+    local __box_root="${BOX_ROOT:-$HOME/.box}"
+    local out=""
+    if [[ -d "$__box_root/sessions" ]]; then
+        for sess in "$__box_root/sessions"/*/; do
+            ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && out+=" $(basename "$sess")"
+        done
+    fi
+    echo "$out"
+}
+
+__box_repos_list() {
+    local __box_root="${BOX_ROOT:-$HOME/.box}"
+    local out=""
+    if [[ -d "$__box_root/repos" ]]; then
+        for bare in "$__box_root/repos"/*.git; do
+            [[ -d "$bare" ]] || continue
+            out+=" $(basename "$bare" .git)"
+        done
+    fi
+    echo "$out"
+}
+
+__box_presets_list() {
+    local __box_root="${BOX_ROOT:-$HOME/.box}"
+    local out=""
+    if [[ -d "$__box_root/presets" ]]; then
+        for f in "$__box_root/presets"/*; do
+            [[ -f "$f" ]] || continue
+            out+=" $(basename "$f")"
+        done
+    fi
+    echo "$out"
+}
+
 _box() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="new edit remove rm list switch sw cd rebase repo preset upgrade config"
-    local session_cmds="edit remove rm switch sw cd"
-    local __box_root="${BOX_ROOT:-$HOME/.box}"
+    local subcommands="workspace ws repo source preset rebase upgrade config"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
         return
     fi
 
-    local subcmd="${words[1]}"
-    [[ -z "$subcmd" ]] && return
+    local sub="${words[1]}"
+    [[ -z "$sub" ]] && return
 
-    case "$subcmd" in
-        new)
-            case "$cur" in
-                -*)
-                    COMPREPLY=($(compgen -W "--repo --preset --strategy --no-fetch --verbose -v" -- "$cur"))
-                    ;;
-            esac
-            if [[ "$prev" == "--strategy" ]]; then
-                COMPREPLY=($(compgen -W "clone worktree" -- "$cur"))
-            fi
-            ;;
-        list|ls)
-            case "$cur" in
-                -*)
-                    COMPREPLY=($(compgen -W "--project -p --quiet -q" -- "$cur"))
-                    ;;
-            esac
-            ;;
-        edit)
-            if [[ "$prev" == "--add" || "$prev" == "--remove" ]]; then
-                local repos=""
-                if [[ -d "$__box_root/repos" ]]; then
-                    for bare in "$__box_root/repos"/*.git; do
-                        [[ -d "$bare" ]] || continue
-                        local name=$(basename "$bare" .git)
-                        [[ -n "$name" ]] && repos+=" $name"
-                    done
-                fi
-                COMPREPLY=($(compgen -W "$repos" -- "$cur"))
+    case "$sub" in
+        workspace|ws)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "add list ls remove rm switch sw" -- "$cur"))
                 return
             fi
-            case "$cur" in
-                -*)
-                    COMPREPLY=($(compgen -W "--add --remove --verbose -v" -- "$cur"))
+            case "${words[2]}" in
+                add)
+                    case "$prev" in
+                        --strategy)
+                            COMPREPLY=($(compgen -W "clone worktree" -- "$cur")); return ;;
+                        --repo)
+                            COMPREPLY=($(compgen -W "$(__box_repos_list)" -- "$cur")); return ;;
+                        --preset)
+                            COMPREPLY=($(compgen -W "$(__box_presets_list)" -- "$cur")); return ;;
+                    esac
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--repo --preset --strategy --no-fetch" -- "$cur"))
                     ;;
-                *)
-                    if [[ $cword -eq 2 ]]; then
-                        local sessions=""
-                        if [[ -d "$__box_root/sessions" ]]; then
-                            for sess in "$__box_root/sessions"/*/; do
-                                ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
-                            done
-                        fi
-                        COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+                list|ls)
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--quiet -q" -- "$cur"))
+                    ;;
+                remove|rm)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "--all -a" -- "$cur"))
+                    elif [[ $cword -eq 3 ]]; then
+                        COMPREPLY=($(compgen -W "$(__box_sessions_list)" -- "$cur"))
+                    fi
+                    ;;
+                switch|sw)
+                    if [[ $cword -eq 3 ]]; then
+                        COMPREPLY=($(compgen -W "$(__box_sessions_list)" -- "$cur"))
                     fi
                     ;;
             esac
-            ;;
-        remove|rm)
-            case "$cur" in
-                -*)
-                    COMPREPLY=($(compgen -W "--all -a --verbose -v" -- "$cur"))
-                    ;;
-                *)
-                    if [[ $cword -eq 2 ]]; then
-                        local sessions=""
-                        if [[ -d "$__box_root/sessions" ]]; then
-                            for sess in "$__box_root/sessions"/*/; do
-                                ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
-                            done
-                        fi
-                        COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
-                    fi
-                    ;;
-            esac
-            ;;
-        switch|sw|cd)
-            if [[ $cword -eq 2 ]]; then
-                local sessions=""
-                if [[ -d "$__box_root/sessions" ]]; then
-                    for sess in "$__box_root/sessions"/*/; do
-                        ([[ -f "$sess/project_dir" ]] || [[ -f "$sess/repos" ]]) && sessions+=" $(basename "$sess")"
-                    done
-                fi
-                COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
-            fi
             ;;
         repo)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
+                return
+            fi
+            case "$prev" in
+                --workspace)
+                    COMPREPLY=($(compgen -W "$(__box_sessions_list)" -- "$cur")); return ;;
+                --preset)
+                    COMPREPLY=($(compgen -W "$(__box_presets_list)" -- "$cur")); return ;;
+            esac
+            case "${words[2]}" in
+                add|remove|rm)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "--workspace --preset" -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W "$(__box_repos_list)" -- "$cur"))
+                    fi
+                    ;;
+                list|ls)
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--workspace --preset" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        source)
             if [[ $cword -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${words[2]}" in
                     remove|rm)
-                        local repos=""
-                        if [[ -d "$__box_root/repos" ]]; then
-                            for bare in "$__box_root/repos"/*.git; do
-                                [[ -d "$bare" ]] || continue
-                                local name=$(basename "$bare" .git)
-                                [[ -n "$name" ]] && repos+=" $name"
-                            done
-                        fi
-                        COMPREPLY=($(compgen -W "$repos" -- "$cur"))
+                        COMPREPLY=($(compgen -W "$(__box_repos_list)" -- "$cur"))
                         ;;
                     add)
                         COMPREPLY=($(compgen -d -- "$cur"))
@@ -115,21 +122,29 @@ _box() {
             ;;
         preset)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add edit remove rm list ls" -- "$cur"))
-            elif [[ $cword -eq 3 ]]; then
-                case "${words[2]}" in
-                    edit|remove|rm)
-                        local presets=""
-                        if [[ -d "$__box_root/presets" ]]; then
-                            for f in "$__box_root/presets"/*; do
-                                [[ -f "$f" ]] || continue
-                                presets+=" $(basename "$f")"
-                            done
-                        fi
-                        COMPREPLY=($(compgen -W "$presets" -- "$cur"))
-                        ;;
-                esac
+                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
+                return
             fi
+            if [[ "$prev" == "--repo" ]]; then
+                COMPREPLY=($(compgen -W "$(__box_repos_list)" -- "$cur")); return
+            fi
+            case "${words[2]}" in
+                remove|rm)
+                    [[ $cword -eq 3 ]] && COMPREPLY=($(compgen -W "$(__box_presets_list)" -- "$cur"))
+                    ;;
+                add)
+                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--repo" -- "$cur"))
+                    ;;
+            esac
+            ;;
+        rebase)
+            case "$prev" in
+                --workspace)
+                    COMPREPLY=($(compgen -W "$(__box_sessions_list)" -- "$cur")); return ;;
+                --repo)
+                    COMPREPLY=($(compgen -W "$(__box_repos_list)" -- "$cur")); return ;;
+            esac
+            [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--workspace --repo" -- "$cur"))
             ;;
         config)
             if [[ $cword -eq 2 ]]; then

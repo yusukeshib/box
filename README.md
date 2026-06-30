@@ -14,7 +14,7 @@ A CLI tool that manages sandboxed git workspaces. Multi-repo support included.
 
 Box creates and manages named workspaces using `git worktree` (default) or `git clone --local`.
 
-- Register repos with `box repo add` (bare-cloned to `~/.box/repos/`), then create sessions — each session sets up repos in `~/.box/workspaces/<session>/`
+- Register sources with `box source add` (bare-cloned to `~/.box/repos/`), then create workspaces — each workspace sets up repos in `~/.box/workspaces/<name>/`
 - Multiple repos can be grouped into a single session, or saved as a named **preset** for reuse
 - Worktree mode is lightweight and fast; clone mode gives full `.git` isolation
 
@@ -62,115 +62,126 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 ## Quick Start
 
 ```bash
-# 1. Register a repo
-box repo add ~/projects/my-app
+# 1. Register a source
+box source add ~/projects/my-app
 
-# 2. Create a session via TUI
+# 2. Create a workspace via TUI
 box
 
 # 3. Or create via CLI
-box new my-feature --repo my-app
+box workspace add my-feature --repo my-app
 
 # 4. Switch into the workspace later
-box switch my-feature
+box workspace switch my-feature
 
 # 5. Clean up
-box remove my-feature
+box workspace remove my-feature
 ```
 
 ## Usage
 
+Box has a three-tier model: a **source** is a registered upstream git repo, a
+**workspace** is a named sandbox built from one or more sources, and a **repo**
+is a source checked out inside a workspace (or listed in a preset). Every
+command targets an explicit object — there is no implicit current-directory
+resolution.
+
 ```bash
-box                                        Interactive TUI (create new sessions)
-box new <name> --repo <r> [options]        Create a new session
-box edit <name> [--add <r>] [--remove <r>] Add/remove repos in a session
-box list [options]                         List sessions (alias: ls)
-box remove [<name>] [--all]                Remove a session (alias: rm)
-box switch <name>                          Switch into the session workspace (aliases: cd, sw)
-box rebase <branch>                        Fetch origin and rebase HEAD onto <branch>
-box repo add [path]                        Register a git repo (bare clone)
-box repo remove <name>                     Unregister a repo (alias: rm)
-box repo list                              List registered repos (alias: ls)
-box preset add <name> --repo <r>...        Create or update a preset
-box preset edit <name>                     Edit repos in a preset (TUI)
-box preset remove <name>                   Remove a preset (alias: rm)
-box preset list                            List presets (alias: ls)
-box config zsh|bash                        Output shell configuration
-box upgrade                                Upgrade to latest version
+box                                         Interactive TUI (create a workspace)
+box workspace add <name> --repo <r> [opts]  Create a workspace (alias: ws)
+box workspace list [-q]                     List workspaces (alias: ls)
+box workspace remove [<name>] [--all]       Remove a workspace (alias: rm)
+box workspace switch <name>                 Switch into a workspace (alias: sw)
+box repo add <r>... --workspace|--preset <name>     Add repo(s) to a workspace/preset
+box repo remove <r>... --workspace|--preset <name>  Remove repo(s) (alias: rm)
+box repo list --workspace|--preset <name>           List repos (alias: ls)
+box source add <url|path>                   Register a source (bare clone; `.` = cwd)
+box source remove <name>                    Unregister a source (alias: rm)
+box source list                             List registered sources (alias: ls)
+box preset add <name> --repo <r>...         Create or update a preset
+box preset remove <name>                    Remove a preset (alias: rm)
+box preset list                             List presets (alias: ls)
+box rebase <branch> --workspace <name> --repo <r>   Fetch origin and rebase a repo
+box config zsh|bash                         Output shell configuration
+box upgrade                                 Upgrade to latest version
 ```
+
+Subcommand aliases: `workspace`=`ws`, and within each group `list`=`ls`,
+`remove`=`rm`, `switch`=`sw`.
 
 `-v`/`--verbose` is a global flag (also via `BOX_VERBOSE=1`) that turns on detailed output.
 
-### Create a session
+### Create a workspace
 
 ```bash
 # Default (worktree strategy)
-box new my-feature --repo my-app
+box workspace add my-feature --repo my-app
 
 # Use clone strategy for full isolation
-box new my-feature --repo my-app --strategy clone
+box workspace add my-feature --repo my-app --strategy clone
 
 # Multiple repos
-box new my-feature --repo frontend --repo backend
+box workspace add my-feature --repo frontend --repo backend
 
 # From a preset
-box new my-feature --preset work
+box workspace add my-feature --preset work
 ```
 
-`--repo` (repeatable) or `--preset` is required. To create sessions interactively, run `box` with no arguments.
+`--repo` (repeatable) or `--preset` is required. To create workspaces interactively, run `box` with no arguments.
 
-### Edit session repos
+### Add / remove repos in a workspace
 
 ```bash
-box edit my-feature                                # TUI: toggle repos
-box edit my-feature --add app-c                    # non-interactive add
-box edit my-feature --add app-c --remove app-a     # add and remove
+box repo add app-c --workspace my-feature            # add one repo
+box repo add app-c app-d --workspace my-feature      # add several
+box repo remove app-a --workspace my-feature         # remove a repo
+box repo list --workspace my-feature                 # list repos in the workspace
 ```
 
-`--add` and `--remove` may be repeated. When either is set, the TUI is skipped.
+The same `box repo` group manages preset membership — swap `--workspace <name>`
+for `--preset <name>`. Exactly one of `--workspace` / `--preset` is required.
 
-### List and manage sessions
+### List and manage workspaces
 
 ```bash
-box list                        # List all sessions
-box ls                          # Alias
-box list -q                     # Names only (for scripting)
-box list -p                     # Only sessions for the current project
-box remove my-feature           # Remove a session by name
-box remove                      # Interactive selector (multi-select)
-box remove --all                # Remove every session
+box workspace list              # List all workspaces
+box workspace ls                # Alias
+box workspace list -q           # Names only (for scripting)
+box workspace remove my-feature # Remove a workspace by name
+box workspace remove            # Interactive selector (multi-select)
+box workspace remove --all      # Remove every workspace
 ```
 
 ### Switch into a workspace
 
 ```bash
-box switch my-feature           # Switch into the session workspace
-box cd my-feature               # Alias
-box sw my-feature               # Alias
+box workspace switch my-feature # Switch into the workspace
+box workspace sw my-feature     # Alias
+box ws sw my-feature            # `ws` is an alias of `workspace`
 ```
 
-With shell integration enabled (`eval "$(box config zsh)"`), `box switch` changes your working directory. If you set `BOX_POST_SWITCH_HOOK`, it also runs that hook with the session name (see [Shell Integration](#shell-integration)). Without shell integration, the workspace path is printed to stdout.
+With shell integration enabled (`eval "$(box config zsh)"`), `box workspace switch` changes your working directory. If you set `BOX_POST_SWITCH_HOOK`, it also runs that hook with the workspace name (see [Shell Integration](#shell-integration)). Without shell integration, the workspace path is printed to stdout.
 
-### Rebase the current branch
+### Rebase a workspace repo
 
 ```bash
-box rebase main                 # fetch origin in the bare repo, then rebase HEAD onto main
+box rebase main --workspace my-feature --repo my-app   # fetch origin, then rebase onto main
 ```
 
-`box rebase` runs from inside any session worktree. It fetches the bare repo behind the worktree (handling sibling-worktree branches safely) and then runs `git rebase <branch>` in the current worktree.
+`box rebase` targets an explicit workspace repo. It fetches the bare repo behind the worktree (handling sibling-worktree branches safely) and then runs `git rebase <branch>` in that repo's worktree.
 
 ## Multi-repo Workspaces
 
-Register repos (bare-cloned to `~/.box/repos/`), then reference them by name when creating sessions:
+Register sources (bare-cloned to `~/.box/repos/`), then reference them by name when creating workspaces:
 
 ```bash
-box repo add ~/projects/frontend
-box repo add ~/projects/backend
+box source add ~/projects/frontend
+box source add ~/projects/backend
 
-box new my-feature --repo frontend --repo backend
+box workspace add my-feature --repo frontend --repo backend
 ```
 
-Repos are always fetched before session creation. Each repo is set up in `~/.box/workspaces/<session>/<repo>/`. For single-repo sessions, the workspace path resolves directly to the repo subdirectory.
+Repos are always fetched before workspace creation. Each repo is set up in `~/.box/workspaces/<workspace>/<repo>/`. For single-repo workspaces, the workspace path resolves directly to the repo subdirectory.
 
 ### Presets
 
@@ -179,45 +190,48 @@ A preset is a named list of repos you create sessions from regularly:
 ```bash
 box preset add work --repo frontend --repo backend   # define
 box preset add work                                  # interactive selector
-box preset edit work                                 # update repos (TUI)
+box repo add api --preset work                       # add a repo to the preset
+box repo remove backend --preset work                # remove a repo from the preset
+box repo list --preset work                          # list the preset's repos
 box preset list                                      # list presets
 box preset remove work                               # delete
 
-box new my-feature --preset work                     # use it
+box workspace add my-feature --preset work           # use it
 ```
 
 ## Options
 
-### `box new`
+### `box workspace add`
 
 | Option | Description |
 |--------|-------------|
-| `<name>` | Session name (required) |
+| `<name>` | Workspace name (required) |
 | `--repo <name>` | Repos to include (repeatable; mutually exclusive with `--preset`) |
 | `--preset <name>` | Use a preset (mutually exclusive with `--repo`) |
 | `--strategy <strategy>` | `worktree` (default) or `clone` |
 
-### `box edit`
+### `box repo add` / `box repo remove` / `box repo list`
 
 | Option | Description |
 |--------|-------------|
-| `<name>` | Session name (required) |
-| `--add <repo>` | Add a repo (repeatable; skips the TUI when set) |
-| `--remove <repo>` | Remove a repo (repeatable; skips the TUI when set) |
+| `<repo>...` | Repo name(s) (required for add/remove) |
+| `--workspace <name>` | Target workspace (mutually exclusive with `--preset`) |
+| `--preset <name>` | Target preset (mutually exclusive with `--workspace`) |
 
-### `box list`
+Exactly one of `--workspace` / `--preset` must be given.
 
-| Option | Description |
-|--------|-------------|
-| `--project`, `-p` | Show only sessions for the current project directory |
-| `--quiet`, `-q` | Only print session names |
-
-### `box remove`
+### `box workspace list`
 
 | Option | Description |
 |--------|-------------|
-| `<name>` | Session name (omit to open interactive selector) |
-| `--all`, `-a` | Remove every session (conflicts with `<name>`) |
+| `--quiet`, `-q` | Only print workspace names |
+
+### `box workspace remove`
+
+| Option | Description |
+|--------|-------------|
+| `<name>` | Workspace name (omit to open interactive selector) |
+| `--all`, `-a` | Remove every workspace (conflicts with `<name>`) |
 
 ## Environment Variables
 
@@ -226,7 +240,7 @@ box new my-feature --preset work                     # use it
 | `BOX_STRATEGY` | Default workspace strategy (`worktree` or `clone`). Overridden by `--strategy` |
 | `BOX_VERBOSE` | When set, equivalent to `--verbose` |
 | `BOX_ROOT` | Override the box data directory (default `~/.box`). Read by the shell completions |
-| `BOX_POST_SWITCH_HOOK` | Shell snippet run after `box switch` / `box new`. The session name is available as `$BOX_SESSION_NAME`. See [Shell Integration](#shell-integration) |
+| `BOX_POST_SWITCH_HOOK` | Shell snippet run after `box workspace switch` / `box workspace add`. The workspace name is available as `$BOX_SESSION_NAME`. See [Shell Integration](#shell-integration) |
 
 ## Shell Integration
 
@@ -240,13 +254,13 @@ eval "$(box config bash)"
 
 This provides:
 
-- Tab completion for sessions, repos, and presets
-- A `box` shell function so `box switch` / `box new` change your working directory
-- A `BOX_POST_SWITCH_HOOK` that runs after switching into or creating a session, with the session name in `$BOX_SESSION_NAME`
+- Tab completion for workspaces, sources, and presets
+- A `box` shell function so `box workspace switch` / `box workspace add` change your working directory
+- A `BOX_POST_SWITCH_HOOK` that runs after switching into or creating a workspace, with the workspace name in `$BOX_SESSION_NAME`
 
 ### Post-switch hook
 
-Set `BOX_POST_SWITCH_HOOK` to any shell snippet you want to run when a session is entered (fires on both `box new` and `box switch`). Common choices:
+Set `BOX_POST_SWITCH_HOOK` to any shell snippet you want to run when a workspace is entered (fires on both `box workspace add` and `box workspace switch`). Common choices:
 
 ```bash
 # tmux — rename the current window
@@ -271,17 +285,17 @@ Box supports two workspace strategies:
 ### Worktree (default)
 
 ```
-~/.box/repos/             box new my-feature        ~/.box/workspaces/my-feature/
+~/.box/repos/         box workspace add my-feature  ~/.box/workspaces/my-feature/
   frontend.git   ──── git worktree add ─────>      frontend/
   backend.git                                      backend/
 ```
 
-`git worktree` creates a lightweight working tree linked to the bare repo. It shares the object store, so creation is instant and uses minimal disk space. Each worktree gets its own `box/<session>` branch, and `box remove` cleans up the worktree properly.
+`git worktree` creates a lightweight working tree linked to the bare repo. It shares the object store, so creation is instant and uses minimal disk space. Each worktree gets its own `box/<name>` branch, and `box workspace remove` cleans up the worktree properly.
 
 ### Clone
 
 ```
-~/.box/repos/             box new my-feature        ~/.box/workspaces/my-feature/
+~/.box/repos/         box workspace add my-feature  ~/.box/workspaces/my-feature/
   frontend.git   ──── git clone --local ────>      frontend/
   backend.git                                      backend/
 ```
@@ -304,7 +318,7 @@ Box supports two workspace strategies:
 | Session metadata | `~/.box/sessions/<session>/` |
 | Presets | `~/.box/presets/<name>` |
 | Default strategy | `git worktree` (override with `--strategy clone`) |
-| Cleanup | `box remove` deletes workspace and session data |
+| Cleanup | `box workspace remove` deletes workspace and session data |
 
 ## License
 
