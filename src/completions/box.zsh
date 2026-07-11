@@ -65,7 +65,6 @@ _box() {
             local -a subcmds
             subcmds=(
                 'workspace:Manage workspaces (create, list, switch, remove)'
-                'ws:Manage workspaces (alias of workspace)'
                 'repo:Manage repos within a workspace or preset'
                 'source:Manage registered sources (upstream git repos)'
                 'preset:Manage presets'
@@ -83,11 +82,8 @@ _box() {
                         ws_subcmds=(
                             'add:Create a new workspace'
                             'list:List workspaces'
-                            'ls:List workspaces'
                             'remove:Remove a workspace'
-                            'rm:Remove a workspace'
                             'switch:Switch into a workspace'
-                            'sw:Switch into a workspace'
                         )
                         _describe 'workspace subcommand' ws_subcmds
                     else
@@ -124,9 +120,7 @@ _box() {
                         repo_subcmds=(
                             'add:Add repo(s) to a workspace or preset'
                             'remove:Remove repo(s) from a workspace or preset'
-                            'rm:Remove repo(s) from a workspace or preset'
                             'list:List repos in a workspace or preset'
-                            'ls:List repos in a workspace or preset'
                         )
                         _describe 'repo subcommand' repo_subcmds
                     else
@@ -151,9 +145,7 @@ _box() {
                         source_subcmds=(
                             'add:Register a git repo as a source'
                             'remove:Unregister a source'
-                            'rm:Unregister a source'
                             'list:List registered sources'
-                            'ls:List registered sources'
                         )
                         _describe 'source subcommand' source_subcmds
                     elif (( CURRENT == 3 )); then
@@ -173,9 +165,7 @@ _box() {
                         preset_subcmds=(
                             'add:Create or update a preset'
                             'remove:Remove a preset'
-                            'rm:Remove a preset'
                             'list:List presets'
-                            'ls:List presets'
                         )
                         _describe 'preset subcommand' preset_subcmds
                     elif (( CURRENT == 3 )); then

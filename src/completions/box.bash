@@ -37,7 +37,7 @@ _box() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="workspace ws repo source preset rebase upgrade config"
+    local subcommands="workspace repo source preset rebase upgrade config"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
@@ -50,7 +50,7 @@ _box() {
     case "$sub" in
         workspace|ws)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add list ls remove rm switch sw" -- "$cur"))
+                COMPREPLY=($(compgen -W "add list remove switch" -- "$cur"))
                 return
             fi
             case "${words[2]}" in
@@ -84,7 +84,7 @@ _box() {
             ;;
         repo)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove list" -- "$cur"))
                 return
             fi
             case "$prev" in
@@ -108,7 +108,7 @@ _box() {
             ;;
         source)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove list" -- "$cur"))
             elif [[ $cword -eq 3 ]]; then
                 case "${words[2]}" in
                     remove|rm)
@@ -122,7 +122,7 @@ _box() {
             ;;
         preset)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove rm list ls" -- "$cur"))
+                COMPREPLY=($(compgen -W "add remove list" -- "$cur"))
                 return
             fi
             if [[ "$prev" == "--repo" ]]; then
