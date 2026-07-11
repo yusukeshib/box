@@ -37,7 +37,7 @@ CONVENTIONS (important for scripting/agents):\n\
   - `box rebase` requires --workspace <name> and --repo <name>.\n\
   - Subcommand aliases: workspace=ws, and within each group list=ls, remove=rm, switch=sw.\n\
   - `box` with no arguments launches an interactive TUI to create a workspace.",
-    after_help = "Examples:\n  box                                          # interactive workspace manager\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a preset\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box                                          # interactive workspace manager\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -133,8 +133,16 @@ enum SourceAction {
 
 #[derive(Subcommand, Debug)]
 enum PresetAction {
-    /// Create or update a preset
+    /// Create a new preset (fails if it already exists)
     Add {
+        /// Preset name
+        name: String,
+        /// Repos to include (can be repeated; opens interactive selector if omitted)
+        #[arg(long)]
+        repo: Vec<String>,
+    },
+    /// Replace an existing preset's repos (fails if it doesn't exist)
+    Update {
         /// Preset name
         name: String,
         /// Repos to include (can be repeated; opens interactive selector if omitted)
@@ -274,6 +282,7 @@ fn main() {
         },
         Some(Commands::Preset { action }) => match action {
             PresetAction::Add { name, repo } => cmd_preset_add(&name, &repo),
+            PresetAction::Update { name, repo } => cmd_preset_update(&name, &repo),
             PresetAction::Remove { name } => cmd_preset_remove(&name),
             PresetAction::List => cmd_preset_list(),
         },
@@ -590,7 +599,7 @@ fn cmd_repo_modify(
                 .map(|r| r.as_str())
                 .collect();
 
-            preset::add(&name, &new_repos)?;
+            preset::update(&name, &new_repos)?;
 
             if !added.is_empty() {
                 eprintln!("\x1b[2madded:\x1b[0m {}", added.join(", "));
@@ -922,14 +931,18 @@ fn cmd_source_list() -> Result<i32> {
 
 fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
     if repos.is_empty() {
-        // Interactive repo selection — pre-select existing preset repos if updating.
+        // Creating a new preset: bail early (before opening the interactive
+        // selector) if one already exists under this name.
         // validate_name is called by load(), so path traversal is rejected.
-        let current = match preset::load(name) {
-            Ok(repos) => repos,
-            Err(e) if e.to_string().contains("No preset named") => Vec::new(),
+        match preset::load(name) {
+            Ok(_) => bail!(
+                "Preset '{}' already exists. Use `box preset update` to replace it.",
+                name
+            ),
+            Err(e) if e.to_string().contains("No preset named") => {}
             Err(e) => return Err(e),
-        };
-        match tui::select_preset_repos(&current)? {
+        }
+        match tui::select_preset_repos(&[])? {
             tui::TuiAction::Edit { repos } => {
                 preset::add(name, &repos)?;
             }
@@ -939,6 +952,26 @@ fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
         }
     } else {
         preset::add(name, repos)?;
+    }
+    Ok(0)
+}
+
+fn cmd_preset_update(name: &str, repos: &[String]) -> Result<i32> {
+    if repos.is_empty() {
+        // Updating an existing preset: pre-select its current repos in the
+        // interactive selector. load() also gives a clear error if the
+        // preset doesn't exist, before we bother opening the TUI.
+        let current = preset::load(name)?;
+        match tui::select_preset_repos(&current)? {
+            tui::TuiAction::Edit { repos } => {
+                preset::update(name, &repos)?;
+            }
+            _ => {
+                return Ok(0);
+            }
+        }
+    } else {
+        preset::update(name, repos)?;
     }
     Ok(0)
 }
@@ -1569,6 +1602,22 @@ mod tests {
                 assert_eq!(repo, vec!["app-a", "app-b"]);
             }
             other => panic!("expected Preset Add, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_preset_update_parses() {
+        let cli = parse(&[
+            "preset", "update", "work", "--repo", "app-a", "--repo", "app-c",
+        ]);
+        match cli.command {
+            Some(Commands::Preset {
+                action: PresetAction::Update { name, repo },
+            }) => {
+                assert_eq!(name, "work");
+                assert_eq!(repo, vec!["app-a", "app-c"]);
+            }
+            other => panic!("expected Preset Update, got {:?}", other),
         }
     }
 

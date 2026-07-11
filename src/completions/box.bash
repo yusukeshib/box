@@ -122,7 +122,7 @@ _box() {
             ;;
         preset)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add remove list" -- "$cur"))
+                COMPREPLY=($(compgen -W "add update remove list" -- "$cur"))
                 return
             fi
             if [[ "$prev" == "--repo" ]]; then
@@ -131,6 +131,13 @@ _box() {
             case "${words[2]}" in
                 remove|rm)
                     [[ $cword -eq 3 ]] && COMPREPLY=($(compgen -W "$(__box_presets_list)" -- "$cur"))
+                    ;;
+                update)
+                    if [[ $cword -eq 3 ]]; then
+                        COMPREPLY=($(compgen -W "$(__box_presets_list)" -- "$cur"))
+                    elif [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "--repo" -- "$cur"))
+                    fi
                     ;;
                 add)
                     [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--repo" -- "$cur"))

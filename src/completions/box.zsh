@@ -163,18 +163,19 @@ _box() {
                     if (( CURRENT == 2 )); then
                         local -a preset_subcmds
                         preset_subcmds=(
-                            'add:Create or update a preset'
+                            'add:Create a new preset'
+                            'update:Replace an existing preset'"'"'s repos'
                             'remove:Remove a preset'
                             'list:List presets'
                         )
                         _describe 'preset subcommand' preset_subcmds
                     elif (( CURRENT == 3 )); then
                         case $words[2] in
-                            remove|rm)
+                            remove|rm|update)
                                 __box_presets
                                 ;;
                         esac
-                    elif [[ $words[2] == "add" ]]; then
+                    elif [[ $words[2] == "add" || $words[2] == "update" ]]; then
                         _arguments \
                             '*--repo=[Select specific source]:source:__box_repos'
                     fi

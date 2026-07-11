@@ -56,8 +56,32 @@ pub fn load(name: &str) -> Result<Vec<String>> {
     Ok(repos)
 }
 
+/// Create a new preset. Fails if a preset with this name already exists —
+/// use `update` to replace an existing one's repo list.
 pub fn add(name: &str, repos: &[String]) -> Result<()> {
     validate_name(name)?;
+    let path = presets_dir()?.join(name);
+    if path.is_file() {
+        bail!(
+            "Preset '{}' already exists. Use `box preset update` to replace it.",
+            name
+        );
+    }
+    write_preset(name, repos, "saved")
+}
+
+/// Replace an existing preset's repo list. Fails if no preset with this name
+/// exists — use `add` to create a new one.
+pub fn update(name: &str, repos: &[String]) -> Result<()> {
+    validate_name(name)?;
+    let path = presets_dir()?.join(name);
+    if !path.is_file() {
+        bail!("No preset named '{}' found.", name);
+    }
+    write_preset(name, repos, "updated")
+}
+
+fn write_preset(name: &str, repos: &[String], verb: &str) -> Result<()> {
     if repos.is_empty() {
         bail!("A preset must contain at least one repo.");
     }
@@ -83,10 +107,8 @@ pub fn add(name: &str, repos: &[String]) -> Result<()> {
     fs::create_dir_all(&dir)?;
 
     let path = dir.join(name);
-    let exists = path.is_file();
     fs::write(&path, unique.join("\n") + "\n")?;
 
-    let verb = if exists { "updated" } else { "saved" };
     eprintln!(
         "Preset '\x1b[1m{}\x1b[0m' {} ({}).",
         name,
@@ -239,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_overwrites() {
+    fn test_add_rejects_existing() {
         with_temp_home(|home| {
             let repo_a = make_git_repo(home, "app-a");
             let repo_b = make_git_repo(home, "app-b");
@@ -247,10 +269,36 @@ mod tests {
             repo::add(repo_b.to_str().unwrap()).unwrap();
 
             add("work", &["app-a".to_string()]).unwrap();
-            add("work", &["app-b".to_string()]).unwrap();
+            let err = add("work", &["app-b".to_string()]).unwrap_err();
+            assert!(err.to_string().contains("already exists"));
+
+            // Original repo list is untouched.
+            let repos = load("work").unwrap();
+            assert_eq!(repos, vec!["app-a"]);
+        });
+    }
+
+    #[test]
+    fn test_update_replaces_existing() {
+        with_temp_home(|home| {
+            let repo_a = make_git_repo(home, "app-a");
+            let repo_b = make_git_repo(home, "app-b");
+            repo::add(repo_a.to_str().unwrap()).unwrap();
+            repo::add(repo_b.to_str().unwrap()).unwrap();
+
+            add("work", &["app-a".to_string()]).unwrap();
+            update("work", &["app-b".to_string()]).unwrap();
 
             let repos = load("work").unwrap();
             assert_eq!(repos, vec!["app-b"]);
+        });
+    }
+
+    #[test]
+    fn test_update_rejects_missing() {
+        with_temp_home(|_| {
+            let err = update("nonexistent", &["app-a".to_string()]).unwrap_err();
+            assert!(err.to_string().contains("No preset named"));
         });
     }
 
