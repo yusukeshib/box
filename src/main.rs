@@ -7,11 +7,10 @@ mod repo;
 mod session;
 #[cfg(test)]
 mod test_util;
-mod tui;
 mod workspace;
 
 use anyhow::{bail, Result};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -36,8 +35,8 @@ CONVENTIONS (important for scripting/agents):\n\
   - `box repo add|remove|list` requires exactly one of --workspace <name> or --preset <name>.\n\
   - `box rebase` requires --workspace <name> and --repo <name>.\n\
   - Subcommand aliases: workspace=ws, and within each group list=ls, remove=rm, switch=sw.\n\
-  - `box` with no arguments launches an interactive TUI to create a workspace.",
-    after_help = "Examples:\n  box                                          # interactive workspace manager\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
+  - `box workspace remove` prunes workspaces older than one day by default.",
+    after_help = "Examples:\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -89,7 +88,7 @@ enum WorkspaceAction {
     /// List workspaces
     #[command(alias = "ls")]
     List(ListArgs),
-    /// Remove a workspace
+    /// Remove one workspace, or prune old workspaces when NAME is omitted
     #[command(alias = "rm")]
     Remove(RemoveArgs),
     /// Switch into a workspace
@@ -137,16 +136,16 @@ enum PresetAction {
     Add {
         /// Preset name
         name: String,
-        /// Repos to include (can be repeated; opens interactive selector if omitted)
-        #[arg(long)]
+        /// Repos to include (can be repeated)
+        #[arg(long, required = true)]
         repo: Vec<String>,
     },
     /// Replace an existing preset's repos (fails if it doesn't exist)
     Update {
         /// Preset name
         name: String,
-        /// Repos to include (can be repeated; opens interactive selector if omitted)
-        #[arg(long)]
+        /// Repos to include (can be repeated)
+        #[arg(long, required = true)]
         repo: Vec<String>,
     },
     /// Remove a preset
@@ -210,12 +209,16 @@ struct RepoListArgs {
 
 #[derive(clap::Args, Debug)]
 struct RemoveArgs {
-    /// Workspace name (opens interactive selector if omitted)
+    /// Workspace name (omit to prune old workspaces)
     name: Option<String>,
 
     /// Remove every workspace
     #[arg(long, short = 'a', conflicts_with = "name")]
     all: bool,
+
+    /// Prune workspaces at least this old (supports s, m, h, d; default: 1d)
+    #[arg(long, conflicts_with_all = ["name", "all"])]
+    older_than: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -257,11 +260,10 @@ fn main() {
             WorkspaceAction::Remove(args) => {
                 if args.all {
                     cmd_remove_all(verbose)
+                } else if let Some(name) = &args.name {
+                    cmd_remove(name, verbose)
                 } else {
-                    match &args.name {
-                        Some(name) => cmd_remove(name, verbose),
-                        None => cmd_remove_tui(verbose),
-                    }
+                    cmd_prune(args.older_than.as_deref().unwrap_or("1d"), verbose)
                 }
             }
             WorkspaceAction::Switch { name } => cmd_cd(&name),
@@ -294,7 +296,7 @@ fn main() {
             ConfigShell::Zsh => cmd_config_zsh(),
             ConfigShell::Bash => cmd_config_bash(),
         },
-        None => cmd_default(verbose),
+        None => cmd_help(),
     };
 
     match result {
@@ -304,6 +306,12 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn cmd_help() -> Result<i32> {
+    Cli::command().print_help()?;
+    println!();
+    Ok(0)
 }
 
 fn output_cd_path(path: &str) {
@@ -371,26 +379,6 @@ pub(crate) fn shorten_project_path(path: &str, home: &str) -> String {
         .collect();
 
     shortened.join("/")
-}
-
-/// `box` with no args: interactive TUI to create a session.
-fn cmd_default(verbose: bool) -> Result<i32> {
-    if std::env::var_os("BOX_SESSION").is_some() {
-        bail!(
-            "Cannot nest box sessions (already inside session {:?}).",
-            std::env::var("BOX_SESSION").unwrap_or_default()
-        );
-    }
-    cmd_create_tui(verbose)
-}
-
-/// `box create` with no name: prompt for session details.
-fn cmd_create_tui(verbose: bool) -> Result<i32> {
-    let strategy = workspace::Strategy::resolve(None)?;
-    match tui::create_session()? {
-        tui::TuiAction::New { name, repos } => cmd_create(&name, repos, strategy, true, verbose),
-        _ => Ok(0),
-    }
 }
 
 fn cmd_list_sessions(args: &ListArgs) -> Result<i32> {
@@ -582,6 +570,7 @@ fn cmd_repo_modify(
             let sess = session::load(name)?;
             let strategy = workspace::Strategy::from_str(&sess.strategy)?;
             let new_repos = compute_edit_repos(&sess.repos, add, remove)?;
+            ensure_workspace_has_repos(name, &new_repos)?;
             apply_edit_diff(name, &sess.repos, &new_repos, strategy, verbose)
         }
         RepoTarget::Preset(name) => {
@@ -637,6 +626,16 @@ fn cmd_repo_list_target(workspace: Option<String>, preset: Option<String>) -> Re
         println!("{}", r);
     }
     Ok(0)
+}
+
+fn ensure_workspace_has_repos(name: &str, repos: &[String]) -> Result<()> {
+    if repos.is_empty() {
+        bail!(
+            "Cannot remove the final repo from workspace '{}'. Remove the workspace instead.",
+            name
+        );
+    }
+    Ok(())
 }
 
 /// Compute the new repo set from --add/--remove flags. Errors when the same
@@ -747,7 +746,14 @@ fn cmd_remove(name: &str, verbose: bool) -> Result<i32> {
     let strategy =
         workspace::Strategy::from_str(&sess.strategy).unwrap_or(workspace::Strategy::Clone);
 
-    workspace::remove_sessions(&[(name.to_string(), strategy, sess.repos.clone())], verbose);
+    let failed =
+        workspace::remove_sessions(&[(name.to_string(), strategy, sess.repos.clone())], verbose)?;
+    if failed.contains(name) {
+        bail!(
+            "Failed to remove workspace '{}'; session metadata was retained.",
+            name
+        );
+    }
     session::remove_dir(name)?;
 
     if !sess.project_dir.is_empty() {
@@ -757,31 +763,100 @@ fn cmd_remove(name: &str, verbose: bool) -> Result<i32> {
     Ok(0)
 }
 
-fn cmd_remove_tui(verbose: bool) -> Result<i32> {
-    match tui::select_sessions()? {
-        tui::TuiAction::Remove { sessions } => {
-            let to_remove: Vec<(String, workspace::Strategy, Vec<String>)> = sessions
-                .iter()
-                .map(|name| match session::load(name) {
-                    Ok(sess) => {
-                        let strategy = workspace::Strategy::from_str(&sess.strategy)
-                            .unwrap_or(workspace::Strategy::Clone);
-                        (name.clone(), strategy, sess.repos)
-                    }
-                    // Session metadata missing — fall through to Clone with no repos; the
-                    // post-bar cleanup still nukes the workspace root dir.
-                    Err(_) => (name.clone(), workspace::Strategy::Clone, Vec::new()),
-                })
-                .collect();
-            workspace::remove_sessions(&to_remove, verbose);
-            for name in &sessions {
-                session::remove_dir(name)?;
-                eprintln!("Session '{}' removed.", name);
-            }
-            Ok(0)
-        }
-        _ => Ok(0),
+fn parse_age(value: &str) -> Result<chrono::Duration> {
+    let (number, unit) = value.split_at(value.len().saturating_sub(1));
+    let amount: i64 = number.parse().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid age '{}'. Use a positive value such as 12h or 7d.",
+            value
+        )
+    })?;
+    if amount <= 0 {
+        bail!("Age must be greater than zero.");
     }
+    let duration = match unit {
+        "s" => chrono::Duration::try_seconds(amount),
+        "m" => chrono::Duration::try_minutes(amount),
+        "h" => chrono::Duration::try_hours(amount),
+        "d" => chrono::Duration::try_days(amount),
+        _ => bail!("Invalid age '{}'. Supported units: s, m, h, d.", value),
+    };
+    duration.ok_or_else(|| anyhow::anyhow!("Age '{}' is too large.", value))
+}
+
+fn active_workspace_names() -> std::collections::BTreeSet<String> {
+    let mut active = std::collections::BTreeSet::new();
+    if let Ok(name) = std::env::var("BOX_SESSION") {
+        if !name.is_empty() {
+            active.insert(name);
+        }
+    }
+    if let (Ok(root), Ok(cwd)) = (config::box_root(), std::env::current_dir()) {
+        let workspaces = root.join("workspaces");
+        if let Ok(relative) = cwd.strip_prefix(workspaces) {
+            if let Some(component) = relative.components().next() {
+                active.insert(component.as_os_str().to_string_lossy().into_owned());
+            }
+        }
+    }
+    active
+}
+
+fn is_prunable(
+    name: &str,
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+    cutoff: chrono::DateTime<chrono::Utc>,
+    active: &std::collections::BTreeSet<String>,
+) -> bool {
+    !active.contains(name) && created_at.is_some_and(|created| created <= cutoff)
+}
+
+fn cmd_prune(older_than: &str, verbose: bool) -> Result<i32> {
+    let age = parse_age(older_than)?;
+    let cutoff = chrono::Utc::now()
+        .checked_sub_signed(age)
+        .ok_or_else(|| anyhow::anyhow!("Age '{}' is too large.", older_than))?;
+    let active = active_workspace_names();
+    let mut to_remove = Vec::new();
+
+    for summary in session::list()? {
+        let created_at = session::created_at(&summary.name)?;
+        if !is_prunable(&summary.name, created_at, cutoff, &active) {
+            if verbose && active.contains(&summary.name) {
+                eprintln!("Skipping active workspace '{}'.", summary.name);
+            } else if verbose && created_at.is_none() {
+                eprintln!(
+                    "Skipping '{}' because created_at is missing or invalid.",
+                    summary.name
+                );
+            }
+            continue;
+        }
+        let sess = session::load(&summary.name)?;
+        let strategy =
+            workspace::Strategy::from_str(&sess.strategy).unwrap_or(workspace::Strategy::Clone);
+        to_remove.push((summary.name, strategy, sess.repos));
+    }
+
+    if to_remove.is_empty() {
+        println!("No workspaces older than {}.", older_than);
+        return Ok(0);
+    }
+
+    let failed = workspace::remove_sessions(&to_remove, verbose)?;
+    for (name, _, _) in &to_remove {
+        if !failed.contains(name) {
+            session::remove_dir(name)?;
+            println!("Session '{}' removed.", name);
+        }
+    }
+    if !failed.is_empty() {
+        bail!(
+            "Failed to remove workspace(s): {}. Session metadata was retained.",
+            failed.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(0)
 }
 
 fn cmd_remove_all(verbose: bool) -> Result<i32> {
@@ -800,10 +875,18 @@ fn cmd_remove_all(verbose: bool) -> Result<i32> {
         })
         .collect();
 
-    workspace::remove_sessions(&to_remove, verbose);
+    let failed = workspace::remove_sessions(&to_remove, verbose)?;
     for s in &sessions {
-        session::remove_dir(&s.name)?;
-        eprintln!("Session '{}' removed.", s.name);
+        if !failed.contains(&s.name) {
+            session::remove_dir(&s.name)?;
+            eprintln!("Session '{}' removed.", s.name);
+        }
+    }
+    if !failed.is_empty() {
+        bail!(
+            "Failed to remove workspace(s): {}. Session metadata was retained.",
+            failed.into_iter().collect::<Vec<_>>().join(", ")
+        );
     }
     Ok(0)
 }
@@ -930,49 +1013,12 @@ fn cmd_source_list() -> Result<i32> {
 }
 
 fn cmd_preset_add(name: &str, repos: &[String]) -> Result<i32> {
-    if repos.is_empty() {
-        // Creating a new preset: bail early (before opening the interactive
-        // selector) if one already exists under this name.
-        // validate_name is called by load(), so path traversal is rejected.
-        match preset::load(name) {
-            Ok(_) => bail!(
-                "Preset '{}' already exists. Use `box preset update` to replace it.",
-                name
-            ),
-            Err(e) if e.to_string().contains("No preset named") => {}
-            Err(e) => return Err(e),
-        }
-        match tui::select_preset_repos(&[])? {
-            tui::TuiAction::Edit { repos } => {
-                preset::add(name, &repos)?;
-            }
-            _ => {
-                return Ok(0);
-            }
-        }
-    } else {
-        preset::add(name, repos)?;
-    }
+    preset::add(name, repos)?;
     Ok(0)
 }
 
 fn cmd_preset_update(name: &str, repos: &[String]) -> Result<i32> {
-    if repos.is_empty() {
-        // Updating an existing preset: pre-select its current repos in the
-        // interactive selector. load() also gives a clear error if the
-        // preset doesn't exist, before we bother opening the TUI.
-        let current = preset::load(name)?;
-        match tui::select_preset_repos(&current)? {
-            tui::TuiAction::Edit { repos } => {
-                preset::update(name, &repos)?;
-            }
-            _ => {
-                return Ok(0);
-            }
-        }
-    } else {
-        preset::update(name, repos)?;
-    }
+    preset::update(name, repos)?;
     Ok(0)
 }
 
@@ -1136,10 +1182,10 @@ mod tests {
         Cli::try_parse_from(full_args)
     }
 
-    // -- No args = TUI --
+    // -- No args = help --
 
     #[test]
-    fn test_no_args_launches_tui() {
+    fn test_no_args_selects_help() {
         let cli = parse(&[]);
         assert!(cli.command.is_none());
     }
@@ -1358,6 +1404,12 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_workspace_cannot_remove_final_repo() {
+        assert!(ensure_workspace_has_repos("my-session", &[]).is_err());
+        assert!(ensure_workspace_has_repos("my-session", &["app".to_string()]).is_ok());
+    }
+
     // -- workspace remove subcommand --
 
     fn ws_remove(cli: Cli) -> RemoveArgs {
@@ -1383,10 +1435,24 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_no_name_parses() {
+    fn test_remove_no_name_prunes_after_one_day_by_default() {
         let args = ws_remove(parse(&["workspace", "remove"]));
         assert!(args.name.is_none());
         assert!(!args.all);
+        assert!(args.older_than.is_none());
+    }
+
+    #[test]
+    fn test_remove_older_than_parses() {
+        let args = ws_remove(parse(&["workspace", "remove", "--older-than", "7d"]));
+        assert!(args.name.is_none());
+        assert_eq!(args.older_than.as_deref(), Some("7d"));
+    }
+
+    #[test]
+    fn test_remove_older_than_conflicts_with_name_and_all() {
+        assert!(try_parse(&["workspace", "remove", "my-session", "--older-than", "7d"]).is_err());
+        assert!(try_parse(&["workspace", "remove", "--all", "--older-than", "7d"]).is_err());
     }
 
     #[test]
@@ -1606,6 +1672,11 @@ mod tests {
     }
 
     #[test]
+    fn test_preset_add_requires_repo() {
+        assert!(try_parse(&["preset", "add", "work"]).is_err());
+    }
+
+    #[test]
     fn test_preset_update_parses() {
         let cli = parse(&[
             "preset", "update", "work", "--repo", "app-a", "--repo", "app-c",
@@ -1619,6 +1690,11 @@ mod tests {
             }
             other => panic!("expected Preset Update, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_preset_update_requires_repo() {
+        assert!(try_parse(&["preset", "update", "work"]).is_err());
     }
 
     #[test]
@@ -1663,6 +1739,39 @@ mod tests {
                 action: PresetAction::List
             })
         ));
+    }
+
+    // -- prune age parsing --
+
+    #[test]
+    fn test_parse_age_supports_common_units() {
+        assert_eq!(parse_age("30s").unwrap(), chrono::Duration::seconds(30));
+        assert_eq!(parse_age("15m").unwrap(), chrono::Duration::minutes(15));
+        assert_eq!(parse_age("12h").unwrap(), chrono::Duration::hours(12));
+        assert_eq!(parse_age("7d").unwrap(), chrono::Duration::days(7));
+    }
+
+    #[test]
+    fn test_parse_age_rejects_invalid_values() {
+        for value in ["", "1", "0d", "-1d", "day", "9223372036854775807d"] {
+            assert!(parse_age(value).is_err(), "{value} should be rejected");
+        }
+    }
+
+    #[test]
+    fn test_prune_selection_respects_age_active_workspace_and_missing_metadata() {
+        let cutoff = chrono::Utc::now();
+        let old = Some(cutoff - chrono::Duration::seconds(1));
+        let new = Some(cutoff + chrono::Duration::seconds(1));
+
+        let mut active = std::collections::BTreeSet::new();
+        assert!(is_prunable("old", old, cutoff, &active));
+        assert!(is_prunable("boundary", Some(cutoff), cutoff, &active));
+        assert!(!is_prunable("new", new, cutoff, &active));
+        assert!(!is_prunable("unknown", None, cutoff, &active));
+
+        active.insert("old".to_string());
+        assert!(!is_prunable("old", old, cutoff, &active));
     }
 
     // -- no --update flag (removed) --

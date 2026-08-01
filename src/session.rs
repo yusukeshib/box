@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use chrono::{Local, NaiveDateTime, Utc};
+use chrono::{DateTime, Local, NaiveDateTime, Utc};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -240,6 +240,21 @@ pub fn list() -> Result<Vec<SessionSummary>> {
     Ok(sessions)
 }
 
+pub fn created_at(name: &str) -> Result<Option<DateTime<Utc>>> {
+    let path = sessions_dir()?.join(name).join("created_at");
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e).context(format!("Failed to read {}", path.display())),
+    };
+    let Some(value) = raw.trim().strip_suffix(" UTC") else {
+        return Ok(None);
+    };
+    Ok(NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+        .ok()
+        .map(|dt| dt.and_utc()))
+}
+
 pub fn update_repos(name: &str, repos: &[String]) -> Result<()> {
     let dir = sessions_dir()?.join(name);
     if !dir.is_dir() {
@@ -401,6 +416,29 @@ mod tests {
 
             let created = fs::read_to_string(dir.join("created_at")).unwrap();
             assert!(created.ends_with("UTC"));
+        });
+    }
+
+    #[test]
+    fn test_created_at_reads_utc_timestamp() {
+        with_temp_home(|_| {
+            let sess = make_session("created-test", "/tmp/project");
+            save(&sess).unwrap();
+
+            let created = created_at("created-test").unwrap().unwrap();
+            assert!(created <= Utc::now());
+        });
+    }
+
+    #[test]
+    fn test_created_at_missing_or_invalid_is_none() {
+        with_temp_home(|_| {
+            let dir = sessions_dir().unwrap().join("old-session");
+            fs::create_dir_all(&dir).unwrap();
+            assert!(created_at("old-session").unwrap().is_none());
+
+            fs::write(dir.join("created_at"), "not a timestamp").unwrap();
+            assert!(created_at("old-session").unwrap().is_none());
         });
     }
 
