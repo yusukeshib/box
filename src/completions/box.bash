@@ -40,7 +40,11 @@ _box() {
     local subcommands="workspace repo source preset rebase upgrade config"
 
     if [[ $cword -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
+        if [[ "$cur" == -* ]]; then
+            COMPREPLY=($(compgen -W "--verbose -v" -- "$cur"))
+        else
+            COMPREPLY=($(compgen -W "$subcommands" -- "$cur"))
+        fi
         return
     fi
 
@@ -63,14 +67,16 @@ _box() {
                         --preset)
                             COMPREPLY=($(compgen -W "$(__box_presets_list)" -- "$cur")); return ;;
                     esac
-                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--repo --preset --strategy --no-fetch" -- "$cur"))
+                    [[ "$cur" == -* || ( $cword -ge 4 && -z "$cur" ) ]] && COMPREPLY=($(compgen -W "--repo --preset --strategy --no-fetch" -- "$cur"))
                     ;;
                 list|ls)
                     [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--quiet -q" -- "$cur"))
                     ;;
                 remove|rm)
-                    if [[ "$cur" == -* ]]; then
-                        COMPREPLY=($(compgen -W "--all -a" -- "$cur"))
+                    if [[ "$prev" == "--older-than" ]]; then
+                        COMPREPLY=($(compgen -W "1d 7d 30d" -- "$cur"))
+                    elif [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "--all -a --older-than" -- "$cur"))
                     elif [[ $cword -eq 3 ]]; then
                         COMPREPLY=($(compgen -W "$(__box_sessions_list)" -- "$cur"))
                     fi
@@ -135,12 +141,12 @@ _box() {
                 update)
                     if [[ $cword -eq 3 ]]; then
                         COMPREPLY=($(compgen -W "$(__box_presets_list)" -- "$cur"))
-                    elif [[ "$cur" == -* ]]; then
+                    elif [[ "$cur" == -* || ( $cword -ge 4 && -z "$cur" ) ]]; then
                         COMPREPLY=($(compgen -W "--repo" -- "$cur"))
                     fi
                     ;;
                 add)
-                    [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--repo" -- "$cur"))
+                    [[ "$cur" == -* || ( $cword -ge 4 && -z "$cur" ) ]] && COMPREPLY=($(compgen -W "--repo" -- "$cur"))
                     ;;
             esac
             ;;

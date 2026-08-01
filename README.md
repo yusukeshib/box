@@ -1,6 +1,5 @@
 # box
 
-[日本語](README.ja.md)
 
 [![Crates.io](https://img.shields.io/crates/v/box-cli)](https://crates.io/crates/box-cli)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -22,7 +21,7 @@ Box creates and manages named workspaces using `git worktree` (default) or `git 
 
 - **Two workspace strategies** — `git worktree` (default, lightweight) or `git clone --local` (full isolation)
 - **Multi-repo sessions** — group multiple repos into one workspace, optionally via reusable presets
-- **Interactive TUI** — select repos, enter session name, with history
+- **Age-based pruning** — clean up workspaces older than one day by default
 - **Shell integration** — completions, `cd` wrapper, and terminal-tab renaming for zsh/bash
 
 ## Requirements
@@ -65,16 +64,13 @@ Pre-built binaries are available on the [GitHub Releases](https://github.com/yus
 # 1. Register a source
 box source add ~/projects/my-app
 
-# 2. Create a workspace via TUI
-box
-
-# 3. Or create via CLI
+# 2. Create a workspace
 box workspace add my-feature --repo my-app
 
-# 4. Switch into the workspace later
+# 3. Switch into the workspace later
 box workspace switch my-feature
 
-# 5. Clean up
+# 4. Clean up
 box workspace remove my-feature
 ```
 
@@ -87,10 +83,9 @@ command targets an explicit object — there is no implicit current-directory
 resolution.
 
 ```bash
-box                                         Interactive TUI (create a workspace)
 box workspace add <name> --repo <r> [opts]  Create a workspace (alias: ws)
 box workspace list [-q]                     List workspaces (alias: ls)
-box workspace remove [<name>] [--all]       Remove a workspace (alias: rm)
+box workspace remove [<name>] [--older-than <age>]  Remove or prune workspaces (alias: rm)
 box workspace switch <name>                 Switch into a workspace (alias: sw)
 box repo add <r>... --workspace|--preset <name>     Add repo(s) to a workspace/preset
 box repo remove <r>... --workspace|--preset <name>  Remove repo(s) (alias: rm)
@@ -98,7 +93,8 @@ box repo list --workspace|--preset <name>           List repos (alias: ls)
 box source add <url|path>                   Register a source (bare clone; `.` = cwd)
 box source remove <name>                    Unregister a source (alias: rm)
 box source list                             List registered sources (alias: ls)
-box preset add <name> --repo <r>...         Create or update a preset
+box preset add <name> --repo <r>...         Create a preset
+box preset update <name> --repo <r>...      Replace a preset's repos
 box preset remove <name>                    Remove a preset (alias: rm)
 box preset list                             List presets (alias: ls)
 box rebase <branch> --workspace <name> --repo <r>   Fetch origin and rebase a repo
@@ -127,7 +123,7 @@ box workspace add my-feature --repo frontend --repo backend
 box workspace add my-feature --preset work
 ```
 
-`--repo` (repeatable) or `--preset` is required. To create workspaces interactively, run `box` with no arguments.
+`--repo` (repeatable) or `--preset` is required. Running `box` without a command displays help.
 
 ### Add / remove repos in a workspace
 
@@ -147,9 +143,10 @@ for `--preset <name>`. Exactly one of `--workspace` / `--preset` is required.
 box workspace list              # List all workspaces
 box workspace ls                # Alias
 box workspace list -q           # Names only (for scripting)
-box workspace remove my-feature # Remove a workspace by name
-box workspace remove            # Interactive selector (multi-select)
-box workspace remove --all      # Remove every workspace
+box workspace remove my-feature          # Remove a workspace by name
+box workspace remove                     # Prune workspaces at least 1 day old
+box workspace remove --older-than 7d     # Prune workspaces at least 7 days old
+box workspace remove --all               # Remove every workspace
 ```
 
 ### Switch into a workspace
@@ -189,7 +186,6 @@ A preset is a named list of repos you create sessions from regularly:
 
 ```bash
 box preset add work --repo frontend --repo backend   # define
-box preset add work                                  # interactive selector
 box repo add api --preset work                       # add a repo to the preset
 box repo remove backend --preset work                # remove a repo from the preset
 box repo list --preset work                          # list the preset's repos
@@ -230,7 +226,8 @@ Exactly one of `--workspace` / `--preset` must be given.
 
 | Option | Description |
 |--------|-------------|
-| `<name>` | Workspace name (omit to open interactive selector) |
+| `<name>` | Workspace name; omit to prune old workspaces |
+| `--older-than <age>` | Minimum age for pruning (`s`, `m`, `h`, or `d`; default: `1d`) |
 | `--all`, `-a` | Remove every workspace (conflicts with `<name>`) |
 
 ## Environment Variables

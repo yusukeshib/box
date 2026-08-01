@@ -25,16 +25,6 @@ impl Strategy {
             Strategy::Worktree => "worktree",
         }
     }
-
-    /// Resolve strategy from an optional CLI value, falling back to BOX_STRATEGY env var,
-    /// then defaulting to "worktree".
-    pub fn resolve(cli_value: Option<&str>) -> Result<Self> {
-        let value = match cli_value {
-            Some(v) => v.to_string(),
-            None => std::env::var("BOX_STRATEGY").unwrap_or_else(|_| "worktree".to_string()),
-        };
-        Strategy::from_str(&value)
-    }
 }
 
 impl fmt::Display for Strategy {
@@ -52,12 +42,13 @@ impl fmt::Display for Strategy {
 /// finishes we run `git worktree prune` + a single batched `git branch -D`
 /// per bare repo to clear leftover admin entries and session branches, then
 /// remove the now-empty workspace root dir for each session.
-pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bool) {
+pub fn remove_sessions(
+    sessions: &[(String, Strategy, Vec<String>)],
+    verbose: bool,
+) -> Result<std::collections::BTreeSet<String>> {
     let all_repos = crate::repo::list().unwrap_or_default();
-    let root = match config::box_root() {
-        Ok(r) => r,
-        Err(_) => return,
-    };
+    let root = config::box_root()?;
+    let mut failed_sessions = std::collections::BTreeSet::new();
 
     // Each work item is just a directory to delete on disk; the actual git
     // bookkeeping (worktree admin entries, branches) is batched per-bare-repo
@@ -136,6 +127,11 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
                 eprintln!("  \x1b[1m{}\x1b[0m: {}", f.name, f.output.trim());
             }
         }
+        for result in results.iter().filter(|result| !result.success) {
+            if let Some((session, _)) = result.name.split_once('/') {
+                failed_sessions.insert(session.to_string());
+            }
+        }
     }
 
     // Per-bare cleanup: prune stale worktree admin entries + delete the
@@ -190,8 +186,21 @@ pub fn remove_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bo
 
     for (name, _, _) in sessions {
         let session_root = root.join("workspaces").join(name);
-        let _ = std::fs::remove_dir_all(&session_root);
+        match std::fs::remove_dir_all(&session_root) {
+            Ok(()) => {
+                failed_sessions.remove(name);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                failed_sessions.remove(name);
+            }
+            Err(e) => {
+                eprintln!("Failed to remove '{}': {}", session_root.display(), e);
+                failed_sessions.insert(name.clone());
+            }
+        }
     }
+
+    Ok(failed_sessions)
 }
 
 /// Run a git command, append its combined stdout+stderr to `buf`, and return

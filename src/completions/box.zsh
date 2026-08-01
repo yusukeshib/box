@@ -53,15 +53,20 @@ __box_presets() {
 }
 
 _box() {
-    local curcontext="$curcontext" state line
-    typeset -A opt_args
+    local curcontext="$curcontext"
+    local prev="${words[CURRENT-1]}"
 
-    _arguments -C \
-        '1: :->subcmd' \
-        '*:: :->args'
-
-    case $state in
-        subcmd)
+    # In zsh, words[1] is the command itself. Keep all candidates canonical;
+    # aliases such as ws/rm/ls/sw are accepted below but never suggested.
+    if (( CURRENT == 2 )); then
+        if [[ $words[CURRENT] == -* ]]; then
+            local -a global_options
+            global_options=(
+                '--verbose:Show detailed output'
+                '-v:Show detailed output'
+            )
+            _describe 'option' global_options
+        else
             local -a subcmds
             subcmds=(
                 'workspace:Manage workspaces (create, list, switch, remove)'
@@ -73,127 +78,186 @@ _box() {
                 'config:Output shell configuration'
             )
             _describe 'subcommand' subcmds
+        fi
+        return
+    fi
+
+    case $words[2] in
+        workspace|ws)
+            if (( CURRENT == 3 )); then
+                local -a ws_subcmds
+                ws_subcmds=(
+                    'add:Create a new workspace'
+                    'list:List workspaces'
+                    'remove:Remove one workspace or prune old workspaces'
+                    'switch:Switch into a workspace'
+                )
+                _describe 'workspace subcommand' ws_subcmds
+                return
+            fi
+            case $words[3] in
+                add)
+                    case $prev in
+                        --repo) __box_repos; return ;;
+                        --preset) __box_presets; return ;;
+                        --strategy) compadd clone worktree; return ;;
+                    esac
+                    if [[ $words[CURRENT] == -* || ( CURRENT -ge 5 && -z $words[CURRENT] ) ]]; then
+                        local -a add_options
+                        add_options=(
+                            '--repo:Select specific source'
+                            '--preset:Use a preset'
+                            '--strategy:Workspace strategy'
+                            '--no-fetch:Skip git fetch before creating the workspace'
+                        )
+                        _describe 'option' add_options
+                    fi
+                    ;;
+                list|ls)
+                    if [[ $words[CURRENT] == -* ]]; then
+                        local -a list_options
+                        list_options=(
+                            '--quiet:Only print workspace names'
+                            '-q:Only print workspace names'
+                        )
+                        _describe 'option' list_options
+                    fi
+                    ;;
+                remove|rm)
+                    if [[ $prev == --older-than ]]; then
+                        compadd 1d 7d 30d
+                        return
+                    elif [[ $words[CURRENT] == -* ]]; then
+                        local -a remove_options
+                        remove_options=(
+                            '--all:Remove every workspace'
+                            '-a:Remove every workspace'
+                            '--older-than:Prune workspaces at least this old (default: 1d)'
+                        )
+                        _describe 'option' remove_options
+                    elif (( CURRENT == 4 )); then
+                        __box_sessions
+                    fi
+                    ;;
+                switch|sw)
+                    (( CURRENT == 4 )) && __box_sessions
+                    ;;
+            esac
             ;;
-        args)
-            case $words[1] in
-                workspace|ws)
-                    if (( CURRENT == 2 )); then
-                        local -a ws_subcmds
-                        ws_subcmds=(
-                            'add:Create a new workspace'
-                            'list:List workspaces'
-                            'remove:Remove a workspace'
-                            'switch:Switch into a workspace'
+        repo)
+            if (( CURRENT == 3 )); then
+                local -a repo_subcmds
+                repo_subcmds=(
+                    'add:Add repo(s) to a workspace or preset'
+                    'remove:Remove repo(s) from a workspace or preset'
+                    'list:List repos in a workspace or preset'
+                )
+                _describe 'repo subcommand' repo_subcmds
+                return
+            fi
+            case $prev in
+                --workspace) __box_sessions; return ;;
+                --preset) __box_presets; return ;;
+            esac
+            case $words[3] in
+                add|remove|rm)
+                    if [[ $words[CURRENT] == -* ]]; then
+                        local -a repo_options
+                        repo_options=(
+                            '--workspace:Target workspace'
+                            '--preset:Target preset'
                         )
-                        _describe 'workspace subcommand' ws_subcmds
+                        _describe 'option' repo_options
                     else
-                        case $words[2] in
-                            add)
-                                _arguments \
-                                    '*--repo=[Select specific source]:source:__box_repos' \
-                                    '--preset=[Use a preset]:preset:__box_presets' \
-                                    '--strategy=[Workspace strategy]:strategy:(clone worktree)' \
-                                    '--no-fetch[Skip git fetch before creating the workspace]'
-                                ;;
-                            list|ls)
-                                _arguments \
-                                    '(-q --quiet)'{-q,--quiet}'[Only print workspace names]'
-                                ;;
-                            remove|rm)
-                                if [[ $words[CURRENT] == -* ]]; then
-                                    _arguments '(-a --all)'{-a,--all}'[Remove every workspace]'
-                                elif (( CURRENT == 3 )); then
-                                    __box_sessions
-                                fi
-                                ;;
-                            switch|sw)
-                                if (( CURRENT == 3 )); then
-                                    __box_sessions
-                                fi
-                                ;;
-                        esac
+                        __box_repos
                     fi
                     ;;
-                repo)
-                    if (( CURRENT == 2 )); then
-                        local -a repo_subcmds
-                        repo_subcmds=(
-                            'add:Add repo(s) to a workspace or preset'
-                            'remove:Remove repo(s) from a workspace or preset'
-                            'list:List repos in a workspace or preset'
+                list|ls)
+                    if [[ $words[CURRENT] == -* ]]; then
+                        local -a repo_list_options
+                        repo_list_options=(
+                            '--workspace:Target workspace'
+                            '--preset:Target preset'
                         )
-                        _describe 'repo subcommand' repo_subcmds
-                    else
-                        case $words[2] in
-                            add|remove|rm)
-                                _arguments \
-                                    '--workspace=[Target workspace]:workspace:__box_sessions' \
-                                    '--preset=[Target preset]:preset:__box_presets' \
-                                    '*:source:__box_repos'
-                                ;;
-                            list|ls)
-                                _arguments \
-                                    '--workspace=[Target workspace]:workspace:__box_sessions' \
-                                    '--preset=[Target preset]:preset:__box_presets'
-                                ;;
-                        esac
-                    fi
-                    ;;
-                source)
-                    if (( CURRENT == 2 )); then
-                        local -a source_subcmds
-                        source_subcmds=(
-                            'add:Register a git repo as a source'
-                            'remove:Unregister a source'
-                            'list:List registered sources'
-                        )
-                        _describe 'source subcommand' source_subcmds
-                    elif (( CURRENT == 3 )); then
-                        case $words[2] in
-                            remove|rm)
-                                __box_repos
-                                ;;
-                            add)
-                                _files -/
-                                ;;
-                        esac
-                    fi
-                    ;;
-                preset)
-                    if (( CURRENT == 2 )); then
-                        local -a preset_subcmds
-                        preset_subcmds=(
-                            'add:Create a new preset'
-                            'update:Replace an existing preset'"'"'s repos'
-                            'remove:Remove a preset'
-                            'list:List presets'
-                        )
-                        _describe 'preset subcommand' preset_subcmds
-                    elif (( CURRENT == 3 )); then
-                        case $words[2] in
-                            remove|rm|update)
-                                __box_presets
-                                ;;
-                        esac
-                    elif [[ $words[2] == "add" || $words[2] == "update" ]]; then
-                        _arguments \
-                            '*--repo=[Select specific source]:source:__box_repos'
-                    fi
-                    ;;
-                rebase)
-                    _arguments \
-                        '--workspace=[Workspace name]:workspace:__box_sessions' \
-                        '--repo=[Repo within the workspace]:repo:__box_repos' \
-                        '1:branch (e.g. main):'
-                    ;;
-                config)
-                    if (( CURRENT == 2 )); then
-                        local -a shells
-                        shells=('zsh:Zsh completion script' 'bash:Bash completion script')
-                        _describe 'shell' shells
+                        _describe 'option' repo_list_options
                     fi
                     ;;
             esac
+            ;;
+        source)
+            if (( CURRENT == 3 )); then
+                local -a source_subcmds
+                source_subcmds=(
+                    'add:Register a git repo as a source'
+                    'remove:Unregister a source'
+                    'list:List registered sources'
+                )
+                _describe 'source subcommand' source_subcmds
+            elif (( CURRENT == 4 )); then
+                case $words[3] in
+                    remove|rm) __box_repos ;;
+                    add) _files -/ ;;
+                esac
+            fi
+            ;;
+        preset)
+            if (( CURRENT == 3 )); then
+                local -a preset_subcmds
+                preset_subcmds=(
+                    'add:Create a new preset'
+                    'update:Replace an existing preset'"'"'s repos'
+                    'remove:Remove a preset'
+                    'list:List presets'
+                )
+                _describe 'preset subcommand' preset_subcmds
+                return
+            fi
+            if [[ $prev == --repo ]]; then
+                __box_repos
+                return
+            fi
+            case $words[3] in
+                remove|rm)
+                    (( CURRENT == 4 )) && __box_presets
+                    ;;
+                update)
+                    if (( CURRENT == 4 )); then
+                        __box_presets
+                    elif [[ $words[CURRENT] == -* || ( CURRENT -ge 5 && -z $words[CURRENT] ) ]]; then
+                        local -a preset_options
+                        preset_options=('--repo:Select specific source')
+                        _describe 'option' preset_options
+                    fi
+                    ;;
+                add)
+                    if [[ $words[CURRENT] == -* || ( CURRENT -ge 5 && -z $words[CURRENT] ) ]]; then
+                        local -a preset_options
+                        preset_options=('--repo:Select specific source')
+                        _describe 'option' preset_options
+                    fi
+                    ;;
+            esac
+            ;;
+        rebase)
+            case $prev in
+                --workspace) __box_sessions; return ;;
+                --repo) __box_repos; return ;;
+            esac
+            if [[ $words[CURRENT] == -* ]]; then
+                local -a rebase_options
+                rebase_options=(
+                    '--workspace:Workspace name'
+                    '--repo:Repo within the workspace'
+                )
+                _describe 'option' rebase_options
+            fi
+            ;;
+        config)
+            if (( CURRENT == 3 )); then
+                local -a shells
+                shells=('zsh:Zsh completion script' 'bash:Bash completion script')
+                _describe 'shell' shells
+            fi
             ;;
     esac
 }
