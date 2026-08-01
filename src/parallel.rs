@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -12,44 +11,9 @@ pub struct TaskResult {
     pub output: String,
 }
 
-/// Event emitted by `run_parallel_with_events` as tasks progress.
-#[derive(Clone, Debug)]
-pub enum ProgressEvent {
-    Start(String),
-    Finish(String, bool),
-}
-
 /// Run named tasks in parallel using a worker pool sized to the number of
 /// available CPUs. Returns results in the same order as the input.
 pub fn run_parallel<T, F>(items: Vec<(String, T)>, task: F) -> Vec<TaskResult>
-where
-    T: Send + 'static,
-    F: Fn(&str, T) -> (bool, String) + Send + Sync + 'static,
-{
-    run_parallel_inner(items, None, task)
-}
-
-/// Like `run_parallel`, but emits a `ProgressEvent::Start` before each task
-/// and `ProgressEvent::Finish` after each completes. The channel is dropped
-/// when all tasks are finished, so receivers can use the disconnect signal
-/// to exit their render loops.
-pub fn run_parallel_with_events<T, F>(
-    items: Vec<(String, T)>,
-    tx: Sender<ProgressEvent>,
-    task: F,
-) -> Vec<TaskResult>
-where
-    T: Send + 'static,
-    F: Fn(&str, T) -> (bool, String) + Send + Sync + 'static,
-{
-    run_parallel_inner(items, Some(tx), task)
-}
-
-fn run_parallel_inner<T, F>(
-    items: Vec<(String, T)>,
-    tx: Option<Sender<ProgressEvent>>,
-    task: F,
-) -> Vec<TaskResult>
 where
     T: Send + 'static,
     F: Fn(&str, T) -> (bool, String) + Send + Sync + 'static,
@@ -84,15 +48,11 @@ where
         let queue = Arc::clone(&queue);
         let slots = Arc::clone(&slots);
         let task = Arc::clone(&task);
-        let tx = tx.clone();
         handles.push(thread::spawn(move || loop {
             let next = { queue.lock().unwrap().pop_front() };
             let Some((idx, name, item)) = next else {
                 break;
             };
-            if let Some(tx) = &tx {
-                let _ = tx.send(ProgressEvent::Start(name.clone()));
-            }
             // Catch panics so a single task blowing up doesn't poison the
             // worker (which would leave the remaining queue stranded) or
             // produce an empty result slot.
@@ -101,9 +61,6 @@ where
                 Ok(r) => r,
                 Err(_) => (false, "thread panicked".to_string()),
             };
-            if let Some(tx) = &tx {
-                let _ = tx.send(ProgressEvent::Finish(name.clone(), success));
-            }
             slots.lock().unwrap()[idx] = Some(TaskResult {
                 name,
                 success,
@@ -136,8 +93,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
-
     #[test]
     fn test_run_parallel_collects_results_in_order() {
         let items: Vec<(String, u32)> = vec![("a".into(), 1), ("b".into(), 2), ("c".into(), 3)];
@@ -173,33 +128,6 @@ mod tests {
         });
         assert_eq!(results[1].name, "panicker");
         assert!(!results[1].success);
-    }
-
-    #[test]
-    fn test_run_parallel_with_events_emits_start_and_finish() {
-        let (tx, rx) = mpsc::channel();
-        let items: Vec<(String, bool)> = vec![("a".into(), true), ("b".into(), false)];
-        let results =
-            run_parallel_with_events(items, tx, |_name, success| (success, String::new()));
-        assert_eq!(results.len(), 2);
-
-        let events: Vec<ProgressEvent> = rx.iter().collect();
-        // Two starts and two finishes, one per item.
-        let starts = events
-            .iter()
-            .filter(|e| matches!(e, ProgressEvent::Start(_)))
-            .count();
-        let finishes = events
-            .iter()
-            .filter(|e| matches!(e, ProgressEvent::Finish(_, _)))
-            .count();
-        assert_eq!(starts, 2);
-        assert_eq!(finishes, 2);
-        // One finish must be success=false (item "b").
-        let b_failed = events
-            .iter()
-            .any(|e| matches!(e, ProgressEvent::Finish(n, false) if n == "b"));
-        assert!(b_failed);
     }
 
     #[test]

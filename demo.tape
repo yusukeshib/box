@@ -74,34 +74,11 @@ Sleep 500ms
 Enter
 Sleep 2000ms
 
-# ── 4. Launch TUI to create a session ─────────────────────
+# ── 4. Create a workspace ─────────────────────────────────
 
-Type "box"
+Type "box workspace add my-feature --repo frontend --repo backend"
 Sleep 500ms
 Enter
-Sleep 1500ms
-
-# TUI Stage 1: Select repos (all selected by default)
-# Deselect "backend" to show toggling
-Down
-Sleep 400ms
-Space
-Sleep 400ms
-# Re-select "backend"
-Space
-Sleep 400ms
-Enter
-Sleep 1000ms
-
-# TUI Stage 2: Enter session name
-Type "my-feature"
-Sleep 500ms
-Enter
-Sleep 1000ms
-
-# TUI Stage 3: Command (optional, skip)
-Enter
-
 Sleep 3000ms
 
 # ── 5. Explore the workspace ──────────────────────────────
