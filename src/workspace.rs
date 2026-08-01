@@ -95,20 +95,17 @@ pub fn remove_sessions(
             if count == 1 { "" } else { "s" }
         );
 
-        let results = crate::progress::run_parallel_with_progress(
-            &label,
-            items,
-            verbose,
-            false,
-            |_name, dest| match std::fs::remove_dir_all(&dest) {
-                Ok(()) => (true, String::new()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
-                Err(e) => (
-                    false,
-                    format!("failed to remove '{}': {}", dest.display(), e),
-                ),
-            },
-        );
+        let results =
+            crate::progress::run_parallel_with_progress(&label, items, verbose, |_name, dest| {
+                match std::fs::remove_dir_all(&dest) {
+                    Ok(()) => (true, String::new()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
+                    Err(e) => (
+                        false,
+                        format!("failed to remove '{}': {}", dest.display(), e),
+                    ),
+                }
+            });
 
         if verbose {
             for result in &results {
@@ -319,7 +316,6 @@ pub fn ensure_workspace_multi(
             &label,
             to_clone,
             verbose,
-            true,
             move |_name, (repo, dest_str)| {
                 let mut buf = String::new();
                 if fetch {
@@ -388,7 +384,6 @@ pub fn ensure_workspace_multi_worktree(
             &label,
             to_create,
             verbose,
-            true,
             move |_name, (repo, dest_str, branch)| {
                 let mut buf = String::new();
                 if fetch {
