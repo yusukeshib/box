@@ -29,21 +29,24 @@ def update_formula(formula: Path, version: str, artifacts: Path) -> None:
         raise ValueError(f"invalid stable version: {version}")
 
     content = formula.read_text()
-    content, count = re.subn(
-        r'(?m)^  version "[^"]+"$', f'  version "{version}"', content
-    )
-    if count != 1:
-        raise ValueError(f"expected one version declaration, found {count}")
 
     for asset in ASSETS:
+        url_pattern = (
+            rf'(?m)(url "https://github\.com/yusukeshib/box/releases/download/v)'
+            rf'[^/"]+(/(?:{re.escape(asset)})"$)'
+        )
+        content, count = re.subn(url_pattern, rf"\g<1>{version}\2", content)
+        if count != 1:
+            raise ValueError(f"expected one formula URL for {asset}, found {count}")
+
         checksum = checksum_for(artifacts, asset)
-        pattern = (
+        checksum_pattern = (
             rf'(?m)(url "[^"]+/{re.escape(asset)}"\n'
             rf'\s+sha256 ")[0-9a-f]{{64}}("$)'
         )
-        content, count = re.subn(pattern, rf"\g<1>{checksum}\2", content)
+        content, count = re.subn(checksum_pattern, rf"\g<1>{checksum}\2", content)
         if count != 1:
-            raise ValueError(f"expected one formula entry for {asset}, found {count}")
+            raise ValueError(f"expected one formula checksum for {asset}, found {count}")
 
     formula.write_text(content)
 
