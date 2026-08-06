@@ -4,6 +4,8 @@ use std::process::Command;
 
 use crate::config;
 
+const REMOVE_MAX_WORKERS: usize = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Strategy {
     Clone,
@@ -95,17 +97,23 @@ pub fn remove_sessions(
             if count == 1 { "" } else { "s" }
         );
 
-        let results =
-            crate::progress::run_parallel_with_progress(&label, items, verbose, |_name, dest| {
-                match std::fs::remove_dir_all(&dest) {
-                    Ok(()) => (true, String::new()),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
-                    Err(e) => (
-                        false,
-                        format!("failed to remove '{}': {}", dest.display(), e),
-                    ),
-                }
-            });
+        // Recursive deletion is metadata-heavy and contends badly when several
+        // repos on the same filesystem are removed at once. Keep this serial;
+        // the generic pool remains parallel for network-bound git operations.
+        let results = crate::progress::run_parallel_with_progress_limit(
+            &label,
+            items,
+            verbose,
+            REMOVE_MAX_WORKERS,
+            |_name, dest| match std::fs::remove_dir_all(&dest) {
+                Ok(()) => (true, String::new()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
+                Err(e) => (
+                    false,
+                    format!("failed to remove '{}': {}", dest.display(), e),
+                ),
+            },
+        );
 
         if verbose {
             for result in &results {
