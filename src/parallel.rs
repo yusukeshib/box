@@ -11,9 +11,27 @@ pub struct TaskResult {
     pub output: String,
 }
 
-/// Run named tasks in parallel using a worker pool sized to the number of
-/// available CPUs. Returns results in the same order as the input.
+/// Upper bound for general-purpose parallel work. Git operations can each use
+/// multiple threads internally, so matching the host's full CPU count can
+/// oversubscribe the machine substantially.
+pub const DEFAULT_MAX_WORKERS: usize = 4;
+
+/// Run named tasks with conservative parallelism. Returns results in the same
+/// order as the input.
 pub fn run_parallel<T, F>(items: Vec<(String, T)>, task: F) -> Vec<TaskResult>
+where
+    T: Send + 'static,
+    F: Fn(&str, T) -> (bool, String) + Send + Sync + 'static,
+{
+    run_parallel_with_limit(items, DEFAULT_MAX_WORKERS, task)
+}
+
+/// Run named tasks with an explicit worker limit.
+pub fn run_parallel_with_limit<T, F>(
+    items: Vec<(String, T)>,
+    max_workers: usize,
+    task: F,
+) -> Vec<TaskResult>
 where
     T: Send + 'static,
     F: Fn(&str, T) -> (bool, String) + Send + Sync + 'static,
@@ -23,11 +41,10 @@ where
         return Vec::new();
     }
 
-    let max_threads = thread::available_parallelism()
+    let available = thread::available_parallelism()
         .map(|n| n.get())
-        .unwrap_or(4)
-        .max(1);
-    let n_workers = max_threads.min(total);
+        .unwrap_or(1);
+    let n_workers = available.min(max_workers.max(1)).min(total);
 
     let task = Arc::new(task);
     // Shared FIFO queue. Workers race for the next item, so a slow task in
@@ -128,6 +145,29 @@ mod tests {
         });
         assert_eq!(results[1].name, "panicker");
         assert!(!results[1].success);
+    }
+
+    #[test]
+    fn test_run_parallel_with_limit_serializes_at_one_worker() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let items: Vec<(String, usize)> = (0..4).map(|i| (i.to_string(), i)).collect();
+
+        let active_for_task = Arc::clone(&active);
+        let peak_for_task = Arc::clone(&peak);
+        let results = run_parallel_with_limit(items, 1, move |_name, _item| {
+            let now = active_for_task.fetch_add(1, Ordering::SeqCst) + 1;
+            peak_for_task.fetch_max(now, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(5));
+            active_for_task.fetch_sub(1, Ordering::SeqCst);
+            (true, String::new())
+        });
+
+        assert_eq!(results.len(), 4);
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
     }
 
     #[test]
