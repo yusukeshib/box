@@ -85,7 +85,8 @@ resolution.
 ```bash
 box workspace add <name> --repo <r> [opts]  Create a workspace (alias: ws)
 box workspace list [-q]                     List workspaces (alias: ls)
-box workspace remove [<name>] [--older-than <age>]  Remove or prune workspaces (alias: rm)
+box workspace remove <name>|--all           Remove workspace(s) (alias: rm)
+box workspace prune [--older-than <age>]    Remove workspaces older than an age (default: 3d)
 box workspace switch <name>                 Switch into a workspace (alias: sw)
 box repo add <r>... --workspace|--preset <name>     Add repo(s) to a workspace/preset
 box repo remove <r>... --workspace|--preset <name>  Remove repo(s) (alias: rm)
@@ -144,9 +145,9 @@ box workspace list              # List all workspaces
 box workspace ls                # Alias
 box workspace list -q           # Names only (for scripting)
 box workspace remove my-feature          # Remove a workspace by name
-box workspace remove                     # Prune workspaces at least 1 day old
-box workspace remove --older-than 7d     # Prune workspaces at least 7 days old
 box workspace remove --all               # Remove every workspace
+box workspace prune                      # Remove workspaces at least 3 days old
+box workspace prune --older-than 7d      # Remove workspaces at least 7 days old
 ```
 
 ### Switch into a workspace
@@ -226,9 +227,14 @@ Exactly one of `--workspace` / `--preset` must be given.
 
 | Option | Description |
 |--------|-------------|
-| `<name>` | Workspace name; omit to prune old workspaces |
-| `--older-than <age>` | Minimum age for pruning (`s`, `m`, `h`, or `d`; default: `1d`) |
+| `<name>` | Workspace name (required unless `--all`) |
 | `--all`, `-a` | Remove every workspace (conflicts with `<name>`) |
+
+### `box workspace prune`
+
+| Option | Description |
+|--------|-------------|
+| `--older-than <age>` | Minimum age to remove (`s`, `m`, `h`, or `d`; default: `3d`) |
 
 ## Environment Variables
 
