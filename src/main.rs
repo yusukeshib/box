@@ -35,8 +35,9 @@ CONVENTIONS (important for scripting/agents):\n\
   - `box repo add|remove|list` requires exactly one of --workspace <name> or --preset <name>.\n\
   - `box rebase` requires --workspace <name> and --repo <name>.\n\
   - Subcommand aliases: workspace=ws, and within each group list=ls, remove=rm, switch=sw.\n\
-  - `box workspace remove` prunes workspaces older than one day by default.",
-    after_help = "Examples:\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
+  - `box workspace remove` always needs a target: a NAME or --all.\n\
+   - `box workspace prune` removes workspaces older than three days by default (--older-than).",
+    after_help = "Examples:\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box workspace prune --older-than 7d          # remove workspaces older than 7d (default: 3d)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -88,9 +89,11 @@ enum WorkspaceAction {
     /// List workspaces
     #[command(alias = "ls")]
     List(ListArgs),
-    /// Remove one workspace, or prune old workspaces when NAME is omitted
+    /// Remove one workspace, or every workspace with --all
     #[command(alias = "rm")]
     Remove(RemoveArgs),
+    /// Remove workspaces older than a given age
+    Prune(PruneArgs),
     /// Switch into a workspace
     #[command(alias = "sw")]
     Switch {
@@ -208,16 +211,20 @@ struct RepoListArgs {
 }
 
 #[derive(clap::Args, Debug)]
+#[command(group(clap::ArgGroup::new("remove_target").required(true).args(["name", "all"])))]
 struct RemoveArgs {
-    /// Workspace name (omit to prune old workspaces)
+    /// Workspace name
     name: Option<String>,
 
     /// Remove every workspace
     #[arg(long, short = 'a', conflicts_with = "name")]
     all: bool,
+}
 
-    /// Prune workspaces at least this old (supports s, m, h, d; default: 1d)
-    #[arg(long, conflicts_with_all = ["name", "all"])]
+#[derive(clap::Args, Debug)]
+struct PruneArgs {
+    /// Prune workspaces at least this old (supports s, m, h, d; default: 3d)
+    #[arg(long)]
     older_than: Option<String>,
 }
 
@@ -263,8 +270,11 @@ fn main() {
                 } else if let Some(name) = &args.name {
                     cmd_remove(name, verbose)
                 } else {
-                    cmd_prune(args.older_than.as_deref().unwrap_or("1d"), verbose)
+                    unreachable!("clap requires NAME or --all")
                 }
+            }
+            WorkspaceAction::Prune(args) => {
+                cmd_prune(args.older_than.as_deref().unwrap_or("3d"), verbose)
             }
             WorkspaceAction::Switch { name } => cmd_cd(&name),
         },
@@ -1435,24 +1445,36 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_no_name_prunes_after_one_day_by_default() {
-        let args = ws_remove(parse(&["workspace", "remove"]));
-        assert!(args.name.is_none());
-        assert!(!args.all);
+    fn test_remove_requires_a_target() {
+        assert!(try_parse(&["workspace", "remove"]).is_err());
+    }
+
+    #[test]
+    fn test_remove_rejects_older_than() {
+        assert!(try_parse(&["workspace", "remove", "--older-than", "7d"]).is_err());
+    }
+
+    // -- workspace prune subcommand --
+
+    fn ws_prune(cli: Cli) -> PruneArgs {
+        match cli.command {
+            Some(Commands::Workspace {
+                action: WorkspaceAction::Prune(args),
+            }) => args,
+            other => panic!("expected Workspace Prune, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_prune_defaults_to_no_explicit_age() {
+        let args = ws_prune(parse(&["workspace", "prune"]));
         assert!(args.older_than.is_none());
     }
 
     #[test]
-    fn test_remove_older_than_parses() {
-        let args = ws_remove(parse(&["workspace", "remove", "--older-than", "7d"]));
-        assert!(args.name.is_none());
+    fn test_prune_older_than_parses() {
+        let args = ws_prune(parse(&["workspace", "prune", "--older-than", "7d"]));
         assert_eq!(args.older_than.as_deref(), Some("7d"));
-    }
-
-    #[test]
-    fn test_remove_older_than_conflicts_with_name_and_all() {
-        assert!(try_parse(&["workspace", "remove", "my-session", "--older-than", "7d"]).is_err());
-        assert!(try_parse(&["workspace", "remove", "--all", "--older-than", "7d"]).is_err());
     }
 
     #[test]

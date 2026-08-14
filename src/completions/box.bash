@@ -54,7 +54,7 @@ _box() {
     case "$sub" in
         workspace|ws)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add list remove switch" -- "$cur"))
+                COMPREPLY=($(compgen -W "add list remove prune switch" -- "$cur"))
                 return
             fi
             case "${words[2]}" in
@@ -72,11 +72,16 @@ _box() {
                 list|ls)
                     [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--quiet -q" -- "$cur"))
                     ;;
-                remove|rm)
+                prune)
                     if [[ "$prev" == "--older-than" ]]; then
-                        COMPREPLY=($(compgen -W "1d 7d 30d" -- "$cur"))
+                        COMPREPLY=($(compgen -W "3d 7d 30d" -- "$cur"))
                     elif [[ "$cur" == -* ]]; then
-                        COMPREPLY=($(compgen -W "--all -a --older-than" -- "$cur"))
+                        COMPREPLY=($(compgen -W "--older-than" -- "$cur"))
+                    fi
+                    ;;
+                remove|rm)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "--all -a" -- "$cur"))
                     elif [[ $cword -eq 3 ]]; then
                         COMPREPLY=($(compgen -W "$(__box_sessions_list)" -- "$cur"))
                     fi

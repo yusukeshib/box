@@ -89,7 +89,8 @@ _box() {
                 ws_subcmds=(
                     'add:Create a new workspace'
                     'list:List workspaces'
-                    'remove:Remove one workspace or prune old workspaces'
+                    'remove:Remove one workspace (or --all)'
+                    'prune:Remove workspaces older than a given age'
                     'switch:Switch into a workspace'
                 )
                 _describe 'workspace subcommand' ws_subcmds
@@ -123,16 +124,24 @@ _box() {
                         _describe 'option' list_options
                     fi
                     ;;
-                remove|rm)
+                prune)
                     if [[ $prev == --older-than ]]; then
-                        compadd 1d 7d 30d
+                        compadd 3d 7d 30d
                         return
                     elif [[ $words[CURRENT] == -* ]]; then
+                        local -a prune_options
+                        prune_options=(
+                            '--older-than:Prune workspaces at least this old (default: 3d)'
+                        )
+                        _describe 'option' prune_options
+                    fi
+                    ;;
+                remove|rm)
+                    if [[ $words[CURRENT] == -* ]]; then
                         local -a remove_options
                         remove_options=(
                             '--all:Remove every workspace'
                             '-a:Remove every workspace'
-                            '--older-than:Prune workspaces at least this old (default: 1d)'
                         )
                         _describe 'option' remove_options
                     elif (( CURRENT == 4 )); then
