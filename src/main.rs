@@ -35,7 +35,7 @@ CONVENTIONS (important for scripting/agents):\n\
   - `box repo add|remove|list` requires exactly one of --workspace <name> or --preset <name>.\n\
   - `box rebase` requires --workspace <name> and --repo <name>.\n\
   - Subcommand aliases: workspace=ws, and within each group list=ls, remove=rm, switch=sw.\n\
-  - `box workspace remove` always needs a target: a NAME or --all.\n\
+  - `box workspace remove` always needs a target: one or more NAMEs, or --all.\n\
    - `box workspace prune` removes workspaces older than three days by default (--older-than).",
     after_help = "Examples:\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box workspace prune --older-than 7d          # remove workspaces older than 7d (default: 3d)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
 )]
@@ -89,7 +89,7 @@ enum WorkspaceAction {
     /// List workspaces
     #[command(alias = "ls")]
     List(ListArgs),
-    /// Remove one workspace, or every workspace with --all
+    /// Remove one or more workspaces, or every workspace with --all
     #[command(alias = "rm")]
     Remove(RemoveArgs),
     /// Remove workspaces older than a given age
@@ -213,8 +213,9 @@ struct RepoListArgs {
 #[derive(clap::Args, Debug)]
 #[command(group(clap::ArgGroup::new("remove_target").required(true).args(["name", "all"])))]
 struct RemoveArgs {
-    /// Workspace name
-    name: Option<String>,
+    /// Workspace names
+    #[arg(value_name = "NAME")]
+    name: Vec<String>,
 
     /// Remove every workspace
     #[arg(long, short = 'a', conflicts_with = "name")]
@@ -267,10 +268,8 @@ fn main() {
             WorkspaceAction::Remove(args) => {
                 if args.all {
                     cmd_remove_all(verbose)
-                } else if let Some(name) = &args.name {
-                    cmd_remove(name, verbose)
                 } else {
-                    unreachable!("clap requires NAME or --all")
+                    cmd_remove(&args.name, verbose)
                 }
             }
             WorkspaceAction::Prune(args) => {
@@ -744,32 +743,57 @@ fn apply_edit_diff(
     Ok(0)
 }
 
-fn cmd_remove(name: &str, verbose: bool) -> Result<i32> {
-    let name = session::validate_name(name)?;
-    let name = name.as_str();
-
-    if !session::session_exists(name)? {
-        bail!("Session '{}' not found.", name);
+fn cmd_remove(names: &[String], verbose: bool) -> Result<i32> {
+    // Validate all targets before deletion, and deduplicate normalized names.
+    let mut seen = std::collections::BTreeSet::new();
+    let mut sessions = Vec::new();
+    for name in names {
+        let name = session::validate_name(name)?;
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if !session::session_exists(&name)? {
+            bail!("Session '{}' not found.", name);
+        }
+        sessions.push(session::load(&name)?);
     }
 
-    let sess = session::load(name)?;
-    let strategy =
-        workspace::Strategy::from_str(&sess.strategy).unwrap_or(workspace::Strategy::Clone);
-
-    let failed =
-        workspace::remove_sessions(&[(name.to_string(), strategy, sess.repos.clone())], verbose)?;
-    if failed.contains(name) {
+    let cwd = std::env::current_dir().ok();
+    let root = config::box_root()?;
+    // current_dir resolves symlinks (for example /var -> /private/var on macOS).
+    let root = fs::canonicalize(&root).unwrap_or(root);
+    let cd_target = sessions.iter().find(|s| {
+        sessions.len() == 1
+            || cwd
+                .as_ref()
+                .is_some_and(|cwd| cwd.starts_with(root.join("workspaces").join(&s.name)))
+    });
+    let to_remove: Vec<_> = sessions
+        .iter()
+        .map(|s| {
+            let strategy =
+                workspace::Strategy::from_str(&s.strategy).unwrap_or(workspace::Strategy::Clone);
+            (s.name.clone(), strategy, s.repos.clone())
+        })
+        .collect();
+    let failed = workspace::remove_sessions(&to_remove, verbose)?;
+    for sess in &sessions {
+        if failed.contains(&sess.name) {
+            continue;
+        }
+        session::remove_dir(&sess.name)?;
+        if cd_target.is_some_and(|target| target.name == sess.name) && !sess.project_dir.is_empty()
+        {
+            output_cd_path(&sess.project_dir);
+        }
+        println!("Session '{}' removed.", sess.name);
+    }
+    if !failed.is_empty() {
         bail!(
-            "Failed to remove workspace '{}'; session metadata was retained.",
-            name
+            "Failed to remove workspace(s): {}. Session metadata was retained.",
+            failed.into_iter().collect::<Vec<_>>().join(", ")
         );
     }
-    session::remove_dir(name)?;
-
-    if !sess.project_dir.is_empty() {
-        output_cd_path(&sess.project_dir);
-    }
-    println!("Session '{}' removed.", name);
     Ok(0)
 }
 
@@ -1434,14 +1458,25 @@ mod tests {
     #[test]
     fn test_remove_parses() {
         let args = ws_remove(parse(&["workspace", "remove", "my-session"]));
-        assert_eq!(args.name.as_deref(), Some("my-session"));
+        assert_eq!(args.name, vec!["my-session"]);
         assert!(!args.all);
     }
 
     #[test]
     fn test_remove_alias_rm() {
         let args = ws_remove(parse(&["workspace", "rm", "my-session"]));
-        assert_eq!(args.name.as_deref(), Some("my-session"));
+        assert_eq!(args.name, vec!["my-session"]);
+    }
+
+    #[test]
+    fn test_remove_multiple_names() {
+        for command in ["remove", "rm"] {
+            let args = ws_remove(parse(&["ws", command, "a", "b", "c", "d"]));
+            assert_eq!(args.name, vec!["a", "b", "c", "d"]);
+            assert!(!args.all);
+            assert!(try_parse(&["ws", command, "a", "b", "--all"]).is_err());
+            assert!(try_parse(&["ws", command, "-a", "a", "b"]).is_err());
+        }
     }
 
     #[test]
@@ -1480,7 +1515,7 @@ mod tests {
     #[test]
     fn test_remove_all_flag_parses() {
         let args = ws_remove(parse(&["workspace", "remove", "--all"]));
-        assert!(args.name.is_none());
+        assert!(args.name.is_empty());
         assert!(args.all);
     }
 

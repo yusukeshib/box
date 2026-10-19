@@ -85,7 +85,7 @@ resolution.
 ```bash
 box workspace add <name> --repo <r> [opts]  Create a workspace (alias: ws)
 box workspace list [-q]                     List workspaces (alias: ls)
-box workspace remove <name>|--all           Remove workspace(s) (alias: rm)
+box workspace remove <name>...|--all           Remove workspace(s) (alias: rm)
 box workspace prune [--older-than <age>]    Remove workspaces older than an age (default: 3d)
 box workspace switch <name>                 Switch into a workspace (alias: sw)
 box repo add <r>... --workspace|--preset <name>     Add repo(s) to a workspace/preset
@@ -145,6 +145,7 @@ box workspace list              # List all workspaces
 box workspace ls                # Alias
 box workspace list -q           # Names only (for scripting)
 box workspace remove my-feature          # Remove a workspace by name
+box workspace rm a b c d                 # Remove multiple workspaces
 box workspace remove --all               # Remove every workspace
 box workspace prune                      # Remove workspaces at least 3 days old
 box workspace prune --older-than 7d      # Remove workspaces at least 7 days old
@@ -227,8 +228,14 @@ Exactly one of `--workspace` / `--preset` must be given.
 
 | Option | Description |
 |--------|-------------|
-| `<name>` | Workspace name (required unless `--all`) |
-| `--all`, `-a` | Remove every workspace (conflicts with `<name>`) |
+| `<name>...` | Workspace names (required unless `--all`) |
+| `--all`, `-a` | Remove every workspace (conflicts with names) |
+
+All names are checked before deletion; duplicate names are removed only once.
+With shell integration, removing multiple workspaces returns to the original project
+of the workspace containing the current directory, if it was removed. Otherwise,
+the current directory is unchanged. Removing a single workspace retains the existing
+behavior of returning to its original project.
 
 ### `box workspace prune`
 

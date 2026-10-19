@@ -80,9 +80,24 @@ _box() {
                     fi
                     ;;
                 remove|rm)
-                    if [[ "$cur" == -* ]]; then
-                        COMPREPLY=($(compgen -W "--all -a" -- "$cur"))
-                    elif [[ $cword -eq 3 ]]; then
+                    local has_names=0 has_all=0 end_options=0 i
+                    for ((i = 3; i < cword; i++)); do
+                        if (( end_options )); then
+                            has_names=1
+                        else
+                            case "${words[i]}" in
+                                --all|-a) has_all=1 ;;
+                                --) end_options=1 ;;
+                                -*) ;;
+                                *) has_names=1 ;;
+                            esac
+                        fi
+                    done
+                    if [[ "$cur" == -* ]] && (( ! end_options )); then
+                        local remove_options="--verbose -v"
+                        (( has_names || has_all )) || remove_options+=" --all -a"
+                        COMPREPLY=($(compgen -W "$remove_options" -- "$cur"))
+                    elif (( ! has_all )); then
                         COMPREPLY=($(compgen -W "$(__box_sessions_list)" -- "$cur"))
                     fi
                     ;;

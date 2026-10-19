@@ -89,7 +89,7 @@ _box() {
                 ws_subcmds=(
                     'add:Create a new workspace'
                     'list:List workspaces'
-                    'remove:Remove one workspace (or --all)'
+                    'remove:Remove one or more workspaces (or --all)'
                     'prune:Remove workspaces older than a given age'
                     'switch:Switch into a workspace'
                 )
@@ -137,14 +137,33 @@ _box() {
                     fi
                     ;;
                 remove|rm)
-                    if [[ $words[CURRENT] == -* ]]; then
+                    local has_names=0 has_all=0 end_options=0 i
+                    for (( i = 4; i < CURRENT; i++ )); do
+                        if (( end_options )); then
+                            has_names=1
+                        else
+                            case $words[i] in
+                                --all|-a) has_all=1 ;;
+                                --) end_options=1 ;;
+                                -*) ;;
+                                *) has_names=1 ;;
+                            esac
+                        fi
+                    done
+                    if [[ $words[CURRENT] == -* ]] && (( ! end_options )); then
                         local -a remove_options
                         remove_options=(
-                            '--all:Remove every workspace'
-                            '-a:Remove every workspace'
+                            '--verbose:Show detailed output'
+                            '-v:Show detailed output'
                         )
+                        if (( ! has_names && ! has_all )); then
+                            remove_options+=(
+                                '--all:Remove every workspace'
+                                '-a:Remove every workspace'
+                            )
+                        fi
                         _describe 'option' remove_options
-                    elif (( CURRENT == 4 )); then
+                    elif (( ! has_all )); then
                         __box_sessions
                     fi
                     ;;
