@@ -61,7 +61,7 @@ _box() {
                 add)
                     case "$prev" in
                         --strategy)
-                            COMPREPLY=($(compgen -W "clone worktree" -- "$cur")); return ;;
+                            COMPREPLY=($(compgen -W "worktree clone layer" -- "$cur")); return ;;
                         --repo)
                             COMPREPLY=($(compgen -W "$(__box_repos_list)" -- "$cur")); return ;;
                         --preset)

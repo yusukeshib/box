@@ -10,6 +10,7 @@ const REMOVE_MAX_WORKERS: usize = 1;
 pub enum Strategy {
     Clone,
     Worktree,
+    Layer,
 }
 
 impl Strategy {
@@ -17,7 +18,11 @@ impl Strategy {
         match s {
             "clone" => Ok(Strategy::Clone),
             "worktree" => Ok(Strategy::Worktree),
-            other => bail!("Unknown strategy '{}'. Use 'clone' or 'worktree'.", other),
+            "layer" => Ok(Strategy::Layer),
+            other => bail!(
+                "Unknown strategy '{}'. Use 'worktree', 'clone', or 'layer'.",
+                other
+            ),
         }
     }
 
@@ -25,6 +30,7 @@ impl Strategy {
         match self {
             Strategy::Clone => "clone",
             Strategy::Worktree => "worktree",
+            Strategy::Layer => "layer",
         }
     }
 }
@@ -55,7 +61,7 @@ pub fn remove_sessions(
     // Each work item is just a directory to delete on disk; the actual git
     // bookkeeping (worktree admin entries, branches) is batched per-bare-repo
     // after the parallel phase so we don't pay 2 git subprocesses per repo.
-    let mut items: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut items: Vec<(String, RemoveItem)> = Vec::new();
     let mut all_worktree = true;
 
     // Branches to delete per bare-repo path: same session name across multiple
@@ -71,11 +77,24 @@ pub fn remove_sessions(
             all_worktree = false;
         }
         let branch = name.clone();
+        let ws_root = root.join("workspaces").join(name);
         for repo_name in repo_names {
-            let dest = root.join("workspaces").join(name).join(repo_name);
-            items.push((format!("{}/{}", name, repo_name), dest));
+            let bare = all_repos
+                .iter()
+                .find(|r| r.name == *repo_name)
+                .map(|r| r.path.clone());
+            let item = match strategy {
+                Strategy::Layer => RemoveItem::Layer {
+                    bare: bare.clone(),
+                    ws_root: ws_root.clone(),
+                    repo: repo_name.clone(),
+                    session: name.clone(),
+                },
+                _ => RemoveItem::Dir(ws_root.join(repo_name)),
+            };
+            items.push((format!("{}/{}", name, repo_name), item));
 
-            if matches!(strategy, Strategy::Worktree) {
+            if matches!(strategy, Strategy::Worktree | Strategy::Layer) {
                 if let Some(repo) = all_repos.iter().find(|r| r.name == *repo_name) {
                     bares_to_prune.insert(repo.path.clone());
                     per_bare_branches
@@ -105,13 +124,24 @@ pub fn remove_sessions(
             items,
             verbose,
             REMOVE_MAX_WORKERS,
-            |_name, dest| match std::fs::remove_dir_all(&dest) {
-                Ok(()) => (true, String::new()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
-                Err(e) => (
-                    false,
-                    format!("failed to remove '{}': {}", dest.display(), e),
-                ),
+            |_name, item| match item {
+                RemoveItem::Dir(dest) => match std::fs::remove_dir_all(&dest) {
+                    Ok(()) => (true, String::new()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (true, String::new()),
+                    Err(e) => (
+                        false,
+                        format!("failed to remove '{}': {}", dest.display(), e),
+                    ),
+                },
+                RemoveItem::Layer {
+                    bare,
+                    ws_root,
+                    repo,
+                    session,
+                } => match crate::layer::remove_repo(bare.as_deref(), &ws_root, &repo, &session) {
+                    Ok(()) => (true, String::new()),
+                    Err(e) => (false, format!("{:#}", e)),
+                },
             },
         );
 
@@ -191,6 +221,16 @@ pub fn remove_sessions(
 
     for (name, _, _) in sessions {
         let session_root = root.join("workspaces").join(name);
+        // Never recurse into a still-mounted layer volume.
+        if let Some(mounted) = crate::layer::find_mounted_child(&session_root) {
+            eprintln!(
+                "Failed to remove '{}': {} is still mounted",
+                session_root.display(),
+                mounted.display()
+            );
+            failed_sessions.insert(name.clone());
+            continue;
+        }
         match std::fs::remove_dir_all(&session_root) {
             Ok(()) => {
                 failed_sessions.remove(name);
@@ -206,6 +246,19 @@ pub fn remove_sessions(
     }
 
     Ok(failed_sessions)
+}
+
+/// A unit of work for `remove_sessions`.
+enum RemoveItem {
+    /// Plain directory (clone or worktree checkout).
+    Dir(std::path::PathBuf),
+    /// Layer repo: detach and delete image + admin dir.
+    Layer {
+        bare: Option<String>,
+        ws_root: std::path::PathBuf,
+        repo: String,
+        session: String,
+    },
 }
 
 /// Run a git command, append its combined stdout+stderr to `buf`, and return
@@ -452,6 +505,95 @@ pub fn ensure_workspace_multi_worktree(
     Ok(root.to_string_lossy().to_string())
 }
 
+/// Create a multi-repo workspace using per-repo APFS disk images cloned from
+/// a base image (macOS). Repos whose image already exists are re-attached if
+/// needed instead of being recreated.
+pub fn ensure_workspace_multi_layer(
+    session_name: &str,
+    repos: &[crate::repo::RepoEntry],
+    fetch: bool,
+    verbose: bool,
+) -> Result<String> {
+    crate::layer::ensure_supported()?;
+    let root = prepare_workspace_root(session_name)?;
+
+    let mut to_create = Vec::new();
+    for repo in repos {
+        if crate::layer::image_path(&root, &repo.name).exists() {
+            crate::layer::ensure_mounted(&root, &repo.name)?;
+        } else {
+            to_create.push((repo.name.clone(), repo.clone()));
+        }
+    }
+
+    if !to_create.is_empty() {
+        let label = progress_label("Creating", "layer", to_create.len(), fetch);
+        let root_for_tasks = root.clone();
+        let session = session_name.to_string();
+        // Layer creation is mostly waiting on fetch and hdiutil rather than
+        // writing files, so don't cap it at the generic worker limit.
+        let workers = to_create.len();
+        let results = crate::progress::run_parallel_with_progress_limit(
+            &label,
+            to_create,
+            verbose,
+            workers,
+            move |_name, repo| {
+                let mut buf = String::new();
+                if fetch {
+                    let started = std::time::Instant::now();
+                    let (ok, fetch_log) = crate::git::fetch_repo(&repo);
+                    buf.push_str(&fetch_log);
+                    if !ok {
+                        buf.push_str("  \x1b[33mfetch failed; branching from local HEAD\x1b[0m\n");
+                    }
+                    buf.push_str(&format!(
+                        "  \x1b[2mfetch: {:.2}s\x1b[0m\n",
+                        started.elapsed().as_secs_f64()
+                    ));
+                }
+                match crate::layer::create_repo(&repo, &root_for_tasks, &session, &mut buf) {
+                    Ok(()) => (true, buf),
+                    Err(e) => {
+                        buf.push_str(&format!("{:#}\n", e));
+                        (false, buf)
+                    }
+                }
+            },
+        );
+
+        report_results(&results, verbose, "layer create", "layer")?;
+    }
+
+    Ok(root.to_string_lossy().to_string())
+}
+
+/// Re-attach any detached layer images of a session (e.g. after a reboot).
+pub fn ensure_session_mounted(session_name: &str, repos: &[String]) -> Result<()> {
+    let root = config::box_root()?.join("workspaces").join(session_name);
+    for repo in repos {
+        crate::layer::ensure_mounted(&root, repo)?;
+    }
+    Ok(())
+}
+
+/// Remove a single repo from a layer workspace and delete its session branch.
+pub fn remove_repo_from_workspace_layer(session_name: &str, repo_name: &str) -> Result<()> {
+    let root = config::box_root()?.join("workspaces").join(session_name);
+    let bare = crate::repo::list()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|r| r.name == repo_name)
+        .map(|r| r.path);
+    crate::layer::remove_repo(bare.as_deref(), &root, repo_name, session_name)?;
+    if let Some(bare) = bare {
+        let _ = Command::new("git")
+            .args(["-C", &bare, "branch", "-D", session_name])
+            .output();
+    }
+    Ok(())
+}
+
 /// Remove a single repo subdirectory from a session workspace (clone strategy).
 pub fn remove_repo_from_workspace(session_name: &str, repo_name: &str) {
     if let Ok(root) = config::box_root() {
@@ -498,15 +640,22 @@ pub fn ensure_workspace(
     match strategy {
         Strategy::Clone => ensure_workspace_multi(name, repos, fetch, verbose),
         Strategy::Worktree => ensure_workspace_multi_worktree(name, repos, fetch, verbose),
+        Strategy::Layer => ensure_workspace_multi_layer(name, repos, fetch, verbose),
     }
 }
 
 /// Remove a single repo from workspace using the given strategy.
-pub fn remove_repo_by_strategy(session_name: &str, repo_name: &str, strategy: Strategy) {
+pub fn remove_repo_by_strategy(
+    session_name: &str,
+    repo_name: &str,
+    strategy: Strategy,
+) -> Result<()> {
     match strategy {
         Strategy::Clone => remove_repo_from_workspace(session_name, repo_name),
         Strategy::Worktree => remove_repo_from_workspace_worktree(session_name, repo_name),
+        Strategy::Layer => return remove_repo_from_workspace_layer(session_name, repo_name),
     }
+    Ok(())
 }
 
 /// Combine stdout and stderr from a process Output into a single string.
@@ -530,7 +679,7 @@ fn captured_output(output: &std::process::Output) -> String {
 /// tracking `origin/main`, which silently breaks `git push` (`push.default =
 /// simple` refuses on name mismatch) and `git push --force-with-lease` (the
 /// lease check then targets `origin/main`'s SHA, not the session branch's).
-fn set_self_upstream(worktree_dir: &str, branch: &str) {
+pub(crate) fn set_self_upstream(worktree_dir: &str, branch: &str) {
     let merge_ref = format!("refs/heads/{}", branch);
     let _ = Command::new("git")
         .args([

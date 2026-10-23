@@ -1,5 +1,6 @@
 mod config;
 mod git;
+mod layer;
 mod parallel;
 mod preset;
 mod progress;
@@ -79,6 +80,12 @@ enum Commands {
     Config {
         #[command(subcommand)]
         shell: ConfigShell,
+    },
+    /// Internal: roll a repo's layer base image forward (run in background)
+    #[command(name = "__layer-refresh", hide = true)]
+    LayerRefresh {
+        /// Source name
+        repo: String,
     },
 }
 
@@ -175,7 +182,7 @@ struct CreateArgs {
     #[arg(long, group = "repo_source")]
     preset: Option<String>,
 
-    /// Workspace strategy: worktree (default) or clone
+    /// Workspace strategy: worktree (default), clone, or layer (macOS disk images)
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
 
@@ -301,6 +308,7 @@ fn main() {
             cmd_rebase(&args.branch, &args.workspace, &args.repo, verbose)
         }
         Some(Commands::Upgrade) => cmd_upgrade(),
+        Some(Commands::LayerRefresh { repo }) => cmd_layer_refresh(&repo),
         Some(Commands::Config { shell }) => match shell {
             ConfigShell::Zsh => cmd_config_zsh(),
             ConfigShell::Bash => cmd_config_bash(),
@@ -725,7 +733,7 @@ fn apply_edit_diff(
     }
 
     for repo_name in &removed {
-        workspace::remove_repo_by_strategy(name, repo_name, strategy);
+        workspace::remove_repo_by_strategy(name, repo_name, strategy)?;
     }
 
     session::update_repos(name, new_repos)?;
@@ -931,9 +939,22 @@ fn cmd_cd(name: &str) -> Result<i32> {
     if !session::session_exists(name)? {
         bail!("Session '{}' not found.", name);
     }
+    let sess = session::load(name)?;
+    if sess.strategy == workspace::Strategy::Layer.as_str() {
+        workspace::ensure_session_mounted(name, &sess.repos)?;
+    }
     let path = resolve_workspace_path(name)?;
     output_cd_path(&path.to_string_lossy());
     signal_post_switch_hook(name);
+    Ok(0)
+}
+
+fn cmd_layer_refresh(repo_name: &str) -> Result<i32> {
+    let entry = repo::list()?
+        .into_iter()
+        .find(|r| r.name == repo_name)
+        .ok_or_else(|| anyhow::anyhow!("Repo '{}' not found in registry.", repo_name))?;
+    layer::refresh_base(&entry)?;
     Ok(0)
 }
 
@@ -948,6 +969,11 @@ fn cmd_rebase(branch: &str, workspace: &str, repo: &str, verbose: bool) -> Resul
     let workspace = session::validate_name(workspace)?;
     if !session::session_exists(&workspace)? {
         bail!("Workspace '{}' not found.", workspace);
+    }
+    let sess = session::load(&workspace)?;
+    if sess.strategy == workspace::Strategy::Layer.as_str() && sess.repos.iter().any(|r| r == repo)
+    {
+        workspace::ensure_session_mounted(&workspace, &[repo.to_string()])?;
     }
     let worktree_root = config::box_root()?
         .join("workspaces")
@@ -1016,6 +1042,8 @@ fn cmd_source_add(src: &str) -> Result<i32> {
 
 fn cmd_source_remove(name: &str) -> Result<i32> {
     repo::remove(name)?;
+    // Base images are only useful for creating new layer workspaces.
+    layer::remove_repo_layers(name)?;
     Ok(0)
 }
 
