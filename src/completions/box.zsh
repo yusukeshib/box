@@ -101,7 +101,7 @@ _box() {
                     case $prev in
                         --repo) __box_repos; return ;;
                         --preset) __box_presets; return ;;
-                        --strategy) compadd clone worktree; return ;;
+                        --strategy) compadd worktree clone layer; return ;;
                     esac
                     if [[ $words[CURRENT] == -* || ( CURRENT -ge 5 && -z $words[CURRENT] ) ]]; then
                         local -a add_options

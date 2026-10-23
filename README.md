@@ -117,6 +117,9 @@ box workspace add my-feature --repo my-app
 # Use clone strategy for full isolation
 box workspace add my-feature --repo my-app --strategy clone
 
+# Use layer strategy (macOS) for fast creation of large repos
+box workspace add my-feature --repo my-app --strategy layer
+
 # Multiple repos
 box workspace add my-feature --repo frontend --repo backend
 
@@ -206,7 +209,7 @@ box workspace add my-feature --preset work           # use it
 | `<name>` | Workspace name (required) |
 | `--repo <name>` | Repos to include (repeatable; mutually exclusive with `--preset`) |
 | `--preset <name>` | Use a preset (mutually exclusive with `--repo`) |
-| `--strategy <strategy>` | `worktree` (default) or `clone` |
+| `--strategy <strategy>` | `worktree` (default), `clone`, or `layer` (macOS) |
 
 ### `box repo add` / `box repo remove` / `box repo list`
 
@@ -247,7 +250,8 @@ behavior of returning to its original project.
 
 | Variable | Description |
 |----------|-------------|
-| `BOX_STRATEGY` | Default workspace strategy (`worktree` or `clone`). Overridden by `--strategy` |
+| `BOX_STRATEGY` | Default workspace strategy (`worktree`, `clone`, or `layer`). Overridden by `--strategy` |
+| `BOX_LAYER_REFRESH` | How the `layer` strategy rolls base images forward after creating a workspace: `background` (default), `sync`, or `off` |
 | `BOX_VERBOSE` | When set, equivalent to `--verbose` |
 | `BOX_ROOT` | Override the box data directory (default `~/.box`). Read by the shell completions |
 | `BOX_POST_SWITCH_HOOK` | Shell snippet run after `box workspace switch` / `box workspace add`. The workspace name is available as `$BOX_SESSION_NAME`. See [Shell Integration](#shell-integration) |
@@ -312,14 +316,34 @@ Box supports two workspace strategies:
 
 `git clone --local` creates a fully independent git repo using hardlinks for file objects. Each clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace do not affect the original.
 
+### Layer (macOS)
+
+```
+~/.box/layers/frontend/bases/<commit>.sparseimage   (checkout already materialized)
+        │ clonefile (copy-on-write)
+        ▼
+~/.box/workspaces/my-feature/.box-images/frontend.sparseimage
+        │ hdiutil attach
+        ▼
+~/.box/workspaces/my-feature/frontend/   (linked worktree of frontend.git)
+```
+
+Each repo is a per-workspace APFS sparse disk image cloned from a per-repo *base* image that already contains a checkout. Creating a workspace clones one file and mounts it instead of writing every tracked file, so it stays fast for large repos and the first `git status` is warm. Like `worktree`, it shares the bare repo's objects and refs.
+
+- The first `layer` workspace for a repo builds its base image (slower than a normal checkout).
+- When `origin` has moved, the new workspace is updated to the latest commit and the base is rolled forward in the background (`BOX_LAYER_REFRESH`).
+- `post-checkout` hooks run in the final workspace path, like `git worktree add`.
+- Images are not remounted automatically after a reboot; `box workspace switch` re-attaches them.
+- Workspace images grow with writes (build output included) and do not shrink when files are deleted. Disk space is shared with the host volume, so keep free space available.
+
 ### Comparison
 
-| | Worktree | Clone |
-|---|---|---|
-| Speed | Instant | Fast (hardlinks) |
-| Disk usage | Minimal (shared objects) | Low (hardlinked objects) |
-| Isolation | Separate working tree, shared `.git` | Fully independent `.git` |
-| Best for | Feature branches, quick experiments | Full isolation, destructive operations |
+| | Worktree | Clone | Layer (macOS) |
+|---|---|---|---|
+| Speed | Instant (small repos) | Fast (hardlinks) | Fastest for large repos |
+| Disk usage | Minimal (shared objects) | Low (hardlinked objects) | Copy-on-write; grows with changes |
+| Isolation | Separate working tree, shared `.git` | Fully independent `.git` | Separate volume per repo, shared `.git` |
+| Best for | Feature branches, quick experiments | Full isolation, destructive operations | Large repos, frequent workspace creation |
 
 | Aspect | Detail |
 |--------|--------|
@@ -327,7 +351,8 @@ Box supports two workspace strategies:
 | Workspace location | `~/.box/workspaces/<session>/` |
 | Session metadata | `~/.box/sessions/<session>/` |
 | Presets | `~/.box/presets/<name>` |
-| Default strategy | `git worktree` (override with `--strategy clone`) |
+| Layer base images | `~/.box/layers/<name>/` |
+| Default strategy | `git worktree` (override with `--strategy clone` or `--strategy layer`) |
 | Cleanup | `box workspace remove` deletes workspace and session data |
 
 ## License
