@@ -981,7 +981,9 @@ mod tests {
             assert_eq!(rev_parse(&bare, "refs/remotes/origin/main"), upstream);
             assert_eq!(rev_parse(&bare, "refs/heads/main"), upstream);
             assert_eq!(rev_parse(cl_str, "refs/remotes/origin/main"), upstream);
-            // The checked-out workspace branch is left alone.
+            // origin/wt advances even though `wt` is checked out...
+            assert_eq!(rev_parse(&bare, "refs/remotes/origin/wt"), upstream);
+            // ...while the checked-out workspace branch is left alone.
             assert_eq!(rev_parse(wt_str, "HEAD"), wt_head);
             assert_eq!(rev_parse(&bare, "refs/heads/wt"), wt_head);
 
