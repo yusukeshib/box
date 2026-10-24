@@ -37,7 +37,7 @@ _box() {
     local cur prev words cword
     _init_completion || return
 
-    local subcommands="workspace repo source preset rebase upgrade config"
+    local subcommands="workspace repo source preset upgrade config"
 
     if [[ $cword -eq 1 ]]; then
         if [[ "$cur" == -* ]]; then
@@ -54,7 +54,7 @@ _box() {
     case "$sub" in
         workspace|ws)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=($(compgen -W "add list remove prune switch" -- "$cur"))
+                COMPREPLY=($(compgen -W "add list remove prune update switch" -- "$cur"))
                 return
             fi
             case "${words[2]}" in
@@ -67,7 +67,7 @@ _box() {
                         --preset)
                             COMPREPLY=($(compgen -W "$(__box_presets_list)" -- "$cur")); return ;;
                     esac
-                    [[ "$cur" == -* || ( $cword -ge 4 && -z "$cur" ) ]] && COMPREPLY=($(compgen -W "--repo --preset --strategy --no-fetch" -- "$cur"))
+                    [[ "$cur" == -* || ( $cword -ge 4 && -z "$cur" ) ]] && COMPREPLY=($(compgen -W "--repo --preset --strategy --update --no-update" -- "$cur"))
                     ;;
                 list|ls)
                     [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--quiet -q" -- "$cur"))
@@ -79,7 +79,7 @@ _box() {
                         COMPREPLY=($(compgen -W "--older-than" -- "$cur"))
                     fi
                     ;;
-                remove|rm)
+                remove|rm|update)
                     local has_names=0 has_all=0 end_options=0 i
                     for ((i = 3; i < cword; i++)); do
                         if (( end_options )); then
@@ -170,15 +170,6 @@ _box() {
                     ;;
             esac
             ;;
-        rebase)
-            case "$prev" in
-                --workspace)
-                    COMPREPLY=($(compgen -W "$(__box_sessions_list)" -- "$cur")); return ;;
-                --repo)
-                    COMPREPLY=($(compgen -W "$(__box_repos_list)" -- "$cur")); return ;;
-            esac
-            [[ "$cur" == -* ]] && COMPREPLY=($(compgen -W "--workspace --repo" -- "$cur"))
-            ;;
         config)
             if [[ $cword -eq 2 ]]; then
                 COMPREPLY=($(compgen -W "zsh bash" -- "$cur"))
@@ -189,21 +180,15 @@ _box() {
 complete -F _box box
 
 box() {
-    local __box_cd_file __box_post_switch_file
+    local __box_cd_file
     __box_cd_file=$(mktemp "/tmp/.box-cd.XXXXXX")
-    __box_post_switch_file=$(mktemp "/tmp/.box-post-switch.XXXXXX")
-    BOX_CD_FILE="$__box_cd_file" BOX_POST_SWITCH_FILE="$__box_post_switch_file" command box "$@"
+    BOX_CD_FILE="$__box_cd_file" command box "$@"
     local __box_exit=$?
     if [[ -s "$__box_cd_file" ]]; then
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
     fi
-    if [[ -s "$__box_post_switch_file" ]] && [[ -n "$BOX_POST_SWITCH_HOOK" ]]; then
-        local __box_name
-        __box_name=$(<"$__box_post_switch_file")
-        BOX_SESSION_NAME="$__box_name" eval "$BOX_POST_SWITCH_HOOK"
-    fi
-    rm -f "$__box_cd_file" "$__box_post_switch_file"
+    rm -f "$__box_cd_file"
     return $__box_exit
 }

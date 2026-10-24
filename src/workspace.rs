@@ -627,6 +627,82 @@ pub fn remove_repo_from_workspace_worktree(session_name: &str, repo_name: &str) 
     }
 }
 
+/// What `update_sessions` fetches for one workspace repo.
+enum UpdateTarget {
+    /// Worktree and layer workspaces share the source's bare repo.
+    Bare(crate::repo::RepoEntry),
+    /// Clone workspaces have their own `.git` whose origin is the upstream.
+    Clone(std::path::PathBuf),
+    /// The workspace references a source that is no longer registered.
+    MissingSource(String),
+}
+
+/// Fetch origin for every repo in the given workspaces so `origin/*` refs are
+/// current. Bare repos shared by several workspaces are fetched once. Working
+/// trees and checked-out branches are never modified.
+pub fn update_sessions(sessions: &[(String, Strategy, Vec<String>)], verbose: bool) -> Result<()> {
+    let registered = crate::repo::list()?;
+    let workspaces_root = config::box_root()?.join("workspaces");
+
+    let mut bare = std::collections::BTreeMap::new();
+    let mut others = Vec::new();
+    for (session_name, strategy, repos) in sessions {
+        for repo_name in repos {
+            match strategy {
+                Strategy::Clone => others.push((
+                    format!("{}/{}", session_name, repo_name),
+                    UpdateTarget::Clone(workspaces_root.join(session_name).join(repo_name)),
+                )),
+                Strategy::Worktree | Strategy::Layer => {
+                    match registered.iter().find(|r| &r.name == repo_name) {
+                        Some(entry) => {
+                            bare.entry(repo_name.clone())
+                                .or_insert_with(|| UpdateTarget::Bare(entry.clone()));
+                        }
+                        None => others.push((
+                            format!("{}/{}", session_name, repo_name),
+                            UpdateTarget::MissingSource(repo_name.clone()),
+                        )),
+                    }
+                }
+            }
+        }
+    }
+    let tasks: Vec<(String, UpdateTarget)> = bare.into_iter().chain(others).collect();
+    if tasks.is_empty() {
+        return Ok(());
+    }
+
+    let plural = if tasks.len() == 1 { "" } else { "s" };
+    let label = format!("Updating {} repo{}", tasks.len(), plural);
+    let results =
+        crate::progress::run_parallel_with_progress(&label, tasks, verbose, |_name, target| {
+            match target {
+                UpdateTarget::Bare(entry) => crate::git::fetch_repo(&entry),
+                UpdateTarget::Clone(dir) => {
+                    if !dir.join(".git").exists() {
+                        return (false, format!("{} is not a git repo\n", dir.display()));
+                    }
+                    match Command::new("git")
+                        .arg("-C")
+                        .arg(&dir)
+                        .args(["fetch", "--prune", "origin"])
+                        .env("GIT_TERMINAL_PROMPT", "0")
+                        .output()
+                    {
+                        Ok(output) => (output.status.success(), captured_output(&output)),
+                        Err(e) => (false, format!("failed to run git: {}\n", e)),
+                    }
+                }
+                UpdateTarget::MissingSource(name) => {
+                    (false, format!("source '{}' is not registered\n", name))
+                }
+            }
+        });
+
+    report_results(&results, verbose, "update", "updating")
+}
+
 // -- Dispatch wrappers --
 
 /// Create workspace using the given strategy.
@@ -814,5 +890,117 @@ mod tests {
         // Sanity: the worktree's git common dir is the bare, so the config
         // wrote to the bare, not the worktree-only config.
         assert!(Path::new(bare_str).join("config").exists());
+    }
+
+    fn rev_parse(dir: &str, rev: &str) -> String {
+        let out = Command::new("git")
+            .args(["-C", dir, "rev-parse", rev])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git rev-parse {} failed", rev);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn commit_and_push(src: &str, msg: &str, refspec: &str) {
+        run_git(&[
+            "-C",
+            src,
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            msg,
+        ]);
+        run_git(&["-C", src, "push", "-q", "origin", refspec]);
+    }
+
+    #[test]
+    fn test_update_sessions_fetches_without_touching_worktrees() {
+        let _lock = crate::test_util::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let old_home = std::env::var_os("HOME");
+        let old_root = std::env::var_os("BOX_ROOT");
+        std::env::set_var("HOME", home);
+        std::env::remove_var("BOX_ROOT");
+
+        let result = std::panic::catch_unwind(|| {
+            let remote = home.join("remote.git");
+            let remote_str = remote.to_str().unwrap();
+            run_git(&["init", "-q", "--bare", remote_str]);
+            let src = home.join("src");
+            let src_str = src.to_str().unwrap();
+            run_git(&[
+                "-c",
+                "init.defaultBranch=main",
+                "clone",
+                "-q",
+                remote_str,
+                src_str,
+            ]);
+            commit_and_push(src_str, "one", "main");
+
+            crate::repo::add(src_str).unwrap();
+            let repos = crate::repo::list().unwrap();
+            let bare = repos[0].path.clone();
+            let name = repos[0].name.clone();
+
+            ensure_workspace("wt", &repos, Strategy::Worktree, false, false).unwrap();
+            ensure_workspace("cl", &repos, Strategy::Clone, false, false).unwrap();
+            let ws = config::box_root().unwrap().join("workspaces");
+            let wt_dir = ws.join("wt").join(&name);
+            let cl_dir = ws.join("cl").join(&name);
+            let wt_str = wt_dir.to_str().unwrap();
+            let cl_str = cl_dir.to_str().unwrap();
+            let wt_head = rev_parse(wt_str, "HEAD");
+
+            // Upstream moves, and also gains a branch with the same name as
+            // the checked-out workspace branch, which plain `git fetch` in a
+            // worktree refuses to write.
+            commit_and_push(src_str, "two", "main");
+            run_git(&["-C", src_str, "push", "-q", "origin", "main:wt"]);
+            let upstream = rev_parse(src_str, "HEAD");
+
+            update_sessions(
+                &[
+                    ("wt".to_string(), Strategy::Worktree, vec![name.clone()]),
+                    ("cl".to_string(), Strategy::Clone, vec![name.clone()]),
+                ],
+                false,
+            )
+            .unwrap();
+
+            assert_eq!(rev_parse(&bare, "refs/remotes/origin/main"), upstream);
+            assert_eq!(rev_parse(&bare, "refs/heads/main"), upstream);
+            assert_eq!(rev_parse(cl_str, "refs/remotes/origin/main"), upstream);
+            // The checked-out workspace branch is left alone.
+            assert_eq!(rev_parse(wt_str, "HEAD"), wt_head);
+            assert_eq!(rev_parse(&bare, "refs/heads/wt"), wt_head);
+
+            // A workspace that references an unregistered source fails.
+            let err = update_sessions(
+                &[("wt".to_string(), Strategy::Worktree, vec!["gone".into()])],
+                false,
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("not registered"), "{err}");
+        });
+
+        match old_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        if let Some(r) = old_root {
+            std::env::set_var("BOX_ROOT", r);
+        }
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
     }
 }
