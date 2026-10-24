@@ -34,11 +34,11 @@ TYPICAL FLOW:\n\
 CONVENTIONS (important for scripting/agents):\n\
   - Every command targets an EXPLICIT object. There is no implicit current-directory resolution.\n\
   - `box repo add|remove|list` requires exactly one of --workspace <name> or --preset <name>.\n\
-  - `box rebase` requires --workspace <name> and --repo <name>.\n\
   - Subcommand aliases: workspace=ws, and within each group list=ls, remove=rm, switch=sw.\n\
-  - `box workspace remove` always needs a target: one or more NAMEs, or --all.\n\
+  - `box workspace remove` and `box workspace update` always need a target: one or more NAMEs, or --all.\n\
+  - `box workspace add` fetches origin for each source first; use --no-update or BOX_UPDATE=no to skip.\n\
    - `box workspace prune` removes workspaces older than three days by default (--older-than).",
-    after_help = "Examples:\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box workspace prune --older-than 7d          # remove workspaces older than 7d (default: 3d)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box rebase main --workspace my-feature --repo app-a # fetch & rebase a repo\n  box upgrade                                  # self-update"
+    after_help = "Examples:\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box workspace update --all                   # fetch origin for every workspace repo\n  box workspace prune --older-than 7d          # remove workspaces older than 7d (default: 3d)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -72,8 +72,6 @@ enum Commands {
         #[command(subcommand)]
         action: PresetAction,
     },
-    /// Fetch origin and rebase a workspace repo onto another branch
-    Rebase(RebaseArgs),
     /// Self-update to the latest version
     Upgrade,
     /// Output shell configuration (e.g. eval "$(box config zsh)")
@@ -101,6 +99,8 @@ enum WorkspaceAction {
     Remove(RemoveArgs),
     /// Remove workspaces older than a given age
     Prune(PruneArgs),
+    /// Fetch origin for every repo in one or more workspaces, or all with --all
+    Update(UpdateArgs),
     /// Switch into a workspace
     #[command(alias = "sw")]
     Switch {
@@ -186,9 +186,14 @@ struct CreateArgs {
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
 
-    /// Skip the per-repo `git fetch origin` before creating the workspace
-    #[arg(long)]
-    no_fetch: bool,
+    /// Update each source repo (`git fetch origin`) before creating the workspace
+    /// (default; override the default with BOX_UPDATE=yes|no)
+    #[arg(long, overrides_with = "no_update")]
+    update: bool,
+
+    /// Skip updating source repos before creating the workspace
+    #[arg(long, alias = "no-fetch", overrides_with = "update")]
+    no_update: bool,
 }
 
 #[derive(clap::Args, Debug)]
@@ -244,15 +249,15 @@ struct ListArgs {
 }
 
 #[derive(clap::Args, Debug)]
-struct RebaseArgs {
-    /// Branch to rebase onto (e.g. main)
-    branch: String,
-    /// Workspace name
-    #[arg(long)]
-    workspace: String,
-    /// Repo name within the workspace
-    #[arg(long)]
-    repo: String,
+#[command(group(clap::ArgGroup::new("update_target").required(true).args(["name", "all"])))]
+struct UpdateArgs {
+    /// Workspace names
+    #[arg(value_name = "NAME")]
+    name: Vec<String>,
+
+    /// Update every workspace
+    #[arg(long, short = 'a', conflicts_with = "name")]
+    all: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -282,6 +287,7 @@ fn main() {
             WorkspaceAction::Prune(args) => {
                 cmd_prune(args.older_than.as_deref().unwrap_or("3d"), verbose)
             }
+            WorkspaceAction::Update(args) => cmd_update(&args.name, args.all, verbose),
             WorkspaceAction::Switch { name } => cmd_cd(&name),
         },
         Some(Commands::Repo { action }) => match action {
@@ -304,9 +310,6 @@ fn main() {
             PresetAction::Remove { name } => cmd_preset_remove(&name),
             PresetAction::List => cmd_preset_list(),
         },
-        Some(Commands::Rebase(args)) => {
-            cmd_rebase(&args.branch, &args.workspace, &args.repo, verbose)
-        }
         Some(Commands::Upgrade) => cmd_upgrade(),
         Some(Commands::LayerRefresh { repo }) => cmd_layer_refresh(&repo),
         Some(Commands::Config { shell }) => match shell {
@@ -336,12 +339,6 @@ fn output_cd_path(path: &str) {
         let _ = fs::write(cd_file, path);
     } else {
         println!("{}", path);
-    }
-}
-
-fn signal_post_switch_hook(name: &str) {
-    if let Ok(hook_file) = std::env::var("BOX_POST_SWITCH_FILE") {
-        let _ = fs::write(hook_file, name);
     }
 }
 
@@ -477,7 +474,35 @@ fn cmd_new(args: CreateArgs, verbose: bool) -> Result<i32> {
         bail!("Either --repo or --preset is required.");
     };
     let strategy = workspace::Strategy::from_str(&args.strategy)?;
-    cmd_create(&args.name, repo_names, strategy, !args.no_fetch, verbose)
+    let update = resolve_update(args.update, args.no_update, std::env::var_os(UPDATE_ENV))?;
+    cmd_create(&args.name, repo_names, strategy, update, verbose)
+}
+
+/// Environment variable that sets the default for `workspace add --update/--no-update`.
+const UPDATE_ENV: &str = "BOX_UPDATE";
+
+/// Decide whether `workspace add` fetches sources first. Explicit flags win
+/// over `BOX_UPDATE`; an unset or empty variable keeps the default (update).
+fn resolve_update(update: bool, no_update: bool, env: Option<std::ffi::OsString>) -> Result<bool> {
+    if no_update {
+        return Ok(false);
+    }
+    if update {
+        return Ok(true);
+    }
+    let Some(raw) = env else {
+        return Ok(true);
+    };
+    let value = raw.to_string_lossy().trim().to_ascii_lowercase();
+    match value.as_str() {
+        "" | "1" | "y" | "yes" | "true" | "on" => Ok(true),
+        "0" | "n" | "no" | "false" | "off" => Ok(false),
+        _ => bail!(
+            "Invalid {} value {:?}: expected yes or no.",
+            UPDATE_ENV,
+            raw.to_string_lossy()
+        ),
+    }
 }
 
 fn cmd_create(
@@ -545,7 +570,6 @@ fn cmd_create(
     } else {
         output_cd_path(&workspace_path);
     }
-    signal_post_switch_hook(name);
 
     Ok(0)
 }
@@ -751,6 +775,44 @@ fn apply_edit_diff(
     Ok(0)
 }
 
+/// Fetch origin for every repo in the named workspaces (or all with `all`).
+/// Working trees and checked-out branches are left untouched.
+fn cmd_update(names: &[String], all: bool, verbose: bool) -> Result<i32> {
+    let targets: Vec<(String, workspace::Strategy, Vec<String>)> = if all {
+        session::list()?
+            .into_iter()
+            .map(|s| Ok((s.name, workspace::Strategy::from_str(&s.strategy)?, s.repos)))
+            .collect::<Result<_>>()?
+    } else {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut targets = Vec::new();
+        for name in names {
+            let name = session::validate_name(name)?;
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if !session::session_exists(&name)? {
+                bail!("Workspace '{}' not found.", name);
+            }
+            let sess = session::load(&name)?;
+            let strategy = workspace::Strategy::from_str(&sess.strategy)?;
+            targets.push((sess.name, strategy, sess.repos));
+        }
+        targets
+    };
+
+    if targets.is_empty() {
+        eprintln!("No workspaces.");
+        return Ok(0);
+    }
+
+    workspace::update_sessions(&targets, verbose)?;
+    for (name, _, _) in &targets {
+        println!("Workspace '{}' updated.", name);
+    }
+    Ok(0)
+}
+
 fn cmd_remove(names: &[String], verbose: bool) -> Result<i32> {
     // Validate all targets before deletion, and deduplicate normalized names.
     let mut seen = std::collections::BTreeSet::new();
@@ -945,7 +1007,6 @@ fn cmd_cd(name: &str) -> Result<i32> {
     }
     let path = resolve_workspace_path(name)?;
     output_cd_path(&path.to_string_lossy());
-    signal_post_switch_hook(name);
     Ok(0)
 }
 
@@ -956,83 +1017,6 @@ fn cmd_layer_refresh(repo_name: &str) -> Result<i32> {
         .ok_or_else(|| anyhow::anyhow!("Repo '{}' not found in registry.", repo_name))?;
     layer::refresh_base(&entry)?;
     Ok(0)
-}
-
-/// Fetch origin in the bare repo backing a workspace repo, then rebase that
-/// repo's current branch onto `branch`.
-///
-/// Box workspaces share a single bare repo across worktrees, and `git fetch`
-/// from a worktree often refuses to update sibling-worktree branches. This
-/// command routes the fetch through `git::fetch_repo`, which knows how to
-/// exclude checked-out branches with negative refspecs.
-fn cmd_rebase(branch: &str, workspace: &str, repo: &str, verbose: bool) -> Result<i32> {
-    let workspace = session::validate_name(workspace)?;
-    if !session::session_exists(&workspace)? {
-        bail!("Workspace '{}' not found.", workspace);
-    }
-    let sess = session::load(&workspace)?;
-    if sess.strategy == workspace::Strategy::Layer.as_str() && sess.repos.iter().any(|r| r == repo)
-    {
-        workspace::ensure_session_mounted(&workspace, &[repo.to_string()])?;
-    }
-    let worktree_root = config::box_root()?
-        .join("workspaces")
-        .join(&workspace)
-        .join(repo);
-    if !worktree_root.is_dir() {
-        bail!("Repo '{}' not found in workspace '{}'.", repo, workspace);
-    }
-    let worktree_root_str = worktree_root.to_string_lossy().to_string();
-
-    let output = std::process::Command::new("git")
-        .args(["-C", &worktree_root_str, "rev-parse", "--git-common-dir"])
-        .output()?;
-    if !output.status.success() {
-        bail!("Failed to determine git common directory.");
-    }
-    let common = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let common_path = if Path::new(&common).is_absolute() {
-        PathBuf::from(common)
-    } else {
-        worktree_root.join(common)
-    };
-    let common_canonical =
-        std::fs::canonicalize(&common_path).unwrap_or_else(|_| common_path.clone());
-    let common_str = common_canonical.to_string_lossy().to_string();
-
-    // Resolve the matching registered repo so fetch_repo's log uses the
-    // user-facing name; if cwd isn't a box-managed worktree we still attempt
-    // the fetch via a synthetic entry pointing at the common dir.
-    let entry = repo::list()
-        .ok()
-        .and_then(|all| {
-            all.into_iter().find(|r| {
-                std::fs::canonicalize(&r.path)
-                    .map(|p| p.to_string_lossy() == common_str)
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or_else(|| repo::RepoEntry {
-            name: common_canonical
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "repo".to_string()),
-            path: common_str.clone(),
-        });
-
-    eprintln!("\x1b[2mfetching origin in {}…\x1b[0m", entry.name);
-    let (ok, log) = git::fetch_repo(&entry);
-    if verbose || !ok {
-        eprint!("{}", log);
-    }
-    if !ok {
-        bail!("Fetch failed.");
-    }
-
-    let status = std::process::Command::new("git")
-        .args(["-C", &worktree_root_str, "rebase", branch])
-        .status()?;
-    Ok(if status.success() { 0 } else { 1 })
 }
 
 fn cmd_source_add(src: &str) -> Result<i32> {
@@ -1230,18 +1214,30 @@ fn upgrade_download(url: &str) -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::FromArgMatches;
 
-    fn parse(args: &[&str]) -> Cli {
-        let mut full_args = vec!["box"];
-        full_args.extend_from_slice(args);
-        Cli::try_parse_from(full_args).unwrap()
+    /// Strip every `env = ...` binding so parse tests don't depend on the
+    /// developer's environment (e.g. an exported BOX_STRATEGY).
+    fn without_env(cmd: clap::Command) -> clap::Command {
+        let cmd = cmd.mut_args(|arg| arg.env(None::<&'static str>));
+        let names: Vec<String> = cmd
+            .get_subcommands()
+            .map(|sub| sub.get_name().to_string())
+            .collect();
+        names
+            .into_iter()
+            .fold(cmd, |cmd, name| cmd.mut_subcommand(name, without_env))
     }
 
     fn try_parse(args: &[&str]) -> Result<Cli, clap::Error> {
         let mut full_args = vec!["box"];
         full_args.extend_from_slice(args);
-        Cli::try_parse_from(full_args)
+        let matches = without_env(Cli::command()).try_get_matches_from(full_args)?;
+        Cli::from_arg_matches(&matches)
+    }
+
+    fn parse(args: &[&str]) -> Cli {
+        try_parse(args).unwrap()
     }
 
     // -- No args = help --
@@ -1351,13 +1347,127 @@ mod tests {
     }
 
     #[test]
-    fn test_workspace_add_no_fetch_defaults_false() {
+    fn test_workspace_add_update_flags_default_false() {
         let args = ws_add(parse(&["workspace", "add", "my-session", "--repo", "app"]));
-        assert!(!args.no_fetch);
+        assert!(!args.update);
+        assert!(!args.no_update);
     }
 
     #[test]
-    fn test_workspace_add_with_no_fetch_flag() {
+    fn test_workspace_add_update_flags_last_one_wins() {
+        let args = ws_add(parse(&[
+            "workspace",
+            "add",
+            "s",
+            "--repo",
+            "app",
+            "--no-update",
+            "--update",
+        ]));
+        assert!(args.update);
+        assert!(!args.no_update);
+
+        let args = ws_add(parse(&[
+            "workspace",
+            "add",
+            "s",
+            "--repo",
+            "app",
+            "--update",
+            "--no-update",
+        ]));
+        assert!(!args.update);
+        assert!(args.no_update);
+    }
+
+    #[test]
+    fn test_resolve_update_defaults_to_true() {
+        assert!(resolve_update(false, false, None).unwrap());
+        assert!(resolve_update(false, false, Some("".into())).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_update_reads_env() {
+        for v in ["yes", "YES", "y", "true", "1", "on", " yes "] {
+            assert!(resolve_update(false, false, Some(v.into())).unwrap(), "{v}");
+        }
+        for v in ["no", "No", "n", "false", "0", "off"] {
+            assert!(
+                !resolve_update(false, false, Some(v.into())).unwrap(),
+                "{v}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_update_flags_override_env() {
+        assert!(resolve_update(true, false, Some("no".into())).unwrap());
+        assert!(!resolve_update(false, true, Some("yes".into())).unwrap());
+        // Flags win even over an invalid value.
+        assert!(!resolve_update(false, true, Some("maybe".into())).unwrap());
+    }
+
+    #[test]
+    fn test_resolve_update_rejects_invalid_env() {
+        let err = resolve_update(false, false, Some("maybe".into())).unwrap_err();
+        assert!(err.to_string().contains("BOX_UPDATE"));
+    }
+
+    // -- workspace update subcommand --
+
+    fn ws_update(cli: Cli) -> UpdateArgs {
+        match cli.command {
+            Some(Commands::Workspace {
+                action: WorkspaceAction::Update(args),
+            }) => args,
+            other => panic!("expected Workspace Update, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_workspace_update_names() {
+        let args = ws_update(parse(&["workspace", "update", "a", "b"]));
+        assert_eq!(args.name, vec!["a", "b"]);
+        assert!(!args.all);
+    }
+
+    #[test]
+    fn test_workspace_update_all() {
+        let args = ws_update(parse(&["ws", "update", "--all"]));
+        assert!(args.all);
+        assert!(args.name.is_empty());
+    }
+
+    #[test]
+    fn test_workspace_update_requires_a_target() {
+        assert!(try_parse(&["workspace", "update"]).is_err());
+    }
+
+    #[test]
+    fn test_workspace_update_all_conflicts_with_names() {
+        assert!(try_parse(&["workspace", "update", "a", "--all"]).is_err());
+    }
+
+    #[test]
+    fn test_rebase_command_removed() {
+        assert!(try_parse(&["rebase", "main", "--workspace", "w", "--repo", "r"]).is_err());
+    }
+
+    #[test]
+    fn test_workspace_add_with_no_update_flag() {
+        let args = ws_add(parse(&[
+            "workspace",
+            "add",
+            "my-session",
+            "--repo",
+            "app",
+            "--no-update",
+        ]));
+        assert!(args.no_update);
+    }
+
+    #[test]
+    fn test_workspace_add_accepts_legacy_no_fetch_alias() {
         let args = ws_add(parse(&[
             "workspace",
             "add",
@@ -1366,7 +1476,7 @@ mod tests {
             "app",
             "--no-fetch",
         ]));
-        assert!(args.no_fetch);
+        assert!(args.no_update);
     }
 
     // -- repo subcommand (workspace/preset repo management) --
@@ -1859,24 +1969,11 @@ mod tests {
         assert!(!is_prunable("old", old, cutoff, &active));
     }
 
-    // -- no --update flag (removed) --
+    // -- no global --update flag (only `workspace add --update`) --
 
     #[test]
     fn test_update_flag_rejected() {
         let result = try_parse(&["--update"]);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_new_update_flag_rejected() {
-        let result = try_parse(&[
-            "workspace",
-            "add",
-            "my-session",
-            "--repo",
-            "app",
-            "--update",
-        ]);
         assert!(result.is_err());
     }
 

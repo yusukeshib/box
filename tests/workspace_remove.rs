@@ -147,7 +147,6 @@ fn shell_wrappers_return_from_removed_workspace_in_both_shells() {
                     std::env::var("PATH").unwrap()
                 ),
             )
-            .env_remove("BOX_POST_SWITCH_HOOK")
             .current_dir(f.workspace("b").join("repo/subdir"))
             .output()
             .unwrap();

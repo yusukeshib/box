@@ -73,7 +73,6 @@ _box() {
                 'repo:Manage repos within a workspace or preset'
                 'source:Manage registered sources (upstream git repos)'
                 'preset:Manage presets'
-                'rebase:Fetch origin and rebase a workspace repo'
                 'upgrade:Self-update to the latest version'
                 'config:Output shell configuration'
             )
@@ -91,6 +90,7 @@ _box() {
                     'list:List workspaces'
                     'remove:Remove one or more workspaces (or --all)'
                     'prune:Remove workspaces older than a given age'
+                    'update:Fetch origin for workspace repos (or --all)'
                     'switch:Switch into a workspace'
                 )
                 _describe 'workspace subcommand' ws_subcmds
@@ -109,7 +109,8 @@ _box() {
                             '--repo:Select specific source'
                             '--preset:Use a preset'
                             '--strategy:Workspace strategy'
-                            '--no-fetch:Skip git fetch before creating the workspace'
+                            '--update:Update source repos (git fetch) before creating (default)'
+                            '--no-update:Skip updating source repos before creating'
                         )
                         _describe 'option' add_options
                     fi
@@ -136,7 +137,9 @@ _box() {
                         _describe 'option' prune_options
                     fi
                     ;;
-                remove|rm)
+                remove|rm|update)
+                    local all_desc='Remove every workspace'
+                    [[ $words[3] == update ]] && all_desc='Update every workspace'
                     local has_names=0 has_all=0 end_options=0 i
                     for (( i = 4; i < CURRENT; i++ )); do
                         if (( end_options )); then
@@ -158,8 +161,8 @@ _box() {
                         )
                         if (( ! has_names && ! has_all )); then
                             remove_options+=(
-                                '--all:Remove every workspace'
-                                '-a:Remove every workspace'
+                                "--all:$all_desc"
+                                "-a:$all_desc"
                             )
                         fi
                         _describe 'option' remove_options
@@ -266,20 +269,6 @@ _box() {
                     ;;
             esac
             ;;
-        rebase)
-            case $prev in
-                --workspace) __box_sessions; return ;;
-                --repo) __box_repos; return ;;
-            esac
-            if [[ $words[CURRENT] == -* ]]; then
-                local -a rebase_options
-                rebase_options=(
-                    '--workspace:Workspace name'
-                    '--repo:Repo within the workspace'
-                )
-                _describe 'option' rebase_options
-            fi
-            ;;
         config)
             if (( CURRENT == 3 )); then
                 local -a shells
@@ -292,21 +281,15 @@ _box() {
 compdef _box box
 
 box() {
-    local __box_cd_file __box_post_switch_file
+    local __box_cd_file
     __box_cd_file=$(mktemp "/tmp/.box-cd.XXXXXX")
-    __box_post_switch_file=$(mktemp "/tmp/.box-post-switch.XXXXXX")
-    BOX_CD_FILE="$__box_cd_file" BOX_POST_SWITCH_FILE="$__box_post_switch_file" command box "$@"
+    BOX_CD_FILE="$__box_cd_file" command box "$@"
     local __box_exit=$?
     if [[ -s "$__box_cd_file" ]]; then
         local __box_dir
         __box_dir=$(<"$__box_cd_file")
         cd "$__box_dir"
     fi
-    if [[ -s "$__box_post_switch_file" ]] && [[ -n "$BOX_POST_SWITCH_HOOK" ]]; then
-        local __box_name
-        __box_name=$(<"$__box_post_switch_file")
-        BOX_SESSION_NAME="$__box_name" eval "$BOX_POST_SWITCH_HOOK"
-    fi
-    rm -f "$__box_cd_file" "$__box_post_switch_file"
+    rm -f "$__box_cd_file"
     return $__box_exit
 }

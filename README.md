@@ -87,6 +87,7 @@ box workspace add <name> --repo <r> [opts]  Create a workspace (alias: ws)
 box workspace list [-q]                     List workspaces (alias: ls)
 box workspace remove <name>...|--all           Remove workspace(s) (alias: rm)
 box workspace prune [--older-than <age>]    Remove workspaces older than an age (default: 3d)
+box workspace update <name>...|--all        Fetch origin for workspace repos
 box workspace switch <name>                 Switch into a workspace (alias: sw)
 box repo add <r>... --workspace|--preset <name>     Add repo(s) to a workspace/preset
 box repo remove <r>... --workspace|--preset <name>  Remove repo(s) (alias: rm)
@@ -98,7 +99,6 @@ box preset add <name> --repo <r>...         Create a preset
 box preset update <name> --repo <r>...      Replace a preset's repos
 box preset remove <name>                    Remove a preset (alias: rm)
 box preset list                             List presets (alias: ls)
-box rebase <branch> --workspace <name> --repo <r>   Fetch origin and rebase a repo
 box config zsh|bash                         Output shell configuration
 box upgrade                                 Upgrade to latest version
 ```
@@ -125,9 +125,17 @@ box workspace add my-feature --repo frontend --repo backend
 
 # From a preset
 box workspace add my-feature --preset work
+
+# Skip fetching sources first (faster; branches from the local refs)
+box workspace add my-feature --repo my-app --no-update
 ```
 
 `--repo` (repeatable) or `--preset` is required. Running `box` without a command displays help.
+
+By default each source is fetched from `origin` before the workspace is created.
+Set `BOX_UPDATE=no` to make `--no-update` the default; `--update` forces a fetch
+for one command. Accepted values are `yes`/`no`, `true`/`false`, `on`/`off`, and
+`1`/`0`. `--no-fetch` is still accepted as an alias of `--no-update`.
 
 ### Add / remove repos in a workspace
 
@@ -162,15 +170,23 @@ box workspace sw my-feature     # Alias
 box ws sw my-feature            # `ws` is an alias of `workspace`
 ```
 
-With shell integration enabled (`eval "$(box config zsh)"`), `box workspace switch` changes your working directory. If you set `BOX_POST_SWITCH_HOOK`, it also runs that hook with the workspace name (see [Shell Integration](#shell-integration)). Without shell integration, the workspace path is printed to stdout.
+With shell integration enabled (`eval "$(box config zsh)"`), `box workspace switch` changes your working directory. Without shell integration, the workspace path is printed to stdout.
 
-### Rebase a workspace repo
+### Update workspace repos
 
 ```bash
-box rebase main --workspace my-feature --repo my-app   # fetch origin, then rebase onto main
+box workspace update my-feature   # fetch origin for every repo in a workspace
+box workspace update a b          # several workspaces
+box workspace update --all        # every workspace
 ```
 
-`box rebase` targets an explicit workspace repo. It fetches the bare repo behind the worktree (handling sibling-worktree branches safely) and then runs `git rebase <branch>` in that repo's worktree.
+`box workspace update` refreshes `origin/*` refs and never touches working trees
+or checked-out branches. Worktree and layer workspaces fetch the shared bare
+repo once per source, excluding branches checked out in any workspace (a plain
+`git fetch` there can refuse to run when upstream has a branch with the same
+name as a checked-out one). Clone workspaces run `git fetch --prune origin` in
+each clone. Then rebase or merge with plain git, for example
+`git rebase origin/main`.
 
 ## Multi-repo Workspaces
 
@@ -183,7 +199,7 @@ box source add ~/projects/backend
 box workspace add my-feature --repo frontend --repo backend
 ```
 
-Repos are always fetched before workspace creation. Each repo is set up in `~/.box/workspaces/<workspace>/<repo>/`. For single-repo workspaces, the workspace path resolves directly to the repo subdirectory.
+Repos are fetched before workspace creation unless `--no-update` or `BOX_UPDATE=no` is set. Each repo is set up in `~/.box/workspaces/<workspace>/<repo>/`. For single-repo workspaces, the workspace path resolves directly to the repo subdirectory.
 
 ### Presets
 
@@ -251,10 +267,10 @@ behavior of returning to its original project.
 | Variable | Description |
 |----------|-------------|
 | `BOX_STRATEGY` | Default workspace strategy (`worktree`, `clone`, or `layer`). Overridden by `--strategy` |
+| `BOX_UPDATE` | Whether `box workspace add` fetches sources first (`yes` by default; `no` to skip). Overridden by `--update` / `--no-update` |
 | `BOX_LAYER_REFRESH` | How the `layer` strategy rolls base images forward after creating a workspace: `background` (default), `sync`, or `off` |
 | `BOX_VERBOSE` | When set, equivalent to `--verbose` |
 | `BOX_ROOT` | Override the box data directory (default `~/.box`). Read by the shell completions |
-| `BOX_POST_SWITCH_HOOK` | Shell snippet run after `box workspace switch` / `box workspace add`. The workspace name is available as `$BOX_SESSION_NAME`. See [Shell Integration](#shell-integration) |
 
 ## Shell Integration
 
@@ -270,27 +286,6 @@ This provides:
 
 - Tab completion for workspaces, sources, and presets
 - A `box` shell function so `box workspace switch` / `box workspace add` change your working directory
-- A `BOX_POST_SWITCH_HOOK` that runs after switching into or creating a workspace, with the workspace name in `$BOX_SESSION_NAME`
-
-### Post-switch hook
-
-Set `BOX_POST_SWITCH_HOOK` to any shell snippet you want to run when a workspace is entered (fires on both `box workspace add` and `box workspace switch`). Common choices:
-
-```bash
-# tmux — rename the current window
-export BOX_POST_SWITCH_HOOK='tmux rename-window "$BOX_SESSION_NAME"'
-
-# zellij — rename the current tab
-export BOX_POST_SWITCH_HOOK='zellij action rename-tab "$BOX_SESSION_NAME"'
-
-# kitty — set the tab title
-export BOX_POST_SWITCH_HOOK='kitty @ set-tab-title "$BOX_SESSION_NAME"'
-
-# Generic OSC 2 — set the terminal window/tab title
-export BOX_POST_SWITCH_HOOK='printf "\033]2;%s\007" "$BOX_SESSION_NAME"'
-```
-
-The snippet runs in the current shell via `eval`, so `$TMUX`, `$ZELLIJ`, and other environment variables are available for branching.
 
 ## How It Works
 

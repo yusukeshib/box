@@ -15,10 +15,44 @@ pub fn is_repo(dir: &Path) -> bool {
 /// refspecs. If git still refuses (e.g. a worktree admin entry we missed),
 /// we parse the error, add the offending branch to the excludes, and retry.
 ///
+/// Remote-tracking refs (`refs/remotes/origin/*`) are fetched first in a
+/// separate pass without exclusions: they can never be checked out, so every
+/// `origin/<branch>` stays current even when `<branch>` is checked out in a
+/// workspace and therefore excluded from the local-heads pass.
+///
 /// Returns (success, captured_output) for use in parallel execution.
 pub fn fetch_repo(entry: &crate::repo::RepoEntry) -> (bool, String) {
     let mut excludes = worktree_checked_out_branches(&entry.path);
     let mut log = String::new();
+
+    match std::process::Command::new("git")
+        .args([
+            "-C",
+            &entry.path,
+            "fetch",
+            "--prune",
+            // Ignore the configured refspecs (which include the
+            // checked-out-sensitive heads mapping) and use only this one.
+            "--refmap=",
+            "origin",
+            "+refs/heads/*:refs/remotes/origin/*",
+        ])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+    {
+        Ok(output) => {
+            log.push_str(&String::from_utf8_lossy(&output.stdout));
+            log.push_str(&String::from_utf8_lossy(&output.stderr));
+            if !output.status.success() {
+                log.push_str("  \x1b[31mfetch failed\x1b[0m\n");
+                return (false, log);
+            }
+        }
+        Err(e) => {
+            log.push_str(&format!("  \x1b[31mfetch error: {}\x1b[0m\n", e));
+            return (false, log);
+        }
+    }
 
     for _ in 0..8 {
         let mut args: Vec<String> = vec![
