@@ -933,7 +933,9 @@ mod tests {
         let result = std::panic::catch_unwind(|| {
             let remote = home.join("remote.git");
             let remote_str = remote.to_str().unwrap();
-            run_git(&["init", "-q", "--bare", remote_str]);
+            // Name the remote's HEAD too: cloning an empty repo takes the
+            // branch name from it on some git versions, not from the client.
+            run_git(&["init", "-q", "--bare", "--initial-branch=main", remote_str]);
             let src = home.join("src");
             let src_str = src.to_str().unwrap();
             run_git(&[
