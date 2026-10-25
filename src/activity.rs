@@ -229,7 +229,12 @@ mod tests {
         let status = Command::new("git")
             .arg("-C")
             .arg(dir)
+            // Newer git runs `maintenance --auto` detached after commits; it
+            // creates and deletes files under .git while `age_tree` walks it.
+            .args(["-c", "maintenance.auto=false", "-c", "gc.auto=0"])
             .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_AUTHOR_NAME", "t")
             .env("GIT_AUTHOR_EMAIL", "t@example.com")
             .env("GIT_COMMITTER_NAME", "t")
