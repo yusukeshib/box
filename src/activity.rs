@@ -15,8 +15,10 @@
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use std::ffi::OsStr;
 use std::fs;
-use std::path::Path;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
@@ -111,10 +113,24 @@ fn observe_checkout(latest: &mut Latest, dir: &Path, cutoff: DateTime<Utc>) -> R
         return Ok(());
     }
     let git_dir = git_stdout(dir, &["rev-parse", "--absolute-git-dir"])?;
-    let git_dir = String::from_utf8_lossy(&git_dir).trim().to_string();
-    observe_git_dir(latest, Path::new(&git_dir))?;
+    let git_dir = git_dir.strip_suffix(b"\n").unwrap_or(&git_dir);
+    observe_git_dir(latest, &bytes_to_path(git_dir))?;
     if latest.is_after(cutoff) {
         return Ok(());
+    }
+
+    // Submodules are separate checkouts: changes and commits inside them are
+    // invisible to the parent's status and git dir, so probe each initialized
+    // one recursively. Uninitialized ones have no `.git` and nothing to lose.
+    let stage = git_stdout(dir, &["ls-files", "-z", "--stage"])?;
+    for sub in submodule_paths(&stage) {
+        let sub_dir = dir.join(sub);
+        if fs::symlink_metadata(sub_dir.join(".git")).is_ok() {
+            observe_checkout(latest, &sub_dir, cutoff)?;
+            if latest.is_after(cutoff) {
+                return Ok(());
+            }
+        }
     }
 
     let status = git_stdout(
@@ -149,9 +165,27 @@ fn observe_existing_ancestor(latest: &mut Latest, root: &Path, path: &Path) -> R
     Ok(())
 }
 
+/// Git prints paths as raw bytes; keep them exact so non-UTF-8 names are
+/// statted correctly.
+fn bytes_to_path(bytes: &[u8]) -> PathBuf {
+    PathBuf::from(OsStr::from_bytes(bytes))
+}
+
+/// Submodule (gitlink, mode 160000) paths from `git ls-files -z --stage`.
+fn submodule_paths(output: &[u8]) -> Vec<PathBuf> {
+    output
+        .split(|b| *b == 0)
+        .filter_map(|entry| {
+            let tab = entry.iter().position(|b| *b == b'\t')?;
+            let (meta, path) = (&entry[..tab], &entry[tab + 1..]);
+            meta.starts_with(b"160000 ").then(|| bytes_to_path(path))
+        })
+        .collect()
+}
+
 /// Paths from `git status --porcelain=v1 -z` output, relative to the repo
 /// root. For renames and copies only the new path is returned.
-fn status_paths(output: &[u8]) -> Vec<String> {
+fn status_paths(output: &[u8]) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     let mut fields = output.split(|b| *b == 0).filter(|f| !f.is_empty());
     while let Some(entry) = fields.next() {
@@ -159,7 +193,7 @@ fn status_paths(output: &[u8]) -> Vec<String> {
             continue;
         }
         let (code, path) = entry.split_at(3);
-        paths.push(String::from_utf8_lossy(path).into_owned());
+        paths.push(bytes_to_path(path));
         if matches!(code[0], b'R' | b'C') {
             fields.next();
         }
@@ -330,9 +364,57 @@ mod tests {
     #[test]
     fn test_status_paths_parses_renames_and_spaces() {
         let out = b" M src/a b.txt\0R  new.txt\0old.txt\0?? x/y.txt\0 D gone.txt\0";
-        assert_eq!(
-            status_paths(out),
-            vec!["src/a b.txt", "new.txt", "x/y.txt", "gone.txt"]
+        let expected: Vec<PathBuf> = ["src/a b.txt", "new.txt", "x/y.txt", "gone.txt"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(status_paths(out), expected);
+    }
+
+    #[test]
+    fn test_status_paths_keeps_non_utf8_bytes() {
+        let out = b"?? caf\xe9.txt\0";
+        assert_eq!(status_paths(out), vec![bytes_to_path(b"caf\xe9.txt")]);
+    }
+
+    #[test]
+    fn test_non_utf8_untracked_file_is_activity() {
+        let (_tmp, dir, old) = old_repo();
+        let path = dir.join(bytes_to_path(b"caf\xe9.txt"));
+        if fs::write(&path, "x").is_err() {
+            return; // filesystem rejects non-UTF-8 names (e.g. APFS)
+        }
+        set_mtime(&dir, old);
+        assert!(is_recent(activity(&dir)));
+    }
+
+    #[test]
+    fn test_submodule_paths_selects_gitlinks() {
+        let out = b"100644 aaaa 0\tsrc/a.txt\x00160000 bbbb 0\tlib/sub\x00";
+        assert_eq!(submodule_paths(out), vec![PathBuf::from("lib/sub")]);
+    }
+
+    #[test]
+    fn test_submodule_edit_is_activity() {
+        let (_tmp, dir, old) = old_repo();
+        let (_sub_tmp, sub_src, _) = old_repo();
+        git(
+            &dir,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                sub_src.to_str().unwrap(),
+                "lib/sub",
+            ],
         );
+        git(&dir, &["commit", "-qm", "add submodule"]);
+        age_tree(&dir, old);
+        assert_eq!(activity(&dir).unwrap(), DateTime::<Utc>::from(old));
+
+        fs::write(dir.join("lib/sub/src/a.txt"), "changed").unwrap();
+        assert!(is_recent(activity(&dir)));
     }
 }
