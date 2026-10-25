@@ -21,7 +21,7 @@ Box creates and manages named workspaces using `git worktree` (default) or `git 
 
 - **Two workspace strategies** — `git worktree` (default, lightweight) or `git clone --local` (full isolation)
 - **Multi-repo sessions** — group multiple repos into one workspace, optionally via reusable presets
-- **Age-based pruning** — clean up workspaces older than one day by default
+- **Inactivity-based pruning** — clean up workspaces unused for three days by default
 - **Shell integration** — completions, `cd` wrapper, and terminal-tab renaming for zsh/bash
 
 ## Requirements
@@ -86,7 +86,7 @@ resolution.
 box workspace add <name> --repo <r> [opts]  Create a workspace (alias: ws)
 box workspace list [-q]                     List workspaces (alias: ls)
 box workspace remove <name>...|--all           Remove workspace(s) (alias: rm)
-box workspace prune [--older-than <age>]    Remove workspaces older than an age (default: 3d)
+box workspace prune [--older-than <age>]    Remove workspaces unused for an age (default: 3d)
 box workspace update <name>...|--all        Fetch origin for workspace repos
 box workspace switch <name>                 Switch into a workspace (alias: sw)
 box repo add <r>... --workspace|--preset <name>     Add repo(s) to a workspace/preset
@@ -158,8 +158,8 @@ box workspace list -q           # Names only (for scripting)
 box workspace remove my-feature          # Remove a workspace by name
 box workspace rm a b c d                 # Remove multiple workspaces
 box workspace remove --all               # Remove every workspace
-box workspace prune                      # Remove workspaces at least 3 days old
-box workspace prune --older-than 7d      # Remove workspaces at least 7 days old
+box workspace prune                      # Remove workspaces unused for 3 days
+box workspace prune --older-than 7d      # Remove workspaces unused for 7 days
 ```
 
 ### Switch into a workspace
@@ -260,7 +260,16 @@ behavior of returning to its original project.
 
 | Option | Description |
 |--------|-------------|
-| `--older-than <age>` | Minimum age to remove (`s`, `m`, `h`, or `d`; default: `3d`) |
+| `--older-than <age>` | Minimum time since last use (`s`, `m`, `h`, or `d`; default: `3d`) |
+
+A workspace's last use is the latest of its creation, `box workspace switch`,
+`box repo add|remove --workspace`, and activity inside its repos: modified,
+deleted, or untracked (non-ignored) files, and git operations that update
+`HEAD`, the index, or the HEAD reflog (commits, checkouts, staging). For
+`layer` workspaces, writes to the disk image count instead of file changes.
+Changes to gitignored files alone do not count. The workspace containing the
+current directory (or `$BOX_SESSION`) is never pruned, nor is one whose
+activity cannot be determined.
 
 ## Environment Variables
 

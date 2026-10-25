@@ -89,7 +89,7 @@ _box() {
                     'add:Create a new workspace'
                     'list:List workspaces'
                     'remove:Remove one or more workspaces (or --all)'
-                    'prune:Remove workspaces older than a given age'
+                    'prune:Remove workspaces unused for a given age'
                     'update:Fetch origin for workspace repos (or --all)'
                     'switch:Switch into a workspace'
                 )
@@ -132,7 +132,7 @@ _box() {
                     elif [[ $words[CURRENT] == -* ]]; then
                         local -a prune_options
                         prune_options=(
-                            '--older-than:Prune workspaces at least this old (default: 3d)'
+                            '--older-than:Prune workspaces unused for at least this long (default: 3d)'
                         )
                         _describe 'option' prune_options
                     fi

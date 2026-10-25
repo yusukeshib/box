@@ -89,10 +89,7 @@ pub fn save(session: &Session) -> Result<()> {
     if !session.project_dir.is_empty() {
         fs::write(dir.join("project_dir"), &session.project_dir)?;
     }
-    fs::write(
-        dir.join("created_at"),
-        Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string(),
-    )?;
+    fs::write(dir.join("created_at"), format_timestamp(Utc::now()))?;
     // env file is no longer used; clean up any leftover from earlier versions.
     let _ = fs::remove_file(dir.join("env"));
     if !session.repos.is_empty() {
@@ -240,8 +237,31 @@ pub fn list() -> Result<Vec<SessionSummary>> {
     Ok(sessions)
 }
 
+const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+
+fn format_timestamp(at: DateTime<Utc>) -> String {
+    format!("{} UTC", at.format(TIMESTAMP_FORMAT))
+}
+
 pub fn created_at(name: &str) -> Result<Option<DateTime<Utc>>> {
-    let path = sessions_dir()?.join(name).join("created_at");
+    read_timestamp(name, "created_at")
+}
+
+/// When the workspace was last entered through box (`workspace switch`) or
+/// had its repos changed. `None` if never recorded.
+pub fn last_used(name: &str) -> Result<Option<DateTime<Utc>>> {
+    read_timestamp(name, "last_used")
+}
+
+/// Record that the workspace is being used now.
+pub fn touch_last_used(name: &str) -> Result<()> {
+    let path = sessions_dir()?.join(name).join("last_used");
+    fs::write(&path, format_timestamp(Utc::now()))
+        .context(format!("Failed to write {}", path.display()))
+}
+
+fn read_timestamp(name: &str, file: &str) -> Result<Option<DateTime<Utc>>> {
+    let path = sessions_dir()?.join(name).join(file);
     let raw = match fs::read_to_string(&path) {
         Ok(raw) => raw,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -250,7 +270,7 @@ pub fn created_at(name: &str) -> Result<Option<DateTime<Utc>>> {
     let Some(value) = raw.trim().strip_suffix(" UTC") else {
         return Ok(None);
     };
-    Ok(NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S")
+    Ok(NaiveDateTime::parse_from_str(value, TIMESTAMP_FORMAT)
         .ok()
         .map(|dt| dt.and_utc()))
 }
@@ -427,6 +447,20 @@ mod tests {
 
             let created = created_at("created-test").unwrap().unwrap();
             assert!(created <= Utc::now());
+        });
+    }
+
+    #[test]
+    fn test_last_used_is_recorded_on_touch() {
+        with_temp_home(|_| {
+            let sess = make_session("used-test", "/tmp/project");
+            save(&sess).unwrap();
+            assert!(last_used("used-test").unwrap().is_none());
+
+            let before = Utc::now() - chrono::Duration::seconds(1);
+            touch_last_used("used-test").unwrap();
+            let used = last_used("used-test").unwrap().unwrap();
+            assert!(used >= before && used <= Utc::now());
         });
     }
 

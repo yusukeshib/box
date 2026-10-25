@@ -1,3 +1,4 @@
+mod activity;
 mod config;
 mod git;
 mod layer;
@@ -37,8 +38,8 @@ CONVENTIONS (important for scripting/agents):\n\
   - Subcommand aliases: workspace=ws, and within each group list=ls, remove=rm, switch=sw.\n\
   - `box workspace remove` and `box workspace update` always need a target: one or more NAMEs, or --all.\n\
   - `box workspace add` fetches origin for each source first; use --no-update or BOX_UPDATE=no to skip.\n\
-   - `box workspace prune` removes workspaces older than three days by default (--older-than).",
-    after_help = "Examples:\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box workspace update --all                   # fetch origin for every workspace repo\n  box workspace prune --older-than 7d          # remove workspaces older than 7d (default: 3d)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box upgrade                                  # self-update"
+   - `box workspace prune` removes workspaces unused for three days by default (--older-than).",
+    after_help = "Examples:\n  box workspace add my-feature --repo app-a    # create a workspace (alias: ws)\n  box workspace add my-feature --preset work   # create from a preset\n  box workspace list                           # list workspaces (alias: ls)\n  box workspace switch my-feature              # switch into a workspace (alias: sw)\n  box workspace remove my-feature              # remove a workspace (alias: rm)\n  box workspace update --all                   # fetch origin for every workspace repo\n  box workspace prune --older-than 7d          # remove workspaces unused for 7d (default: 3d)\n  box repo add app-c --workspace my-feature    # add a repo to a workspace\n  box repo remove app-a --workspace my-feature # remove a repo from a workspace\n  box repo list --workspace my-feature         # list repos in a workspace\n  box repo add app-c --preset work             # add a repo to a preset\n  box source add git@github.com:user/app.git   # register a source from a URL\n  box source add .                             # register current dir as a source\n  box source list                              # list registered sources\n  box source remove my-app                     # unregister a source\n  box preset add work --repo app-a --repo app-b # define a new preset\n  box preset update work --repo app-a --repo app-c # replace a preset's repos\n  box preset list                              # list presets\n  box upgrade                                  # self-update"
 )]
 struct Cli {
     /// Show detailed output
@@ -97,7 +98,7 @@ enum WorkspaceAction {
     /// Remove one or more workspaces, or every workspace with --all
     #[command(alias = "rm")]
     Remove(RemoveArgs),
-    /// Remove workspaces older than a given age
+    /// Remove workspaces that have not been used for a given age
     Prune(PruneArgs),
     /// Fetch origin for every repo in one or more workspaces, or all with --all
     Update(UpdateArgs),
@@ -236,7 +237,9 @@ struct RemoveArgs {
 
 #[derive(clap::Args, Debug)]
 struct PruneArgs {
-    /// Prune workspaces at least this old (supports s, m, h, d; default: 3d)
+    /// Prune workspaces unused for at least this long (supports s, m, h, d; default: 3d).
+    /// Use means creation, `workspace switch`, repo changes, file edits, or git
+    /// activity (commits, checkouts, staging)
     #[arg(long)]
     older_than: Option<String>,
 }
@@ -612,7 +615,9 @@ fn cmd_repo_modify(
             let strategy = workspace::Strategy::from_str(&sess.strategy)?;
             let new_repos = compute_edit_repos(&sess.repos, add, remove)?;
             ensure_workspace_has_repos(name, &new_repos)?;
-            apply_edit_diff(name, &sess.repos, &new_repos, strategy, verbose)
+            let code = apply_edit_diff(name, &sess.repos, &new_repos, strategy, verbose)?;
+            record_use(name);
+            Ok(code)
         }
         RepoTarget::Preset(name) => {
             let current = preset::load(&name)?;
@@ -906,13 +911,40 @@ fn active_workspace_names() -> std::collections::BTreeSet<String> {
     active
 }
 
+type Timestamp = chrono::DateTime<chrono::Utc>;
+
+/// Latest use of a workspace: its creation time or any later usage signal.
+/// `None` when the creation time is unknown (legacy metadata), which keeps the
+/// workspace from being pruned.
+fn last_activity(
+    created_at: Option<Timestamp>,
+    signals: &[Option<Timestamp>],
+) -> Option<Timestamp> {
+    let created = created_at?;
+    Some(
+        signals
+            .iter()
+            .flatten()
+            .copied()
+            .fold(created, Timestamp::max),
+    )
+}
+
 fn is_prunable(
     name: &str,
-    created_at: Option<chrono::DateTime<chrono::Utc>>,
-    cutoff: chrono::DateTime<chrono::Utc>,
+    last_activity: Option<Timestamp>,
+    cutoff: Timestamp,
     active: &std::collections::BTreeSet<String>,
 ) -> bool {
-    !active.contains(name) && created_at.is_some_and(|created| created <= cutoff)
+    !active.contains(name) && last_activity.is_some_and(|last| last <= cutoff)
+}
+
+/// Record that a workspace was used. Failures only warn: they must not block
+/// the command, but the user should know prune may treat it as idle.
+fn record_use(name: &str) {
+    if let Err(e) = session::touch_last_used(name) {
+        eprintln!("Warning: failed to record use of '{}': {:#}", name, e);
+    }
 }
 
 fn cmd_prune(older_than: &str, verbose: bool) -> Result<i32> {
@@ -924,26 +956,53 @@ fn cmd_prune(older_than: &str, verbose: bool) -> Result<i32> {
     let mut to_remove = Vec::new();
 
     for summary in session::list()? {
-        let created_at = session::created_at(&summary.name)?;
-        if !is_prunable(&summary.name, created_at, cutoff, &active) {
-            if verbose && active.contains(&summary.name) {
-                eprintln!("Skipping active workspace '{}'.", summary.name);
-            } else if verbose && created_at.is_none() {
-                eprintln!(
-                    "Skipping '{}' because created_at is missing or invalid.",
-                    summary.name
-                );
+        let name = summary.name;
+        if active.contains(&name) {
+            if verbose {
+                eprintln!("Skipping active workspace '{}'.", name);
             }
             continue;
         }
-        let sess = session::load(&summary.name)?;
+        // Check cheap metadata first; probe the workspace only if it still
+        // looks idle.
+        let created_at = session::created_at(&name)?;
+        let last_used = session::last_used(&name)?;
+        let recorded = last_activity(created_at, &[last_used]);
+        if !is_prunable(&name, recorded, cutoff, &active) {
+            if verbose && recorded.is_none() {
+                eprintln!(
+                    "Skipping '{}' because created_at is missing or invalid.",
+                    name
+                );
+            } else if verbose {
+                eprintln!("Skipping '{}' because it was used recently.", name);
+            }
+            continue;
+        }
+        let sess = session::load(&name)?;
         let strategy =
             workspace::Strategy::from_str(&sess.strategy).unwrap_or(workspace::Strategy::Clone);
-        to_remove.push((summary.name, strategy, sess.repos));
+        let observed = match activity::latest_activity(&name, strategy, &sess.repos, cutoff) {
+            Ok(observed) => observed,
+            Err(e) => {
+                eprintln!(
+                    "Skipping '{}': could not determine its last activity: {:#}",
+                    name, e
+                );
+                continue;
+            }
+        };
+        if !is_prunable(&name, last_activity(recorded, &[observed]), cutoff, &active) {
+            if verbose {
+                eprintln!("Skipping '{}' because it was used recently.", name);
+            }
+            continue;
+        }
+        to_remove.push((name, strategy, sess.repos));
     }
 
     if to_remove.is_empty() {
-        println!("No workspaces older than {}.", older_than);
+        println!("No workspaces unused for {}.", older_than);
         return Ok(0);
     }
 
@@ -1005,6 +1064,7 @@ fn cmd_cd(name: &str) -> Result<i32> {
     if sess.strategy == workspace::Strategy::Layer.as_str() {
         workspace::ensure_session_mounted(name, &sess.repos)?;
     }
+    record_use(name);
     let path = resolve_workspace_path(name)?;
     output_cd_path(&path.to_string_lossy());
     Ok(0)
@@ -1967,6 +2027,46 @@ mod tests {
 
         active.insert("old".to_string());
         assert!(!is_prunable("old", old, cutoff, &active));
+    }
+
+    #[test]
+    fn test_last_activity_uses_latest_signal_after_creation() {
+        let now = chrono::Utc::now();
+        let created = Some(now - chrono::Duration::days(5));
+        let used = Some(now - chrono::Duration::hours(1));
+
+        assert_eq!(last_activity(created, &[]), created);
+        assert_eq!(last_activity(created, &[None]), created);
+        assert_eq!(last_activity(created, &[used, None]), used);
+        // Signals older than creation (e.g. preserved file mtimes) don't move it back.
+        assert_eq!(
+            last_activity(created, &[Some(now - chrono::Duration::days(9))]),
+            created
+        );
+        // Unknown creation time keeps the workspace regardless of other signals.
+        assert_eq!(last_activity(None, &[used]), None);
+    }
+
+    #[test]
+    fn test_recent_use_keeps_old_workspace() {
+        let now = chrono::Utc::now();
+        let cutoff = now - chrono::Duration::days(3);
+        let created = Some(now - chrono::Duration::days(10));
+        let active = std::collections::BTreeSet::new();
+
+        assert!(is_prunable(
+            "ws",
+            last_activity(created, &[]),
+            cutoff,
+            &active
+        ));
+        let edited = Some(now - chrono::Duration::hours(2));
+        assert!(!is_prunable(
+            "ws",
+            last_activity(created, &[edited]),
+            cutoff,
+            &active
+        ));
     }
 
     // -- no global --update flag (only `workspace add --update`) --
