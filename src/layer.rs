@@ -73,7 +73,7 @@ pub fn image_path(ws_root: &Path, repo_name: &str) -> PathBuf {
         .join(format!("{}.{}", repo_name, IMAGE_EXT))
 }
 
-fn ws_admin_dir(bare: &str, session: &str) -> PathBuf {
+pub fn ws_admin_dir(bare: &str, session: &str) -> PathBuf {
     Path::new(bare)
         .join("worktrees")
         .join(format!("{}{}", WS_ADMIN_PREFIX, session))
