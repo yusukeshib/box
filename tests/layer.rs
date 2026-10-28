@@ -69,6 +69,8 @@ impl Fixture {
             .env("BOX_ROOT", self.root())
             .env("BOX_CD_FILE", self.temp.path().join("cd"))
             .env("BOX_LAYER_REFRESH", "sync")
+            .env("BOX_UPDATE", "yes")
+            .env("GIT_TRACE", self.temp.path().join("git.trace"))
             .env_remove("BOX_SESSION")
             .env_remove("BOX_STRATEGY")
             .output()
@@ -232,6 +234,80 @@ fn layer_workspaces_are_isolated_refreshed_remounted_and_removed() {
     let out = f.box_cmd(&["source", "remove", "src"]);
     assert!(out.status.success(), "{out:?}");
     assert!(!f.root().join("layers/src").exists());
+}
+
+#[test]
+fn layer_checkout_skips_reset_only_when_branch_matches_base() {
+    let f = Fixture::new();
+    let trace = f.temp.path().join("git.trace");
+    // Keep locally created branch refs: fetch --prune intentionally removes
+    // branches absent from the fixture's origin before workspace creation.
+    let add_layer = |ws| {
+        let out = f.box_cmd(&[
+            "workspace",
+            "add",
+            ws,
+            "--repo",
+            "src",
+            "--strategy",
+            "layer",
+            "--no-update",
+        ]);
+        assert!(out.status.success(), "{out:?}");
+    };
+    add_layer("seed");
+    let base = git(&["-C", path(&f.bare()), "rev-parse", "HEAD"]);
+
+    // A new branch needs no checkout when the image is already at its tip.
+    fs::write(&trace, "").unwrap();
+    add_layer("fresh");
+    assert!(!fs::read_to_string(&trace)
+        .unwrap()
+        .contains(" reset -q --hard"));
+    assert_eq!(
+        git(&["-C", path(&f.repo_dir("fresh")), "status", "--porcelain"]),
+        ""
+    );
+
+    // Existing branches at the base commit can also reuse the image as-is.
+    git(&["-C", path(&f.bare()), "branch", "matching", &base]);
+    fs::write(&trace, "").unwrap();
+    add_layer("matching");
+    assert!(!fs::read_to_string(&trace)
+        .unwrap()
+        .contains(" reset -q --hard"));
+    assert_eq!(
+        git(&["-C", path(&f.repo_dir("matching")), "status", "--porcelain"]),
+        ""
+    );
+
+    // The bare HEAD and base still agree, but an existing branch differs.
+    // Comparing only the base and bare HEAD would incorrectly skip this reset.
+    let seed = f.repo_dir("seed");
+    fs::write(seed.join("README.md"), "different branch\n").unwrap();
+    fs::remove_file(seed.join("dir/a.txt")).unwrap();
+    fs::write(seed.join("new.txt"), "new\n").unwrap();
+    commit(&seed, "different branch");
+    let different = git(&["-C", path(&seed), "rev-parse", "HEAD"]);
+    git(&["-C", path(&f.bare()), "branch", "different", &different]);
+    assert_eq!(git(&["-C", path(&f.bare()), "rev-parse", "HEAD"]), base);
+    fs::write(&trace, "").unwrap();
+    add_layer("different");
+    let commands = fs::read_to_string(&trace).unwrap();
+    assert!(commands.contains(" reset -q --hard"), "{commands}");
+    let ws = f.repo_dir("different");
+    assert_eq!(git(&["-C", path(&ws), "rev-parse", "HEAD"]), different);
+    assert_eq!(
+        fs::read_to_string(ws.join("README.md")).unwrap(),
+        "different branch\n"
+    );
+    assert!(!ws.join("dir/a.txt").exists());
+    assert_eq!(fs::read_to_string(ws.join("new.txt")).unwrap(), "new\n");
+    assert_eq!(git(&["-C", path(&ws), "status", "--porcelain"]), "");
+    let hooks = fs::read_to_string(f.hook_log()).unwrap();
+    assert!(hooks.contains(&format!("fresh/src {} {} 1", "0".repeat(40), base)));
+    assert!(hooks.contains(&format!("matching/src {} {} 1", "0".repeat(40), base)));
+    assert!(hooks.contains(&format!("different/src {} {} 1", "0".repeat(40), different)));
 }
 
 #[test]
