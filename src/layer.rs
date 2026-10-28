@@ -672,9 +672,13 @@ pub fn create_repo(
     let _ = fs::remove_file(&staged_index);
 
     let mp = path_str(&mount_point)?;
-    // The index matches the base commit; a hard reset rewrites only the files
-    // that differ between the base and the branch tip.
-    git_logged(&["-C", mp, "reset", "-q", "--hard"], log)?;
+    let tip = git_stdout(&["-C", mp, "rev-parse", "HEAD"])?;
+    // The cloned image and index already match the base commit. Only reset
+    // when the actual branch tip differs: an existing branch may not point at
+    // `target`, even when the base is current.
+    if base_commit != tip {
+        git_logged(&["-C", mp, "reset", "-q", "--hard"], log)?;
+    }
     crate::workspace::set_self_upstream(mp, session);
     guard.armed = false;
     timer.mark(log, "register + checkout");
@@ -682,7 +686,6 @@ pub fn create_repo(
     // Run post-checkout in the final location with the arguments `git
     // worktree add` uses. A failing hook fails creation but keeps the
     // workspace for inspection, matching worktree behavior.
-    let tip = git_stdout(&["-C", mp, "rev-parse", "HEAD"])?;
     let zero = zero_oid(mp);
     let hook = git_logged(
         &[
