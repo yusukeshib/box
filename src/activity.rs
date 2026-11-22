@@ -6,9 +6,10 @@
 //!   parent directory of a deleted path;
 //! - git state: `HEAD`, `index`, and `logs/HEAD` in the repo's git dir, which
 //!   change on commits, checkouts, resets, rebases, and staging;
-//! - for `layer` workspaces, the disk image file, which changes whenever the
-//!   mounted volume is written (the image may be detached, so it is not
-//!   inspected with git).
+//! - for `layer` workspaces on macOS, the disk image file, which changes
+//!   whenever the mounted volume is written (the image may be detached, so it
+//!   is not inspected with git). Linux `layer` volumes (btrfs subvolumes) are
+//!   always accessible and are probed like any other checkout.
 //!
 //! The probe is read-only: `git status` runs with `--no-optional-locks` so it
 //! never refreshes the index and therefore never bumps its own signal.
@@ -77,15 +78,16 @@ pub fn latest_activity(
     cutoff: DateTime<Utc>,
 ) -> Result<Option<DateTime<Utc>>> {
     let ws_root = config::box_root()?.join("workspaces").join(name);
-    let registry = if strategy == Strategy::Layer {
+    let detachable = strategy == Strategy::Layer && layer::DETACHABLE;
+    let registry = if detachable {
         repo::list()?
     } else {
         Vec::new()
     };
     let mut latest = Latest::default();
     for repo_name in repos {
-        if strategy == Strategy::Layer {
-            latest.observe_path(&layer::image_path(&ws_root, repo_name))?;
+        if detachable {
+            latest.observe_path(&layer::ws_store(&ws_root, repo_name))?;
             if let Some(entry) = registry.iter().find(|r| r.name == *repo_name) {
                 observe_git_dir(&mut latest, &layer::ws_admin_dir(&entry.path, name))?;
             }

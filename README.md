@@ -117,7 +117,7 @@ box workspace add my-feature --repo my-app
 # Use clone strategy for full isolation
 box workspace add my-feature --repo my-app --strategy clone
 
-# Use layer strategy (macOS) for fast creation of large repos
+# Use layer strategy (macOS, or Linux on btrfs) for fast creation of large repos
 box workspace add my-feature --repo my-app --strategy layer
 
 # Multiple repos
@@ -225,7 +225,7 @@ box workspace add my-feature --preset work           # use it
 | `<name>` | Workspace name (required) |
 | `--repo <name>` | Repos to include (repeatable; mutually exclusive with `--preset`) |
 | `--preset <name>` | Use a preset (mutually exclusive with `--repo`) |
-| `--strategy <strategy>` | `worktree` (default), `clone`, or `layer` (macOS) |
+| `--strategy <strategy>` | `worktree` (default), `clone`, or `layer` (macOS, or Linux on btrfs) |
 
 ### `box repo add` / `box repo remove` / `box repo list`
 
@@ -266,7 +266,7 @@ A workspace's last use is the latest of its creation, `box workspace switch`,
 `box repo add|remove --workspace`, and activity inside its repos: modified,
 deleted, or untracked (non-ignored) files, and git operations that update
 `HEAD`, the index, or the HEAD reflog (commits, checkouts, staging). For
-`layer` workspaces, writes to the disk image count instead of file changes.
+`layer` workspaces on macOS, writes to the disk image count instead of file changes.
 Changes to gitignored files alone do not count. The workspace containing the
 current directory (or `$BOX_SESSION`) is never pruned, nor is one whose
 activity cannot be determined.
@@ -277,7 +277,7 @@ activity cannot be determined.
 |----------|-------------|
 | `BOX_STRATEGY` | Default workspace strategy (`worktree`, `clone`, or `layer`). Overridden by `--strategy` |
 | `BOX_UPDATE` | Whether `box workspace add` fetches sources first (`yes` by default; `no` to skip). Overridden by `--update` / `--no-update` |
-| `BOX_LAYER_REFRESH` | How the `layer` strategy rolls base images forward after creating a workspace: `background` (default), `sync`, or `off` |
+| `BOX_LAYER_REFRESH` | How the `layer` strategy rolls bases forward after creating a workspace: `background` (default), `sync`, or `off` |
 | `BOX_VERBOSE` | When set, equivalent to `--verbose` |
 | `BOX_ROOT` | Override the box data directory (default `~/.box`). Read by the shell completions |
 
@@ -320,7 +320,7 @@ Box supports two workspace strategies:
 
 `git clone --local` creates a fully independent git repo using hardlinks for file objects. Each clone has its own `.git` directory — commits, branches, resets, and destructive operations in the workspace do not affect the original.
 
-### Layer (macOS)
+### Layer (macOS, Linux on btrfs)
 
 ```
 ~/.box/layers/frontend/bases/<commit>.sparseimage   (checkout already materialized)
@@ -340,9 +340,22 @@ Each repo is a per-workspace APFS sparse disk image cloned from a per-repo *base
 - Images are not remounted automatically after a reboot; `box workspace switch` re-attaches them.
 - Workspace images grow with writes (build output included) and do not shrink when files are deleted. Disk space is shared with the host volume, so keep free space available.
 
+On Linux, bases and workspace repos are btrfs subvolumes instead of disk images:
+
+```
+~/.box/layers/frontend/bases/<commit>/   (read-only subvolume, checkout already materialized)
+        │ btrfs subvolume snapshot (copy-on-write)
+        ▼
+~/.box/workspaces/my-feature/frontend/   (writable snapshot, linked worktree of frontend.git)
+```
+
+- Requires `btrfs-progs`, and `~/.box/layers` and `~/.box/workspaces` on the same btrfs filesystem (for example, mount a btrfs volume at `~/.box`). Other filesystems fail with an error.
+- Nothing is mounted, so there is nothing to re-attach after a reboot.
+- Mount the filesystem with `user_subvol_rm_allowed` so removing a workspace deletes its subvolume instantly; without it, box falls back to deleting files one by one.
+
 ### Comparison
 
-| | Worktree | Clone | Layer (macOS) |
+| | Worktree | Clone | Layer (macOS, Linux on btrfs) |
 |---|---|---|---|
 | Speed | Instant (small repos) | Fast (hardlinks) | Fastest for large repos |
 | Disk usage | Minimal (shared objects) | Low (hardlinked objects) | Copy-on-write; grows with changes |
@@ -355,7 +368,7 @@ Each repo is a per-workspace APFS sparse disk image cloned from a per-repo *base
 | Workspace location | `~/.box/workspaces/<session>/` |
 | Session metadata | `~/.box/sessions/<session>/` |
 | Presets | `~/.box/presets/<name>` |
-| Layer base images | `~/.box/layers/<name>/` |
+| Layer bases | `~/.box/layers/<name>/` |
 | Default strategy | `git worktree` (override with `--strategy clone` or `--strategy layer`) |
 | Cleanup | `box workspace remove` deletes workspace and session data |
 
