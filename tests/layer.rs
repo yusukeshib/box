@@ -1,6 +1,11 @@
-//! End-to-end tests for the macOS `layer` strategy. They create and attach
-//! real APFS disk images with `hdiutil`, so they only run on macOS.
-#![cfg(target_os = "macos")]
+//! End-to-end tests for the `layer` strategy.
+//!
+//! - macOS: create and attach real APFS disk images with `hdiutil`.
+//! - Linux: create real btrfs subvolumes. They need a writable directory on
+//!   btrfs, given by `BOX_TEST_BTRFS_DIR` (mounted with
+//!   `user_subvol_rm_allowed` unless running as root); the tests are skipped
+//!   when it is unset.
+#![cfg(any(target_os = "macos", target_os = "linux"))]
 
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -12,10 +17,22 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
-        let f = Self {
-            temp: tempfile::tempdir().unwrap(),
+    /// `None` when the platform's prerequisites are missing (test skipped).
+    fn new() -> Option<Self> {
+        let temp = if cfg!(target_os = "linux") {
+            let Some(dir) = std::env::var_os("BOX_TEST_BTRFS_DIR") else {
+                eprintln!("skipping: BOX_TEST_BTRFS_DIR is not set");
+                return None;
+            };
+            tempfile::tempdir_in(dir).unwrap()
+        } else {
+            tempfile::tempdir().unwrap()
         };
+        Some(Self::in_dir(temp))
+    }
+
+    fn in_dir(temp: tempfile::TempDir) -> Self {
+        let f = Self { temp };
         // A source repo with one commit on main. `box source add <path>`
         // bare-clones it, so it acts as `origin`.
         let src = f.src();
@@ -93,7 +110,8 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        // Detach anything a failed test left mounted so the temp dir can go.
+        // Detach anything a failed test left mounted (macOS) or make read-only
+        // subvolumes writable (Linux) so the temp dir can go.
         let mut candidates = Vec::new();
         for parent in [self.root().join("workspaces"), self.root().join("layers")] {
             for entry in fs::read_dir(parent).into_iter().flatten().flatten() {
@@ -105,10 +123,16 @@ impl Drop for Fixture {
                 }
             }
         }
-        for p in candidates.into_iter().filter(|p| is_mount(p)) {
-            let _ = Command::new("hdiutil")
-                .args(["detach", "-quiet", "-force", path(&p)])
-                .status();
+        for p in candidates.into_iter().filter(|p| is_volume(p)) {
+            let _ = if cfg!(target_os = "linux") {
+                Command::new("btrfs")
+                    .args(["property", "set", "-ts", path(&p), "ro", "false"])
+                    .output()
+            } else {
+                Command::new("hdiutil")
+                    .args(["detach", "-quiet", "-force", path(&p)])
+                    .output()
+            };
         }
     }
 }
@@ -139,22 +163,35 @@ fn commit(dir: &Path, msg: &str) {
     ]);
 }
 
-fn is_mount(p: &Path) -> bool {
-    match (fs::symlink_metadata(p), p.parent().map(fs::metadata)) {
-        (Ok(m), Some(Ok(parent))) => m.is_dir() && m.dev() != parent.dev(),
+/// A layer volume: a mounted image (macOS) or a btrfs subvolume (Linux).
+fn is_volume(p: &Path) -> bool {
+    let Ok(m) = fs::symlink_metadata(p) else {
+        return false;
+    };
+    if !m.is_dir() {
+        return false;
+    }
+    if cfg!(target_os = "linux") {
+        // Every btrfs subvolume root has inode 256.
+        return m.ino() == 256;
+    }
+    match p.parent().map(fs::metadata) {
+        Some(Ok(parent)) => m.dev() != parent.dev(),
         _ => false,
     }
 }
 
 #[test]
 fn layer_workspaces_are_isolated_refreshed_remounted_and_removed() {
-    let f = Fixture::new();
+    let Some(f) = Fixture::new() else {
+        return;
+    };
     let bare = f.bare();
 
-    // -- First workspace builds the base image and mounts a clone of it.
+    // -- First workspace builds the base and clones it.
     f.add_layer("ws1");
     let ws1 = f.repo_dir("ws1");
-    assert!(is_mount(&ws1), "ws1 repo dir should be a mounted volume");
+    assert!(is_volume(&ws1), "ws1 repo dir should be a layer volume");
     assert_eq!(
         fs::read_to_string(ws1.join("README.md")).unwrap(),
         "hello\n"
@@ -173,6 +210,17 @@ fn layer_workspaces_are_isolated_refreshed_remounted_and_removed() {
     );
     let current = fs::read_to_string(f.root().join("layers/src/current")).unwrap();
     assert_eq!(current.trim(), base_commit);
+    if cfg!(target_os = "linux") {
+        // Bases are read-only subvolumes; workspaces are writable snapshots.
+        let base = f.root().join("layers/src/bases").join(&base_commit);
+        assert!(is_volume(&base));
+        let out = Command::new("btrfs")
+            .args(["property", "get", "-ts", path(&base), "ro"])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ro=true");
+        assert!(!f.root().join("workspaces/ws1").join(".box-images").exists());
+    }
 
     // -- Upstream moves; the next workspace fetches it and the base rolls forward.
     fs::write(f.src().join("new.txt"), "new\n").unwrap();
@@ -180,7 +228,7 @@ fn layer_workspaces_are_isolated_refreshed_remounted_and_removed() {
     let new_commit = git(&["-C", path(&f.src()), "rev-parse", "HEAD"]);
     f.add_layer("ws2");
     let ws2 = f.repo_dir("ws2");
-    assert!(is_mount(&ws2));
+    assert!(is_volume(&ws2));
     assert_eq!(git(&["-C", path(&ws2), "rev-parse", "HEAD"]), new_commit);
     assert!(ws2.join("new.txt").exists());
     assert_eq!(git(&["-C", path(&ws2), "status", "--porcelain"]), "");
@@ -205,17 +253,19 @@ fn layer_workspaces_are_isolated_refreshed_remounted_and_removed() {
     assert!(!ws1.join("new.txt").exists());
 
     // -- Detached image: prune keeps the locked admin dir; switch re-attaches.
-    let st = Command::new("hdiutil")
-        .args(["detach", "-quiet", path(&ws1)])
-        .status()
-        .unwrap();
-    assert!(st.success());
-    assert!(!is_mount(&ws1));
+    if cfg!(target_os = "macos") {
+        let st = Command::new("hdiutil")
+            .args(["detach", "-quiet", path(&ws1)])
+            .status()
+            .unwrap();
+        assert!(st.success());
+        assert!(!is_volume(&ws1));
+    }
     git(&["-C", path(&bare), "worktree", "prune"]);
     assert!(bare.join("worktrees/box-layer-ws-ws1").exists());
     let out = f.box_cmd(&["workspace", "switch", "ws1"]);
     assert!(out.status.success(), "{out:?}");
-    assert!(is_mount(&ws1));
+    assert!(is_volume(&ws1));
     assert_eq!(git(&["-C", path(&ws1), "status", "--porcelain"]), "");
 
     // -- Removal detaches and deletes images, admin dirs, and branches.
@@ -238,7 +288,9 @@ fn layer_workspaces_are_isolated_refreshed_remounted_and_removed() {
 
 #[test]
 fn layer_checkout_skips_reset_only_when_branch_matches_base() {
-    let f = Fixture::new();
+    let Some(f) = Fixture::new() else {
+        return;
+    };
     let trace = f.temp.path().join("git.trace");
     // Keep locally created branch refs: fetch --prune intentionally removes
     // branches absent from the fixture's origin before workspace creation.
@@ -312,7 +364,9 @@ fn layer_checkout_skips_reset_only_when_branch_matches_base() {
 
 #[test]
 fn layer_repo_add_and_remove_in_existing_workspace() {
-    let f = Fixture::new();
+    let Some(f) = Fixture::new() else {
+        return;
+    };
     f.add_layer("ws");
     let other = f.temp.path().join("other");
     git(&["-c", "init.defaultBranch=main", "init", "-q", path(&other)]);
@@ -323,7 +377,7 @@ fn layer_repo_add_and_remove_in_existing_workspace() {
     let out = f.box_cmd(&["repo", "add", "other", "--workspace", "ws"]);
     assert!(out.status.success(), "{out:?}");
     let other_dir = f.root().join("workspaces/ws/other");
-    assert!(is_mount(&other_dir));
+    assert!(is_volume(&other_dir));
     assert!(other_dir.join("x.txt").exists());
 
     let out = f.box_cmd(&["repo", "remove", "other", "--workspace", "ws"]);
@@ -337,4 +391,32 @@ fn layer_repo_add_and_remove_in_existing_workspace() {
     let out = f.box_cmd(&["workspace", "rm", "ws"]);
     assert!(out.status.success(), "{out:?}");
     assert!(!f.root().join("workspaces/ws").exists());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn layer_requires_btrfs_on_linux() {
+    let temp = tempfile::tempdir().unwrap();
+    let out = Command::new("stat")
+        .args(["-f", "-c", "%T", path(temp.path())])
+        .output()
+        .unwrap();
+    if String::from_utf8_lossy(&out.stdout).trim() == "btrfs" {
+        eprintln!("skipping: the default temp dir is on btrfs");
+        return;
+    }
+    let f = Fixture::in_dir(temp);
+    let out = f.box_cmd(&[
+        "workspace",
+        "add",
+        "ws",
+        "--repo",
+        "src",
+        "--strategy",
+        "layer",
+    ]);
+    assert!(!out.status.success(), "{out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("requires btrfs"), "{stderr}");
+    assert!(!f.root().join("workspaces/ws/src").exists());
 }

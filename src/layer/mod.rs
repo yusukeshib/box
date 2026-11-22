@@ -1,36 +1,60 @@
-//! `layer` workspace strategy (macOS).
+//! `layer` workspace strategy (macOS and Linux).
 //!
-//! Each repo in a workspace is its own APFS sparse disk image mounted at
-//! `~/.box/workspaces/<ws>/<repo>`. The image is created by cloning
-//! (`clonefile`, copy-on-write) a per-repo *base* image that already contains
-//! a checkout, so creating a workspace costs a metadata-only file clone plus an
-//! attach instead of writing every tracked file.
+//! Each repo in a workspace is its own copy-on-write *volume* cloned from a
+//! per-repo *base* volume that already contains a checkout, so creating a
+//! workspace costs a metadata-only clone instead of writing every tracked
+//! file. The volume backend is platform specific:
+//! - macOS (`macos.rs`): APFS sparse disk images cloned with `clonefile` and
+//!   attached at `~/.box/workspaces/<ws>/<repo>`.
+//! - Linux (`linux.rs`): btrfs subvolumes; a workspace repo is a snapshot of
+//!   the base created in place at `~/.box/workspaces/<ws>/<repo>`.
+//!
+//! A volume has a *store* (the image file or the subvolume) and a *mount
+//! point* where its files are visible. On Linux both are the same path.
 //!
 //! Layout:
-//! - `~/.box/layers/<repo>/bases/<commit>.sparseimage` + `<commit>.index`:
+//! - `~/.box/layers/<repo>/bases/<commit>[.sparseimage]` + `<commit>.index`:
 //!   published bases. Never modified after publishing.
 //! - `~/.box/layers/<repo>/current`: commit of the newest published base.
 //! - `~/.box/layers/<repo>/lock`: shared while cloning a base, exclusive while
 //!   publishing or garbage-collecting bases.
 //! - `~/.box/layers/<repo>/build.lock`: serializes base builds.
 //! - `~/.box/layers/<repo>/staging/`: scratch space for base builds.
-//! - `~/.box/workspaces/<ws>/.box-images/<repo>.sparseimage`: workspace image.
+//! - macOS only: `~/.box/workspaces/<ws>/.box-images/<repo>.sparseimage`, the
+//!   workspace image.
 //! - `<bare>/worktrees/box-layer-ws-<ws>`: the workspace's git admin dir. It
 //!   is locked so `git worktree prune` keeps it while the image is detached.
 
 use anyhow::{bail, Context, Result};
 use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::config;
 use crate::repo::RepoEntry;
 
-/// Maximum size of a sparse image. Space is only allocated on write.
-const IMAGE_SIZE: &str = "512g";
-const IMAGE_EXT: &str = "sparseimage";
-/// Hidden directory inside a workspace root holding the workspace images.
+#[cfg(target_os = "linux")]
+#[path = "linux.rs"]
+mod backend;
+#[cfg(not(target_os = "linux"))]
+#[path = "macos.rs"]
+mod backend;
+
+// CI only runs on Linux: compile (and unit-test) the other backend in test
+// builds too, so it can't silently stop building.
+#[cfg(all(test, target_os = "linux"))]
+#[allow(dead_code)]
+#[path = "macos.rs"]
+mod other_backend;
+#[cfg(all(test, not(target_os = "linux")))]
+#[allow(dead_code)]
+#[path = "linux.rs"]
+mod other_backend;
+
+/// Whether workspace volumes can be detached and their files unavailable.
+pub use backend::DETACHABLE;
+
+/// Hidden directory inside a workspace root holding the workspace images (macOS).
 pub const IMAGES_DIR: &str = ".box-images";
 const WS_ADMIN_PREFIX: &str = "box-layer-ws-";
 const BUILD_ADMIN_PREFIX: &str = "box-layer-build-";
@@ -38,27 +62,13 @@ const LOCK_REASON: &str = "box layer workspace (disk image may be detached)";
 
 const EXCLUDE_BEGIN: &str = "# >>> box layer volume root >>>";
 const EXCLUDE_END: &str = "# <<< box layer volume root <<<";
-/// Files macOS may create at the root of a mounted APFS volume. A layer
-/// worktree's root is the volume root, so hide them from `git status`.
-const VOLUME_ROOT_EXCLUDES: &[&str] = &[
-    "/.fseventsd/",
-    "/.metadata_never_index",
-    "/.Spotlight-V100/",
-    "/.Trashes/",
-    "/.TemporaryItems/",
-    "/.DocumentRevisions-V100/",
-];
 
 /// Environment variable controlling base refreshes after workspace creation:
 /// `background` (default), `sync`, or `off`.
 const REFRESH_ENV: &str = "BOX_LAYER_REFRESH";
 
 pub fn ensure_supported() -> Result<()> {
-    if cfg!(target_os = "macos") {
-        Ok(())
-    } else {
-        bail!("The 'layer' strategy is only supported on macOS.")
-    }
+    backend::ensure_supported()
 }
 
 // -- Paths --
@@ -67,16 +77,28 @@ fn layers_dir(repo_name: &str) -> Result<PathBuf> {
     Ok(config::box_root()?.join("layers").join(repo_name))
 }
 
-pub fn image_path(ws_root: &Path, repo_name: &str) -> PathBuf {
-    ws_root
-        .join(IMAGES_DIR)
-        .join(format!("{}.{}", repo_name, IMAGE_EXT))
+/// Backing store of a workspace repo: the image file (macOS) or the
+/// subvolume (Linux). It changes whenever the workspace is written.
+pub fn ws_store(ws_root: &Path, repo_name: &str) -> PathBuf {
+    backend::ws_store(ws_root, repo_name)
+}
+
+/// True if the workspace repo's volume exists (it may still be detached).
+pub fn repo_present(ws_root: &Path, repo_name: &str) -> bool {
+    fs::symlink_metadata(ws_store(ws_root, repo_name)).is_ok()
 }
 
 pub fn ws_admin_dir(bare: &str, session: &str) -> PathBuf {
     Path::new(bare)
         .join("worktrees")
         .join(format!("{}{}", WS_ADMIN_PREFIX, session))
+}
+
+fn store_name(stem: &str) -> String {
+    match backend::STORE_EXT {
+        Some(ext) => format!("{}.{}", stem, ext),
+        None => stem.to_string(),
+    }
 }
 
 // -- Small helpers --
@@ -110,21 +132,6 @@ fn git_stdout(args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn hdiutil(args: &[&str]) -> Result<()> {
-    let output = Command::new("hdiutil")
-        .args(args)
-        .output()
-        .context("failed to run hdiutil")?;
-    if !output.status.success() {
-        bail!(
-            "hdiutil {} failed: {}",
-            args.first().copied().unwrap_or_default(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
 }
 
 fn path_str(path: &Path) -> Result<&str> {
@@ -166,62 +173,32 @@ fn unique_tag() -> String {
     format!("{}-{}", std::process::id(), nanos)
 }
 
-// -- Mounts --
+// -- Volumes --
 
-/// True if `path` is a directory on a different device than its parent.
-pub fn is_mount_point(path: &Path) -> bool {
-    let Ok(meta) = fs::symlink_metadata(path) else {
-        return false;
-    };
-    if !meta.is_dir() {
-        return false;
+/// Make a volume's files unavailable and delete it. Fails if it is still
+/// mounted afterwards; never recurses into a mounted volume.
+fn destroy_volume(store: &Path, mount_point: &Path) -> Result<()> {
+    backend::close(mount_point)?;
+    if store == mount_point {
+        return backend::delete_store(store);
     }
-    let Some(parent) = path.parent() else {
-        return false;
-    };
-    match fs::metadata(parent) {
-        Ok(parent_meta) => meta.dev() != parent_meta.dev(),
-        Err(_) => false,
+    if backend::is_mount_point(mount_point) {
+        bail!("{} is still mounted", mount_point.display());
     }
-}
-
-fn attach(image: &Path, mount_point: &Path) -> Result<()> {
-    fs::create_dir_all(mount_point)?;
-    hdiutil(&[
-        "attach",
-        "-quiet",
-        "-nobrowse",
-        "-noautoopen",
-        "-noverify",
-        "-mountpoint",
-        path_str(mount_point)?,
-        path_str(image)?,
-    ])
-}
-
-/// Detach the volume mounted at `mount_point` (forcefully if a normal detach
-/// fails). Succeeds when nothing is mounted there afterwards.
-pub fn detach(mount_point: &Path) -> Result<()> {
-    if !is_mount_point(mount_point) {
-        return Ok(());
-    }
-    let mp = path_str(mount_point)?;
-    if hdiutil(&["detach", "-quiet", mp]).is_err() {
-        let _ = hdiutil(&["detach", "-quiet", "-force", mp]);
-    }
-    if is_mount_point(mount_point) {
-        bail!("failed to detach {}", mount_point.display());
-    }
-    Ok(())
+    remove_dir_all_if_exists(mount_point)?;
+    backend::delete_store(store)
 }
 
 // -- git admin entries --
 
-/// Make git ignore files macOS creates at a volume root. Idempotent.
+/// Make git ignore files the OS creates at a volume root. Idempotent.
 pub fn ensure_volume_excludes(bare: &str) -> Result<()> {
+    if backend::VOLUME_ROOT_EXCLUDES.is_empty() {
+        return Ok(());
+    }
     let path = Path::new(bare).join("info").join("exclude");
     let existing = fs::read_to_string(&path).unwrap_or_default();
-    let updated = with_volume_excludes(&existing);
+    let updated = with_volume_excludes(&existing, backend::VOLUME_ROOT_EXCLUDES);
     if updated != existing {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -231,7 +208,7 @@ pub fn ensure_volume_excludes(bare: &str) -> Result<()> {
     Ok(())
 }
 
-fn with_volume_excludes(existing: &str) -> String {
+fn with_volume_excludes(existing: &str, patterns: &[&str]) -> String {
     if existing.contains(EXCLUDE_BEGIN) {
         return existing.to_string();
     }
@@ -241,7 +218,7 @@ fn with_volume_excludes(existing: &str) -> String {
     }
     out.push_str(EXCLUDE_BEGIN);
     out.push('\n');
-    for pattern in VOLUME_ROOT_EXCLUDES {
+    for pattern in patterns {
         out.push_str(pattern);
         out.push('\n');
     }
@@ -257,7 +234,7 @@ fn write_admin(
     admin: &Path,
     mount_point: &Path,
     head: &str,
-    index: Option<&Path>,
+    index: Option<&[u8]>,
     locked: bool,
 ) -> Result<()> {
     fs::create_dir_all(admin)?;
@@ -268,7 +245,7 @@ fn write_admin(
     fs::write(admin.join("commondir"), "../..\n")?;
     fs::write(admin.join("HEAD"), format!("{}\n", head))?;
     if let Some(index) = index {
-        fs::copy(index, admin.join("index"))?;
+        fs::write(admin.join("index"), index)?;
     }
     if locked {
         fs::write(admin.join("locked"), LOCK_REASON)?;
@@ -298,7 +275,7 @@ fn checked_out_elsewhere(bare: &str, branch: &str) -> bool {
 
 struct Base {
     commit: String,
-    image: PathBuf,
+    store: PathBuf,
     index: PathBuf,
 }
 
@@ -309,12 +286,12 @@ fn current_base(dir: &Path) -> Option<Base> {
         return None;
     }
     let bases = dir.join("bases");
-    let image = bases.join(format!("{}.{}", commit, IMAGE_EXT));
+    let store = bases.join(store_name(&commit));
     let index = bases.join(format!("{}.index", commit));
-    if image.is_file() && index.is_file() {
+    if store.exists() && index.is_file() {
         Some(Base {
             commit,
-            image,
+            store,
             index,
         })
     } else {
@@ -322,17 +299,24 @@ fn current_base(dir: &Path) -> Option<Base> {
     }
 }
 
+/// Clone the current base's store to `dst` and return its commit and index
+/// contents, or `None` if there is no base. Holds the shared lock so a
+/// concurrent publish can't delete the base mid-clone.
+fn clone_current_base(dir: &Path, dst: &Path) -> Result<Option<(String, Vec<u8>)>> {
+    let lock = open_lock(&dir.join("lock"))?;
+    lock.lock_shared()?;
+    let Some(base) = current_base(dir) else {
+        return Ok(None);
+    };
+    backend::clone_store(&base.store, dst)?;
+    let index = fs::read(&base.index)
+        .with_context(|| format!("failed to read {}", base.index.display()))?;
+    Ok(Some((base.commit, index)))
+}
+
 /// Remove leftovers of interrupted builds. Caller must hold `build.lock`.
 fn clean_staging(staging: &Path, bare: &str) -> Result<()> {
-    if let Ok(entries) = fs::read_dir(staging) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if is_mount_point(&path) {
-                detach(&path)?;
-            }
-        }
-    }
-    remove_dir_all_if_exists(staging)?;
+    backend::purge_dir(staging)?;
     if let Ok(entries) = fs::read_dir(Path::new(bare).join("worktrees")) {
         for entry in entries.flatten() {
             if entry
@@ -347,56 +331,38 @@ fn clean_staging(staging: &Path, bare: &str) -> Result<()> {
     Ok(())
 }
 
-/// Build and publish a base image for `target`, rolling forward from the
-/// current base when there is one. Caller must hold `build.lock`.
+/// Build and publish a base for `target`, rolling forward from the current
+/// base when there is one. Caller must hold `build.lock`.
 fn build_base(repo: &RepoEntry, target: &str, log: &mut String) -> Result<()> {
     let dir = layers_dir(&repo.name)?;
     let staging = dir.join("staging");
     clean_staging(&staging, &repo.path)?;
     fs::create_dir_all(&staging)?;
     fs::create_dir_all(dir.join("bases"))?;
+    backend::preflight(&[&staging])?;
 
     let tag = unique_tag();
-    let image = staging.join(format!("{}.{}", tag, IMAGE_EXT));
+    let store = staging.join(store_name(&tag));
     let staged_index = staging.join(format!("{}.index", tag));
-    let mount_point = staging.join(format!("{}.mnt", tag));
+    let mount_point = backend::staging_mount_point(&store);
 
-    let from = {
-        let lock = open_lock(&dir.join("lock"))?;
-        lock.lock_shared()?;
-        match current_base(&dir) {
-            Some(base) => {
-                fs::copy(&base.image, &image)?;
-                fs::copy(&base.index, &staged_index)?;
-                Some(base.commit)
-            }
-            None => None,
-        }
-    };
+    let from = clone_current_base(&dir, &store)?;
     if from.is_none() {
-        hdiutil(&[
-            "create",
-            "-quiet",
-            "-size",
-            IMAGE_SIZE,
-            "-type",
-            "SPARSE",
-            "-fs",
-            "APFS",
-            "-volname",
-            &repo.name,
-            path_str(&staging.join(&tag))?,
-        ])?;
+        backend::create_store(&store, &repo.name)?;
     }
 
-    attach(&image, &mount_point)?;
+    backend::open(&store, &mount_point)?;
     let admin = Path::new(&repo.path)
         .join("worktrees")
         .join(format!("{}{}", BUILD_ADMIN_PREFIX, tag));
     let populated = (|| -> Result<()> {
-        fs::write(mount_point.join(".metadata_never_index"), "")?;
-        let head = from.as_deref().unwrap_or(target);
-        let index = from.as_ref().map(|_| staged_index.as_path());
+        let (head, index) = match &from {
+            Some((commit, index)) => (commit.as_str(), Some(index.as_slice())),
+            None => {
+                backend::prepare_volume(&mount_point)?;
+                (target, None)
+            }
+        };
         write_admin(&admin, &mount_point, head, index, false)?;
         let mp = path_str(&mount_point)?;
         git_logged(
@@ -420,27 +386,41 @@ fn build_base(repo: &RepoEntry, target: &str, log: &mut String) -> Result<()> {
         Ok(())
     })();
     let _ = fs::remove_dir_all(&admin);
-    let detached = detach(&mount_point);
+    let closed = backend::close(&mount_point);
     populated?;
-    detached?;
-    let _ = fs::remove_dir(&mount_point);
+    closed?;
+    if mount_point != store {
+        let _ = fs::remove_dir(&mount_point);
+    }
 
-    // Publish: index first, then image, then the `current` pointer.
+    // Publish: index first, then the store, then the `current` pointer.
     let lock = open_lock(&dir.join("lock"))?;
     lock.lock()?;
     let bases = dir.join("bases");
-    fs::rename(&staged_index, bases.join(format!("{}.index", target)))?;
-    fs::rename(&image, bases.join(format!("{}.{}", target, IMAGE_EXT)))?;
+    let published_store = bases.join(store_name(target));
+    let published_index = bases.join(format!("{}.index", target));
+    // A leftover of an interrupted publish; nothing references it.
+    backend::delete_store(&published_store)?;
+    fs::rename(&staged_index, &published_index)?;
+    fs::rename(&store, &published_store)?;
+    // Seal only after the move: moving a read-only btrfs subvolume to another
+    // directory fails (its `..` entry can't change).
+    backend::seal(&published_store)?;
     let tmp_current = dir.join(format!("current.{}", tag));
     fs::write(&tmp_current, format!("{}\n", target))?;
     fs::rename(&tmp_current, dir.join("current"))?;
-    // Workspace images are independent clones, so older bases can go.
+    // Workspace volumes are independent clones, so older bases can go.
     if let Ok(entries) = fs::read_dir(&bases) {
-        let keep = format!("{}.", target);
         for entry in entries.flatten() {
-            if !entry.file_name().to_string_lossy().starts_with(&keep) {
-                let _ = fs::remove_file(entry.path());
+            let path = entry.path();
+            if path == published_store || path == published_index {
+                continue;
             }
+            let _ = if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                backend::delete_store(&path)
+            } else {
+                remove_file_if_exists(&path)
+            };
         }
     }
     Ok(())
@@ -458,7 +438,7 @@ fn ensure_base(repo: &RepoEntry, target: &str, log: &mut String) -> Result<()> {
     if current_base(&dir).is_some() {
         return Ok(());
     }
-    log.push_str(&format!("building base image for {}\n", repo.name));
+    log.push_str(&format!("building base for {}\n", repo.name));
     build_base(repo, target, log)
 }
 
@@ -555,7 +535,7 @@ impl StepTimer {
 /// Undo a partially created layer repo unless disarmed.
 struct CreateGuard<'a> {
     bare: &'a str,
-    image: PathBuf,
+    store: PathBuf,
     mount_point: PathBuf,
     admin: PathBuf,
     created_branch: Option<String>,
@@ -567,10 +547,7 @@ impl Drop for CreateGuard<'_> {
         if !self.armed {
             return;
         }
-        if detach(&self.mount_point).is_ok() {
-            let _ = fs::remove_dir_all(&self.mount_point);
-        }
-        let _ = fs::remove_file(&self.image);
+        let _ = destroy_volume(&self.store, &self.mount_point);
         let _ = fs::remove_dir_all(&self.admin);
         if let Some(branch) = &self.created_branch {
             let _ = Command::new("git")
@@ -591,6 +568,9 @@ pub fn create_repo(
     log: &mut String,
 ) -> Result<()> {
     ensure_supported()?;
+    let layers = layers_dir(&repo.name)?;
+    fs::create_dir_all(&layers)?;
+    backend::preflight(&[&layers, ws_root])?;
     let bare = repo.path.as_str();
     ensure_volume_excludes(bare)?;
     let target = git_stdout(&["-C", bare, "rev-parse", "--verify", "HEAD^{commit}"])?;
@@ -598,11 +578,11 @@ pub fn create_repo(
     ensure_base(repo, &target, log)?;
     timer.mark(log, "base");
 
-    let image = image_path(ws_root, &repo.name);
+    let store = ws_store(ws_root, &repo.name);
     let mount_point = ws_root.join(&repo.name);
     let admin = ws_admin_dir(bare, session);
-    if image.exists() {
-        bail!("{} already exists", image.display());
+    if store != mount_point && store.exists() {
+        bail!("{} already exists", store.display());
     }
     if admin.exists() {
         bail!(
@@ -610,38 +590,33 @@ pub fn create_repo(
             admin.display()
         );
     }
-    if mount_point.exists() && fs::read_dir(&mount_point)?.next().is_some() {
-        bail!("{} already exists and is not empty", mount_point.display());
+    if mount_point.exists() {
+        if fs::read_dir(&mount_point)?.next().is_some() {
+            bail!("{} already exists and is not empty", mount_point.display());
+        }
+        if store == mount_point {
+            // The volume is created at this path, which must not exist.
+            fs::remove_dir(&mount_point)?;
+        }
     }
-    fs::create_dir_all(image.parent().unwrap())?;
+    if let Some(parent) = store.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
     let mut guard = CreateGuard {
         bare,
-        image: image.clone(),
+        store: store.clone(),
         mount_point: mount_point.clone(),
         admin: admin.clone(),
         created_branch: None,
         armed: true,
     };
 
-    // Clone the base image and its index while holding the shared lock so a
-    // concurrent publish can't delete them mid-copy.
-    let staged_index = ws_root
-        .join(IMAGES_DIR)
-        .join(format!("{}.index", repo.name));
-    let base_commit = {
-        let dir = layers_dir(&repo.name)?;
-        let lock = open_lock(&dir.join("lock"))?;
-        lock.lock_shared()?;
-        let base = current_base(&dir)
-            .ok_or_else(|| anyhow::anyhow!("base image for '{}' disappeared", repo.name))?;
-        fs::copy(&base.image, &image)?;
-        fs::copy(&base.index, &staged_index)?;
-        base.commit
-    };
-    timer.mark(log, "clone image");
+    let (base_commit, index) = clone_current_base(&layers, &store)?
+        .ok_or_else(|| anyhow::anyhow!("base for '{}' disappeared", repo.name))?;
+    timer.mark(log, "clone volume");
 
-    attach(&image, &mount_point)?;
+    backend::open(&store, &mount_point)?;
     timer.mark(log, "attach");
 
     let branch_ref = format!("refs/heads/{}", session);
@@ -666,14 +641,13 @@ pub fn create_repo(
         &admin,
         &mount_point,
         &format!("ref: {}", branch_ref),
-        Some(&staged_index),
+        Some(&index),
         true,
     )?;
-    let _ = fs::remove_file(&staged_index);
 
     let mp = path_str(&mount_point)?;
     let tip = git_stdout(&["-C", mp, "rev-parse", "HEAD"])?;
-    // The cloned image and index already match the base commit. Only reset
+    // The cloned volume and index already match the base commit. Only reset
     // when the actual branch tip differs: an existing branch may not point at
     // `target`, even when the base is current.
     if base_commit != tip {
@@ -710,16 +684,22 @@ pub fn create_repo(
     hook.context("post-checkout hook failed")
 }
 
-/// Attach the workspace image for `repo_name` if it isn't mounted.
-/// Returns true if it attached.
+/// Make the workspace volume for `repo_name` available if it isn't (attach a
+/// detached image on macOS). Returns true if it attached.
 pub fn ensure_mounted(ws_root: &Path, repo_name: &str) -> Result<bool> {
+    let store = ws_store(ws_root, repo_name);
     let mount_point = ws_root.join(repo_name);
-    if is_mount_point(&mount_point) {
+    if !DETACHABLE {
+        if !repo_present(ws_root, repo_name) {
+            bail!("layer volume {} is missing", store.display());
+        }
         return Ok(false);
     }
-    let image = image_path(ws_root, repo_name);
-    if !image.is_file() {
-        bail!("disk image {} is missing", image.display());
+    if backend::is_mount_point(&mount_point) {
+        return Ok(false);
+    }
+    if !store.is_file() {
+        bail!("disk image {} is missing", store.display());
     }
     if mount_point.exists() && fs::read_dir(&mount_point)?.next().is_some() {
         bail!(
@@ -727,25 +707,20 @@ pub fn ensure_mounted(ws_root: &Path, repo_name: &str) -> Result<bool> {
             mount_point.display()
         );
     }
-    attach(&image, &mount_point)?;
+    backend::open(&store, &mount_point)?;
     Ok(true)
 }
 
-/// Remove a layer repo from a workspace: detach, then delete the mount point,
-/// image, and git admin dir. Branch deletion is left to the caller.
+/// Remove a layer repo from a workspace: delete its volume (detaching it
+/// first on macOS) and git admin dir. Branch deletion is left to the caller.
 pub fn remove_repo(
     bare: Option<&str>,
     ws_root: &Path,
     repo_name: &str,
     session: &str,
 ) -> Result<()> {
-    let mount_point = ws_root.join(repo_name);
-    detach(&mount_point)?;
-    if is_mount_point(&mount_point) {
-        bail!("{} is still mounted", mount_point.display());
-    }
-    remove_dir_all_if_exists(&mount_point)?;
-    remove_file_if_exists(&image_path(ws_root, repo_name))?;
+    destroy_volume(&ws_store(ws_root, repo_name), &ws_root.join(repo_name))?;
+    // Staged index left behind by older versions.
     remove_file_if_exists(
         &ws_root
             .join(IMAGES_DIR)
@@ -758,7 +733,7 @@ pub fn remove_repo(
     Ok(())
 }
 
-/// Delete all base images for a repo (used when the source is removed).
+/// Delete all bases for a repo (used when the source is removed).
 pub fn remove_repo_layers(repo_name: &str) -> Result<()> {
     let dir = layers_dir(repo_name)?;
     if !dir.exists() {
@@ -766,11 +741,8 @@ pub fn remove_repo_layers(repo_name: &str) -> Result<()> {
     }
     let build = open_lock(&dir.join("build.lock"))?;
     build.lock()?;
-    if let Ok(entries) = fs::read_dir(dir.join("staging")) {
-        for entry in entries.flatten() {
-            detach(&entry.path())?;
-        }
-    }
+    backend::purge_dir(&dir.join("staging"))?;
+    backend::purge_dir(&dir.join("bases"))?;
     drop(build);
     remove_dir_all_if_exists(&dir)
 }
@@ -781,25 +753,27 @@ pub fn find_mounted_child(dir: &Path) -> Option<PathBuf> {
         .ok()?
         .flatten()
         .map(|e| e.path())
-        .find(|p| is_mount_point(p))
+        .find(|p| backend::is_mount_point(p))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const PATTERNS: &[&str] = &["/.fseventsd/", "/.Trashes/"];
+
     #[test]
     fn test_with_volume_excludes_appends_block_once() {
-        let once = with_volume_excludes("*.log");
+        let once = with_volume_excludes("*.log", PATTERNS);
         assert!(once.starts_with("*.log\n"));
         assert!(once.contains("/.fseventsd/\n"));
         assert!(once.contains(EXCLUDE_END));
-        assert_eq!(with_volume_excludes(&once), once);
+        assert_eq!(with_volume_excludes(&once, PATTERNS), once);
     }
 
     #[test]
     fn test_with_volume_excludes_empty() {
-        let out = with_volume_excludes("");
+        let out = with_volume_excludes("", PATTERNS);
         assert!(out.starts_with(EXCLUDE_BEGIN));
     }
 
@@ -811,13 +785,12 @@ mod tests {
     }
 
     #[test]
-    fn test_is_mount_point() {
-        let tmp = tempfile::tempdir().unwrap();
-        let child = tmp.path().join("child");
-        fs::create_dir(&child).unwrap();
-        assert!(!is_mount_point(&child));
-        assert!(!is_mount_point(&tmp.path().join("missing")));
-        assert!(is_mount_point(Path::new("/dev")) || cfg!(not(unix)));
+    fn test_store_name() {
+        let name = store_name("abc");
+        match backend::STORE_EXT {
+            Some(ext) => assert_eq!(name, format!("abc.{}", ext)),
+            None => assert_eq!(name, "abc"),
+        }
     }
 
     #[test]
@@ -826,7 +799,7 @@ mod tests {
         let admin = tmp.path().join("admin");
         let mp = tmp.path().join("mp");
         fs::create_dir(&mp).unwrap();
-        write_admin(&admin, &mp, "ref: refs/heads/x", None, true).unwrap();
+        write_admin(&admin, &mp, "ref: refs/heads/x", Some(b"idx"), true).unwrap();
         assert_eq!(
             fs::read_to_string(admin.join("gitdir")).unwrap(),
             format!("{}\n", mp.join(".git").display())
@@ -839,6 +812,7 @@ mod tests {
             fs::read_to_string(admin.join("HEAD")).unwrap(),
             "ref: refs/heads/x\n"
         );
+        assert_eq!(fs::read(admin.join("index")).unwrap(), b"idx");
         assert!(admin.join("locked").exists());
         assert_eq!(
             fs::read_to_string(mp.join(".git")).unwrap(),

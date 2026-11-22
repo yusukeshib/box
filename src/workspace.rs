@@ -505,9 +505,10 @@ pub fn ensure_workspace_multi_worktree(
     Ok(root.to_string_lossy().to_string())
 }
 
-/// Create a multi-repo workspace using per-repo APFS disk images cloned from
-/// a base image (macOS). Repos whose image already exists are re-attached if
-/// needed instead of being recreated.
+/// Create a multi-repo workspace using per-repo copy-on-write volumes cloned
+/// from a base (APFS disk images on macOS, btrfs snapshots on Linux). Repos
+/// whose volume already exists are re-attached if needed instead of being
+/// recreated.
 pub fn ensure_workspace_multi_layer(
     session_name: &str,
     repos: &[crate::repo::RepoEntry],
@@ -519,7 +520,7 @@ pub fn ensure_workspace_multi_layer(
 
     let mut to_create = Vec::new();
     for repo in repos {
-        if crate::layer::image_path(&root, &repo.name).exists() {
+        if crate::layer::repo_present(&root, &repo.name) {
             crate::layer::ensure_mounted(&root, &repo.name)?;
         } else {
             to_create.push((repo.name.clone(), repo.clone()));
@@ -530,7 +531,7 @@ pub fn ensure_workspace_multi_layer(
         let label = progress_label("Creating", "layer", to_create.len(), fetch);
         let root_for_tasks = root.clone();
         let session = session_name.to_string();
-        // Layer creation is mostly waiting on fetch and hdiutil rather than
+        // Layer creation is mostly waiting on fetch and cloning rather than
         // writing files, so don't cap it at the generic worker limit.
         let workers = to_create.len();
         let results = crate::progress::run_parallel_with_progress_limit(

@@ -183,7 +183,7 @@ struct CreateArgs {
     #[arg(long, group = "repo_source")]
     preset: Option<String>,
 
-    /// Workspace strategy: worktree (default), clone, or layer (macOS disk images)
+    /// Workspace strategy: worktree (default), clone, or layer (macOS disk images / Linux btrfs snapshots)
     #[arg(long, env = "BOX_STRATEGY", default_value = "worktree")]
     strategy: String,
 

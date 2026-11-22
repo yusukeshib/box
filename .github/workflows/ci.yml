@@ -15,8 +15,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install shells for integration tests
-        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Install shells and btrfs-progs for integration tests
+        run: sudo apt-get update && sudo apt-get install -y zsh btrfs-progs
+      - name: Mount a btrfs volume for layer tests
+        run: |
+          truncate -s 2G "$RUNNER_TEMP/btrfs.img"
+          mkfs.btrfs -q "$RUNNER_TEMP/btrfs.img"
+          sudo mkdir -p /mnt/btrfs
+          sudo mount -o loop,user_subvol_rm_allowed "$RUNNER_TEMP/btrfs.img" /mnt/btrfs
+          sudo chown "$(id -u):$(id -g)" /mnt/btrfs
+          echo "BOX_TEST_BTRFS_DIR=/mnt/btrfs" >> "$GITHUB_ENV"
       - run: cargo fmt -- --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
