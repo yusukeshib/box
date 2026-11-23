@@ -131,7 +131,8 @@ pub fn list() -> Result<Vec<RepoEntry>> {
 
 /// Version of the bare-repo migrations. Bump this when adding a new migration
 /// step in `list()` so existing bares re-run the migrations on next list().
-const MIGRATIONS_VERSION: &str = "v1";
+/// v2: drop the `refs/heads/*` mirror refspec (see `configure_fetch_refspec`).
+const MIGRATIONS_VERSION: &str = "v2";
 const MIGRATIONS_SENTINEL: &str = ".box-migrations";
 
 fn migrations_current(bare_dir: &Path) -> bool {
@@ -193,9 +194,10 @@ pub fn add(src: &str) -> Result<()> {
     }
 
     // git clone --bare doesn't set a fetch refspec, so git fetch won't
-    // update local branches. Configure it so fetch maps remote branches
-    // directly onto the bare repo's local refs.
+    // update any ref. Configure the origin/* mapping, and move the branches
+    // the clone copied into local heads over to origin/*.
     configure_fetch_refspec(&dest_str)?;
+    seed_remote_tracking_refs(&dest_str)?;
 
     // For a local-path source, origin points at the local path; repoint it to
     // the source repo's actual remote URL. A remote-URL source already has the
@@ -247,9 +249,9 @@ fn repo_name_from_url(url: &str) -> Option<String> {
 
 /// Check and fix fetch refspec and `push.autoSetupRemote` on an existing bare
 /// repo. Repairs bares that are missing a refspec entirely (clone --bare
-/// default), bares that only have the legacy single +refs/heads/*:refs/heads/*
-/// line (pre-origin-mapping versions of box), and bares created before
-/// `push.autoSetupRemote` was added.
+/// default), bares that still carry the legacy `+refs/heads/*:refs/heads/*`
+/// mirror line (older versions of box), and bares created before
+/// `push.autoSetupRemote` was added. Existing local branches are left alone.
 fn ensure_fetch_refspec(bare_dir: &str) {
     let needs_refspec = match Command::new("git")
         .args(["-C", bare_dir, "config", "--get-all", "remote.origin.fetch"])
@@ -257,7 +259,8 @@ fn ensure_fetch_refspec(bare_dir: &str) {
     {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
-            !text.lines().any(|l| l.trim() == REFSPEC_ORIGIN)
+            let lines: Vec<&str> = text.lines().map(str::trim).collect();
+            lines != [REFSPEC_ORIGIN]
         }
         _ => true,
     };
@@ -332,22 +335,23 @@ fn repair_box_branch_upstreams(bare_dir: &str) {
     }
 }
 
-/// Refspec that mirrors the remote's branches onto the bare repo's local
-/// heads. Required so `git clone --local <bare>` and `git worktree add` see
-/// up-to-date refs.
-const REFSPEC_HEADS: &str = "+refs/heads/*:refs/heads/*";
-
-/// Refspec that also exposes remote branches under the conventional
+/// Refspec that exposes remote branches under the conventional
 /// `refs/remotes/origin/*` namespace, so `git rebase origin/main` works inside
 /// box workspaces without any special handling.
-const REFSPEC_ORIGIN: &str = "+refs/heads/*:refs/remotes/origin/*";
+pub(crate) const REFSPEC_ORIGIN: &str = "+refs/heads/*:refs/remotes/origin/*";
 
 /// `git clone --bare` does not set `remote.origin.fetch`, so `git fetch` will
-/// download objects but never update local refs. We configure two refspecs:
-/// the heads/heads line preserves the bare-as-cache semantics that `box new`
-/// (clone + worktree strategies) relies on, and the heads/remotes line
-/// produces the conventional `origin/<branch>` refs that humans and tools
-/// expect when they `git fetch && git rebase origin/main`.
+/// download objects but never update any ref. We configure the conventional
+/// origin/* refspec and nothing else.
+///
+/// Older versions also mirrored the remote onto `refs/heads/*`. That namespace
+/// is shared by every workspace's local branches, so any plain `git fetch`
+/// (by a user, an agent, or a tool such as Graphite) force-overwrote local
+/// branches with their remote namesakes, pruned unpushed ones under
+/// `fetch.prune`, refused to run whenever a checked-out branch had a remote
+/// namesake, and made `git push --force-with-lease` compare against the
+/// local branch itself. `refs/heads/*` now holds only local branches; see
+/// `git::fetch_repo` for how the default branch is kept current.
 ///
 /// We also set `push.autoSetupRemote = true` so the first `git push` of a
 /// branch box created locally records its upstream — without that,
@@ -365,26 +369,77 @@ fn configure_fetch_refspec(bare_dir: &str) -> Result<()> {
             "remote.origin.fetch",
         ])
         .status();
-    for refspec in [REFSPEC_HEADS, REFSPEC_ORIGIN] {
-        let status = Command::new("git")
-            .args([
-                "-C",
-                bare_dir,
-                "config",
-                "--add",
-                "remote.origin.fetch",
-                refspec,
-            ])
-            .status()?;
-        if !status.success() {
-            bail!("Failed to configure fetch refspec for '{}'.", bare_dir);
-        }
+    let status = Command::new("git")
+        .args([
+            "-C",
+            bare_dir,
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            REFSPEC_ORIGIN,
+        ])
+        .status()?;
+    if !status.success() {
+        bail!("Failed to configure fetch refspec for '{}'.", bare_dir);
     }
     let status = Command::new("git")
         .args(["-C", bare_dir, "config", "push.autoSetupRemote", "true"])
         .status()?;
     if !status.success() {
         bail!("Failed to set push.autoSetupRemote for '{}'.", bare_dir);
+    }
+    Ok(())
+}
+
+/// `git clone --bare` copies every source branch into `refs/heads/*` and
+/// leaves `refs/remotes/origin/*` empty. Record those branches as `origin/*`
+/// and drop the local copies except the default branch (`HEAD`), so local
+/// heads hold only local work. Only for a freshly cloned bare: an existing
+/// bare's heads may be unpushed branches.
+fn seed_remote_tracking_refs(bare_dir: &str) -> Result<()> {
+    let default = Command::new("git")
+        .args(["-C", bare_dir, "symbolic-ref", "--quiet", "HEAD"])
+        .output()?;
+    let default = String::from_utf8_lossy(&default.stdout).trim().to_string();
+    let heads = Command::new("git")
+        .args([
+            "-C",
+            bare_dir,
+            "for-each-ref",
+            "--format=%(objectname) %(refname)",
+            "refs/heads/",
+        ])
+        .output()?;
+    if !heads.status.success() {
+        bail!("Failed to list branches of '{}'.", bare_dir);
+    }
+    let mut script = String::new();
+    for line in String::from_utf8_lossy(&heads.stdout).lines() {
+        let Some((oid, refname)) = line.split_once(' ') else {
+            continue;
+        };
+        let Some(branch) = refname.strip_prefix("refs/heads/") else {
+            continue;
+        };
+        script.push_str(&format!("update refs/remotes/origin/{} {}\n", branch, oid));
+        if refname != default {
+            script.push_str(&format!("delete {} {}\n", refname, oid));
+        }
+    }
+    if script.is_empty() {
+        return Ok(());
+    }
+    let mut child = Command::new("git")
+        .args(["-C", bare_dir, "update-ref", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()?;
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin.write_all(script.as_bytes())?;
+    }
+    if !child.wait()?.success() {
+        bail!("Failed to record origin/* refs for '{}'.", bare_dir);
     }
     Ok(())
 }
@@ -663,10 +718,7 @@ mod tests {
                 .collect();
             assert_eq!(
                 lines,
-                vec![
-                    "+refs/heads/*:refs/heads/*".to_string(),
-                    "+refs/heads/*:refs/remotes/origin/*".to_string(),
-                ]
+                vec!["+refs/heads/*:refs/remotes/origin/*".to_string()]
             );
 
             let auto = Command::new("git")
@@ -781,8 +833,8 @@ mod tests {
             // Invalidate the migrations sentinel so list() re-runs the repair.
             let _ = fs::remove_file(Path::new(bare).join(MIGRATIONS_SENTINEL));
 
-            // list() invokes ensure_fetch_refspec on each bare; the second
-            // pass should re-add the origin/* line.
+            // list() invokes ensure_fetch_refspec on each bare, which
+            // replaces the mirror line with the origin/* line.
             let _ = list().unwrap();
 
             let output = Command::new("git")
@@ -793,7 +845,70 @@ mod tests {
                 .lines()
                 .map(|l| l.trim().to_string())
                 .collect();
-            assert!(lines.contains(&"+refs/heads/*:refs/remotes/origin/*".to_string()));
+            assert_eq!(
+                lines,
+                vec!["+refs/heads/*:refs/remotes/origin/*".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn test_migration_drops_heads_mirror_and_keeps_local_branches() {
+        with_temp_home(|home| {
+            let repo = make_git_repo(home, "v1");
+            add(repo.to_str().unwrap()).unwrap();
+            let bare = list().unwrap()[0].path.clone();
+
+            // A v1 bare: both refspecs, plus a local-only branch.
+            for args in [
+                vec!["config", "--unset-all", "remote.origin.fetch"],
+                vec![
+                    "config",
+                    "--add",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/heads/*",
+                ],
+                vec![
+                    "config",
+                    "--add",
+                    "remote.origin.fetch",
+                    "+refs/heads/*:refs/remotes/origin/*",
+                ],
+                vec!["branch", "unpushed", "HEAD"],
+            ] {
+                let s = Command::new("git")
+                    .arg("-C")
+                    .arg(&bare)
+                    .args(&args)
+                    .status()
+                    .unwrap();
+                assert!(s.success(), "git {:?} failed", args);
+            }
+            fs::write(Path::new(&bare).join(MIGRATIONS_SENTINEL), "v1").unwrap();
+
+            let _ = list().unwrap();
+
+            let output = Command::new("git")
+                .args(["-C", &bare, "config", "--get-all", "remote.origin.fetch"])
+                .output()
+                .unwrap();
+            let lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|l| l.trim().to_string())
+                .collect();
+            assert_eq!(lines, vec![REFSPEC_ORIGIN.to_string()]);
+            let kept = Command::new("git")
+                .args([
+                    "-C",
+                    &bare,
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    "refs/heads/unpushed",
+                ])
+                .status()
+                .unwrap();
+            assert!(kept.success(), "migration must not delete local branches");
         });
     }
 
@@ -858,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fetch_updates_bare_branches() {
+    fn test_fetch_updates_origin_and_keeps_local_branches() {
         with_temp_home(|home| {
             // Create a source repo with a remote (simulated via a bare intermediary)
             let remote_dir = home.join("remote.git");
@@ -959,26 +1074,43 @@ mod tests {
                 .unwrap();
             assert!(s.success(), "git push 2 failed");
 
-            // Fetch on bare repo
+            // A local branch that origin has never seen, e.g. an unpushed
+            // workspace or Graphite stack branch.
             let s = Command::new("git")
-                .args(["-C", bare_path, "fetch", "--all"])
+                .args(["-C", bare_path, "branch", "local-only", "main"])
+                .status()
+                .unwrap();
+            assert!(s.success());
+
+            let commits = |rev: &str| {
+                let out = Command::new("git")
+                    .args(["-C", bare_path, "log", "--oneline", rev])
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "git log {} failed", rev);
+                String::from_utf8_lossy(&out.stdout).lines().count()
+            };
+
+            // A plain fetch, even with fetch.prune (common in global
+            // configs), only moves origin/*.
+            let s = Command::new("git")
+                .args(["-C", bare_path, "-c", "fetch.prune=true", "fetch", "--all"])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
                 .unwrap();
             assert!(s.success(), "git fetch failed");
-
-            let log_after = Command::new("git")
-                .args(["-C", bare_path, "log", "--oneline", "main"])
-                .output()
-                .unwrap();
-            let count_after = String::from_utf8_lossy(&log_after.stdout).lines().count();
-
             assert_eq!(count_before, 1);
-            assert_eq!(
-                count_after, 2,
-                "fetch should update the bare repo's main branch"
-            );
+            assert_eq!(commits("refs/remotes/origin/main"), 2);
+            assert_eq!(commits("refs/heads/main"), 1);
+            assert_eq!(commits("refs/heads/local-only"), 1);
+
+            // box's own fetch also fast-forwards the default branch, which
+            // new workspaces start from, and still keeps local branches.
+            let (ok, log) = crate::git::fetch_repo(&repos[0]);
+            assert!(ok, "{log}");
+            assert_eq!(commits("refs/heads/main"), 2);
+            assert_eq!(commits("refs/heads/local-only"), 1);
         });
     }
 }
