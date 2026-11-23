@@ -181,12 +181,19 @@ box workspace update --all        # every workspace
 ```
 
 `box workspace update` refreshes `origin/*` refs and never touches working trees
-or checked-out branches. Worktree and layer workspaces fetch the shared bare
-repo once per source, excluding branches checked out in any workspace (a plain
-`git fetch` there can refuse to run when upstream has a branch with the same
-name as a checked-out one). Clone workspaces run `git fetch --prune origin` in
-each clone. Then rebase or merge with plain git, for example
-`git rebase origin/main`.
+or local branches. Worktree and layer workspaces fetch the shared bare repo once
+per source; clone workspaces run `git fetch --prune origin` in each clone. Then
+rebase or merge with plain git, for example `git rebase origin/main`.
+
+In a bare repo, remote branches live only under `origin/*` and local branches
+(every workspace's branch, Graphite stacks, anything you create) under
+`refs/heads/*`, so a plain `git fetch` (even with `fetch.prune`) never
+overwrites or deletes local work. The one local branch box moves is the default
+branch new workspaces start from, fast-forwarded to `origin/<default>` when it
+is not checked out. A workspace named after an existing remote branch starts
+from that branch. Bare repos created by older versions are migrated
+automatically; branches they mirrored into `refs/heads/*` are kept and can be
+deleted by hand.
 
 ## Multi-repo Workspaces
 

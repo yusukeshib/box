@@ -559,8 +559,9 @@ impl Drop for CreateGuard<'_> {
 
 /// Create `<ws_root>/<repo>` as a layer worktree on branch `session`.
 ///
-/// The branch starts at the bare repo's HEAD unless it already exists, in
-/// which case the existing branch is checked out (like `git worktree add`).
+/// The branch starts at the remote branch of the same name when there is one,
+/// otherwise at the bare repo's HEAD. An existing local branch is checked out
+/// as is (like `git worktree add`).
 pub fn create_repo(
     repo: &RepoEntry,
     ws_root: &Path,
@@ -633,7 +634,8 @@ pub fn create_repo(
             );
         }
     } else {
-        git_logged(&["-C", bare, "branch", "--no-track", session, &target], log)?;
+        let start = crate::git::session_start_point(bare, session).unwrap_or(target.clone());
+        git_logged(&["-C", bare, "branch", "--no-track", session, &start], log)?;
         guard.created_branch = Some(session.to_string());
     }
 

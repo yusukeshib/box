@@ -396,6 +396,7 @@ pub fn ensure_workspace_multi(
                     Ok(output) => {
                         buf.push_str(&captured_output(&output));
                         if output.status.success() {
+                            copy_remote_tracking_refs(&repo.path, &dest_str, &mut buf);
                             crate::repo::repoint_origin(&repo.path, &dest_str);
                             (true, buf)
                         } else {
@@ -455,11 +456,20 @@ pub fn ensure_workspace_multi_worktree(
                     }
                 }
 
-                // Try with -b first to create a new branch
+                // Try with -b first to create a new branch, starting from the
+                // remote branch of the same name when there is one.
+                let mut args = vec![
+                    "-C".to_string(),
+                    repo.path.clone(),
+                    "worktree".into(),
+                    "add".into(),
+                    dest_str.clone(),
+                    "-b".into(),
+                    branch.clone(),
+                ];
+                args.extend(crate::git::session_start_point(&repo.path, &branch));
                 let result = Command::new("git")
-                    .args([
-                        "-C", &repo.path, "worktree", "add", &dest_str, "-b", &branch,
-                    ])
+                    .args(&args)
                     .env("GIT_TERMINAL_PROMPT", "0")
                     .output();
 
@@ -749,6 +759,35 @@ fn captured_output(output: &std::process::Output) -> String {
     buf
 }
 
+/// Give a fresh `git clone --local <bare>` the bare's view of the upstream.
+/// The clone's `origin/*` refs come from the bare's local branches, which are
+/// other workspaces' branches rather than the remote; replace them with the
+/// bare's own `origin/*` refs before origin is repointed upstream.
+fn copy_remote_tracking_refs(bare: &str, dest: &str, log: &mut String) {
+    match Command::new("git")
+        .args([
+            "-C",
+            dest,
+            "fetch",
+            "--quiet",
+            "--prune",
+            "--no-tags",
+            "--refmap=",
+            bare,
+            "+refs/remotes/origin/*:refs/remotes/origin/*",
+        ])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            log.push_str(&captured_output(&output));
+            log.push_str("  \x1b[33mcould not copy origin/* refs from the source\x1b[0m\n");
+        }
+        Err(e) => log.push_str(&format!("failed to run git: {}\n", e)),
+    }
+}
+
 /// Configure the worktree's branch to track `origin/<branch>` (a same-name
 /// upstream) rather than inheriting the start-point's tracking. `git worktree
 /// add -b` defaults to copying the start-point's upstream config — for a
@@ -902,6 +941,14 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    fn ref_exists(dir: &str, refname: &str) -> bool {
+        Command::new("git")
+            .args(["-C", dir, "show-ref", "--verify", "--quiet", refname])
+            .status()
+            .unwrap()
+            .success()
+    }
+
     fn commit_and_push(src: &str, msg: &str, refspec: &str) {
         run_git(&[
             "-C",
@@ -962,6 +1009,10 @@ mod tests {
             let wt_str = wt_dir.to_str().unwrap();
             let cl_str = cl_dir.to_str().unwrap();
             let wt_head = rev_parse(wt_str, "HEAD");
+            // The clone's origin/* mirrors upstream, not the bare's local
+            // branches such as the `wt` workspace branch.
+            assert!(!ref_exists(cl_str, "refs/remotes/origin/wt"));
+            assert_eq!(rev_parse(cl_str, "refs/remotes/origin/main"), wt_head);
 
             // Upstream moves, and also gains a branch with the same name as
             // the checked-out workspace branch, which plain `git fetch` in a
@@ -986,6 +1037,28 @@ mod tests {
             assert_eq!(rev_parse(&bare, "refs/remotes/origin/wt"), upstream);
             // ...while the checked-out workspace branch is left alone.
             assert_eq!(rev_parse(wt_str, "HEAD"), wt_head);
+
+            // A plain `git fetch` inside the worktree (as users and tools
+            // run it), even with fetch.prune, neither refuses nor touches
+            // local branches.
+            run_git(&["-C", wt_str, "-c", "fetch.prune=true", "fetch", "-q"]);
+            assert_eq!(rev_parse(&bare, "refs/heads/wt"), wt_head);
+
+            // A workspace named after an existing remote branch starts
+            // from it.
+            run_git(&[
+                "-C",
+                src_str,
+                "push",
+                "-q",
+                "origin",
+                "main~1:refs/heads/feature",
+            ]);
+            let feature = rev_parse(src_str, "main~1");
+            crate::git::fetch_repo(&repos[0]);
+            ensure_workspace("feature", &repos, Strategy::Worktree, false, false).unwrap();
+            let feature_dir = ws.join("feature").join(&name);
+            assert_eq!(rev_parse(feature_dir.to_str().unwrap(), "HEAD"), feature);
             assert_eq!(rev_parse(&bare, "refs/heads/wt"), wt_head);
 
             // A workspace that references an unregistered source fails.
